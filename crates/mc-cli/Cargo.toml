@@ -1,0 +1,16 @@
+[package]
+name = "mc-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Smoke-test CLI for the MarketingCubes Acme demo"
+
+[dependencies]
+mc-core = { path = "../mc-core" }
+mc-fixtures = { path = "../mc-fixtures" }
+
+[[bin]]
+name = "mc"
+path = "src/main.rs"

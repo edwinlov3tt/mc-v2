@@ -1,0 +1,11 @@
+[package]
+name = "mc-fixtures"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Acme demo cube fixture for MarketingCubes correctness tests + benches"
+
+[dependencies]
+mc-core = { path = "../mc-core" }

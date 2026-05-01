@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = ["crates/mc-core", "crates/mc-fixtures", "crates/mc-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/edwinlovettiii/marketingcubes"
+
+[workspace.dependencies]
+# Strict, minimal dependency set for Phase 1. See docs/phase-1-rust-kernel-build-brief.md §2.5.
+smallvec = { version = "1", features = ["const_generics", "union"] }
+ahash = "0.8"
+thiserror = "1"
+once_cell = "1"
+# For tests + benches only:
+criterion = { version = "0.5", default-features = false }
+proptest = "1"
+insta = { version = "1", features = ["yaml"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = false
+
+[profile.bench]
+inherits = "release"
+debug = true

@@ -1,0 +1,31 @@
+[package]
+name = "mc-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MarketingCubes core engine — sparse multidimensional planning kernel"
+
+[dependencies]
+smallvec.workspace = true
+ahash.workspace = true
+thiserror.workspace = true
+once_cell.workspace = true
+
+[dev-dependencies]
+mc-fixtures = { path = "../mc-fixtures" }
+
+# `criterion`, `proptest`, and `insta` are declared at the workspace level
+# (workspace.dependencies in the root Cargo.toml) but are NOT pulled into
+# mc-core yet — none of this deliverable's tests use them, and on Rust
+# 1.78 a transitive dep of criterion (`clap_lex 1.1.0`) now requires
+# edition 2024 which only stabilizes in 1.85. They get added back here
+# alongside the bench files (build-brief §15 step 18) and proptest tests
+# (build-brief §10.7 doctrine_atomicity_of_write etc.) — at which point
+# either the toolchain bumps or those deps are version-pinned to older
+# revisions that work on 1.78.
+#
+# `[[bench]]` entries land alongside the bench files themselves (build-brief
+# §15 step 18). Declaring them without backing files would make `cargo
+# bench` fail on missing targets, so they're absent in this deliverable.
