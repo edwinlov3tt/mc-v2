@@ -22,7 +22,7 @@ The first usable product (target: end of Phase 6) is the smallest version one op
 1. An internal user can **author a cube model** (dimensions, hierarchies, measures, rules) without writing Rust — through a config format or schema-validated authoring layer.
 2. The cube can be **loaded with real actuals** from at least one external source (e.g. a media platform's reporting API or a CSV export with a documented schema).
 3. A **web UI presents the cube** as a navigable planning grid with drill-down, edit, snapshot/rollback, and a version comparison view.
-4. **Performance is within the brief's §11 1B targets** on a representative production-sized cube (≥ 50K cells, ≥ 8 dimensions, ≥ 3 hierarchies per dim).
+4. **Performance meets phase-specific targets on a representative production-sized cube** — initially calibrated against ≥ 50K populated cells, ≥ 8 dimensions, and realistic hierarchy depth. The exact shape (per-dim hierarchy depth, derived-measure count, scenario fan-out) is a Phase 2 housekeeping deliverable (see "Phase 2 housekeeping" below); the brief §11 1B targets are the starting calibration but will be re-anchored to user-perception thresholds (sub-100 ms = instant, sub-1 s = responsive, multi-second = needs progress UI) once that sketch lands.
 5. The system has **authentication, an audit trail, and multi-user concurrency** sufficient for an internal team of 5–10 planners.
 6. There is **at least one shipped proof-of-value internal use case** demonstrating that the system produces a correct plan a human operator trusts.
 
@@ -39,12 +39,20 @@ Productization beyond the first usable product (multi-tenancy, customer-facing a
 | **2A** | Cold-path benchmark expansion | **complete** | `phase-2a-cold-path-baseline` (`48d52e9`) |
 | **2B** | Consolidation Fast Path (hierarchy clone) | **proposed** | — |
 | **2C–2N** | Further optimization rounds (TBD) | not started | — |
-| **3A** | Model definition layer — declarative format + parser | **proposed** | — |
+| **3A** | Model definition layer — declarative format + parser | **planned** (flips to `proposed` when Phase 2 exits) | — |
 | **3B–3N** | Model layer extensions (TBD) | not started | — |
 | **4** | LLM-assisted model authoring | not started | — |
 | **5** | Data integration & actuals | not started | — |
-| **6** | UI & internal app proofs | not started | — |
-| **7** | Productization (incl. Media Partner App) | not started | — |
+| **6** | UI & internal app proofs (incl. internal Media Partner model proof) | not started | — |
+| **7** | Productization (customer-facing Media Partner App + multi-tenancy) | not started | — |
+
+**Status legend.**
+- **complete** — shipped and tagged.
+- **proposed** — handoff doc exists; next to start. **At most one row at a time.**
+- **planned** — committed to but not yet promoted to `proposed`; flips when the phase ahead of it ships.
+- **not started** — no scoping yet.
+
+The "How to use" section below treats `proposed` as the next-to-start row; `planned` rows are sequenced but not yet active. This avoids two `proposed` rows leading the queue.
 
 **Numbering rule.** Major phases (1, 2, 3, …) are pillars of capability. Sub-phases (2A, 2B, 3A, …) are concrete shippable increments inside a pillar. Don't invent a sub-phase name without first adding it here. If a sub-phase needs to be split, append a new letter (2A → 2A.1 / 2A.2) or open a new sub-phase (2B → 2B.1 / 2B.2). Don't reuse retired letters.
 
@@ -105,7 +113,28 @@ Sub-phases beyond 2B are intentionally not pre-named. Open a new sub-phase only 
 - **§9.5 Snapshot COW.** NOT data-justified at Acme scale. Defer until a workflow takes many snapshots per turn.
 - **§9.6 Recursive rule eval.** Leave alone; well within 1B targets.
 
-**Phase 2 exits** when no remaining 1B miss in `PERF.md` is unaddressed and unexplained.
+**Phase 2 exits** when no remaining 1B miss in `PERF.md` is unaddressed and unexplained AND the three Phase 2 housekeeping items below are complete.
+
+### Phase 2 housekeeping (cross-cutting; sequenced around the optimization sub-phases)
+
+Three small but load-bearing tasks that are not optimizations but condition every optimization decision. Treat the sequence below as the actual run order — Q3 first because it makes the rest measurable; Q1 next because it strategically gates everything past Phase 2B; Q2 last because its urgency depends on Q1's Phase 3A scoping.
+
+**Q3 — Criterion baseline tracking (≈ 30 min; precedes 2B).**
+Run `cargo bench --workspace -- --save-baseline phase-2a` once at the `phase-2a-cold-path-baseline` tag. Copy `target/criterion/` JSON outputs into `docs/reports/bench-data/phase-2a/` (small, committable). From Phase 2B onward, every optimization sub-phase runs `cargo bench --workspace -- --baseline phase-2a` (or the appropriate prior baseline) to produce a real before/after diff instead of a hand-edited PERF.md table. **Phase 2B's handoff explicitly folds this in as step 0.** No ADR required; document the workflow in PERF.md once.
+
+**Q1 — Workload sketch ADR (after Phase 2B).**
+Write a short ADR in `docs/decisions/` titled "Workload sketch & perception thresholds" that:
+
+- Enumerates the planner workflow archetypes (open cube, edit cell, recompute slice, snapshot, compare versions, fork-and-merge — adjust to fit observed reality).
+- Assigns each archetype a perception threshold (sub-100 ms = instant, sub-1 s = responsive, multi-second = needs progress UI).
+- Maps each brief §11 row onto the archetype it gates so future optimization choices read as "we made post-edit recompute drop from N ms to M ms" rather than "we improved bench X by Y×."
+- Documents fixture assumptions (per-dim hierarchy depth, derived-measure count, scenario fan-out) — Acme is one cube shape, not THE cube shape, and §6.10's per-mark Cartesian-product blowup depends on those assumptions.
+- States explicitly whether ingest latency or read latency is the gating user-felt budget — this answers whether Phase 2C should be §9.3 (write-side) or something read-side.
+
+This ADR is the strategic gate for everything past Phase 2B.
+
+**Q2 — Toolchain bump revisit (deferred until needed).**
+Rule: bump `rust-toolchain.toml` past 1.78 **before any new runtime dep lands that requires it**, not on phase boundaries. PERF.md §9.7 has the procedure. The trigger is most likely Phase 3A's parser dep choice (e.g. if 3A picks `serde` + `toml` and a transitive of those needs Rust > 1.78). Q1's ADR + 3A's parser-dep ADR together determine when Q2 fires; until then it stays deferred. CLAUDE.md §1.1 already treats `proptest`/`insta` as Phase-paired-work, not toolchain-blocked, so Q2 unblocks nothing on its own today.
 
 ---
 
@@ -113,14 +142,14 @@ Sub-phases beyond 2B are intentionally not pre-named. Open a new sub-phase only 
 
 > Today, cubes are authored by writing Rust against `mc-core`'s builder API (see `mc-fixtures::build_acme_cube`). That doesn't scale to a UI or LLM-assisted authoring. Phase 3 introduces a declarative format that compiles to the existing builder API. **No kernel semantics change** — this is a translation layer.
 
-### 3A — Declarative model format + parser (proposed)
+### 3A — Declarative model format + parser (planned)
 
-- **Status:** proposed (placeholder; needs an ADR before formal scoping).
+- **Status:** planned. Flips to `proposed` when Phase 2 exits and the format/parser ADR lands. The choice between TOML+serde, a custom parser, or another option is itself an ADR-pending decision.
 - **Purpose:** Define a config format (likely TOML or a small custom DSL — design decision pending) that describes cube models and produces a `Cube` via the existing `CubeBuilder` / `Dimension::builder` / `Hierarchy::builder` / `Rule { … }` constructors.
 - **What it proves:** A round-trip from `model.toml` to `cargo run --release --bin mc -- demo --model model.toml` produces an identical cube to `build_acme_cube()` (same coordinates, same dirty propagation, same consolidation results).
 - **Deliverables (planned, high-level):** a new crate (`mc-model` or similar); a parser; a schema validator with structured error messages; the Acme cube re-expressed as a declarative file alongside the existing Rust builder; a round-trip test asserting parsed cubes produce byte-identical Acme demo output.
 - **Acceptance gates (planned):** parsing the Acme model file produces the same `Cube` (per a structural diff helper); all 209 kernel tests still pass; CLI `mc demo --model <path>` produces brief §4.6 output verbatim.
-- **Out of scope (explicit):** LLM authoring (Phase 4); UI (Phase 6); any kernel source change beyond what's required to make the existing builder API consumable from a parser; `serde` if it brings in async-runtime transitives — pick a parser that keeps the dep set tight.
+- **Out of scope (explicit):** LLM authoring (Phase 4); UI (Phase 6); any kernel source change beyond what's required to make the existing builder API consumable from a parser. **Dep-discipline rule:** `serde` and any other parser dep must NOT be added to `mc-core`. A new parser crate (e.g. `mc-model`) MAY use `serde` / `toml` / similar, gated by an ADR that records the parser-dep choice, the keep-out-of-`mc-core` invariant, and any toolchain implications. If the parser dep needs Rust > 1.78, see the Phase 2 housekeeping toolchain item before scoping 3A.
 
 ### 3B, 3C, … (TBD)
 
@@ -162,31 +191,31 @@ Likely follow-ons (placeholders, do not pre-name without an ADR):
 
 ---
 
-## Phase 6 — UI & Internal App Proofs
+## Phase 6 — UI & Internal App Proofs (incl. internal Media Partner model proof)
 
-> A web UI (or internal tool) that lets a planner view, drill, edit, snapshot, and compare cubes without touching the CLI.
+> A web UI (or internal tool) that lets a planner view, drill, edit, snapshot, and compare cubes without touching the CLI. Phase 6's proof-of-value scenarios may include an **internal-only Media Partner model proof** — building a Media Partner cube (rate cards, tactics, partner views, order math) as one of the proof scenarios. Phase 7 takes the same model external; Phase 6 keeps it inside.
 
 - **Status:** not started.
 - **Purpose:** Make the kernel + model layer usable by a non-engineer. This is the smallest step that transforms the project from "library" to "application."
-- **What it proves:** An internal operator can complete a real planning task end-to-end (load a model, ingest actuals, edit a forecast, take a snapshot, compare versions, export results) without engineering help.
-- **Deliverables (anticipated, high-level):** a web UI (framework TBD); navigation surface for dimensions / hierarchies / measures; drill-down + grid editing for input cells; visible plan-vs-actual variance; snapshot + version compare; at least one internal proof-of-value scenario shipped end-to-end (not the Media Partner App — see Phase 7).
-- **Acceptance gates (anticipated):** at least one internal team member can use the UI to complete a planning task without instruction; performance against a representative production-sized cube (≥ 50K cells) hits brief §11 1B targets; auth + audit trail in place for the internal team.
-- **Out of scope (explicit):** customer-facing UX; multi-tenancy; the Media Partner App (Phase 7); any change to the kernel's `Cube` public API beyond what the UI strictly requires.
+- **What it proves:** An internal operator can complete a real planning task end-to-end (load a model, ingest actuals, edit a forecast, take a snapshot, compare versions, export results) without engineering help. If the proof scenario is the internal Media Partner model, it also proves that the model layer (Phase 3) can express the partner-side concepts (rate cards, tactics, partner-scoped views) before any of that surface ships externally.
+- **Deliverables (anticipated, high-level):** a web UI (framework TBD); navigation surface for dimensions / hierarchies / measures; drill-down + grid editing for input cells; visible plan-vs-actual variance; snapshot + version compare; **at least one internal proof-of-value scenario shipped end-to-end** — candidates include an internal-only Media Partner model, a finance-team plan/actual variance review, or a marketing-team campaign-level forecast. Pick one (or stage in this order) once Q1 (workload sketch) settles which is the right first proof.
+- **Acceptance gates (anticipated):** at least one internal team member can use the UI to complete a planning task without instruction; performance against a representative production-sized cube hits the perception thresholds set in Q1; auth + audit trail in place for the internal team.
+- **Out of scope (explicit):** customer-facing UX; multi-tenancy; the customer-facing Media Partner App (Phase 7); any change to the kernel's `Cube` public API beyond what the UI strictly requires.
 
-**Why "internal app proofs" first, not the Media Partner App.** The Media Partner App is a customer-facing artifact with its own scoping, scaling, and security requirements. Shipping it before an internal proof-of-value is high-risk; shipping the internal proof first lets us validate the model + UI loop on a captive audience before any external user sees it.
+**Why "internal app proofs" first, not the customer-facing Media Partner App.** Customer-facing has its own scoping, scaling, and security requirements. The internal Media Partner model proof in Phase 6 lets us validate the model + UI loop with a captive audience before any external user sees it; the same kernel + model + UI then carries forward into Phase 7 with the multi-tenant / auth / billing concerns added.
 
 ---
 
-## Phase 7 — Productization (incl. Media Partner App)
+## Phase 7 — Productization (customer-facing Media Partner App + multi-tenancy)
 
-> Turn the validated internal product into something a paying customer can use. The Media Partner App is the proof-of-value use case driving this phase, but the phase covers everything that "productization" implies — not the app alone.
+> Turn the validated internal product into something a paying customer can use. The **customer-facing Media Partner App** is the proof-of-value use case driving this phase (distinct from Phase 6's *internal* Media Partner model proof). The phase covers everything that "productization" implies — multi-tenancy, auth, audit, scaling, support — not the app alone.
 
 - **Status:** not started.
 - **Purpose:** Convert the internal app into a production-grade, multi-tenant offering that a customer (an external media partner) can use independently.
 - **What it proves:** The kernel + authoring layer + UI scale to multi-tenant, multi-user, customer-facing use without sacrificing the determinism and correctness that Phases 1–6 established.
-- **Deliverables (anticipated, high-level):** multi-tenancy (data-isolated per partner); a Media Partner App (the first customer-facing surface, per the user's note); production-grade auth + audit + observability + backup; a documented onboarding path for new partners; SLAs / on-call rota / incident playbooks.
+- **Deliverables (anticipated, high-level):** multi-tenancy (data-isolated per partner); the customer-facing Media Partner App (the first external surface, building on Phase 6's internal Media Partner model proof); production-grade auth + audit + observability + backup; a documented onboarding path for new partners; SLAs / on-call rota / incident playbooks.
 - **Acceptance gates (anticipated):** at least one external partner is using the system in production for one full planning cycle without engineering escalation; security review passed; data export / portability story documented.
-- **Out of scope (explicit):** anything that violates the Phase 1–6 invariants (no behavior changes that break the §10 contract tests; no `serde` / `tokio` / `rayon` in `mc-core` unless an ADR explicitly retires that constraint).
+- **Out of scope (explicit):** anything that violates the Phase 1–6 invariants (no behavior changes that break the §10 contract tests; no `serde` / `tokio` / `rayon` in `mc-core` unless an ADR explicitly retires that constraint — note this is an `mc-core`-specific rule, see Phase 3A for the surrounding-crate exception).
 
 ---
 

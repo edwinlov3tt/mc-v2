@@ -54,6 +54,19 @@ The master roadmap is [`../roadmap/MASTER_PHASE_PLAN.md`](../roadmap/MASTER_PHAS
 > walking the consolidator tree, not preparing borrowed data.
 >
 > **Phase 2B scope:**
+> 0. **(Phase 2 housekeeping Q3, ~30 min) Set up criterion baseline
+>    tracking before any source change.** Run
+>    `cargo bench --workspace -- --save-baseline phase-2a` against
+>    the inherited HEAD. Copy `target/criterion/` JSON outputs to
+>    `docs/reports/bench-data/phase-2a/` and `git add` them (small
+>    commit, "bench: capture phase-2a baseline for run-to-run
+>    diffs"). After the source change in step 1, run
+>    `cargo bench --workspace -- --baseline phase-2a` to get a real
+>    before/after diff for §6.11. This step blocks nothing in the
+>    source change; do it first because Phase 2B's "we got faster"
+>    claim is meaningless without it. See
+>    [`../roadmap/MASTER_PHASE_PLAN.md`](../roadmap/MASTER_PHASE_PLAN.md)
+>    "Phase 2 housekeeping → Q3" for the rationale.
 > 1. Modify `crates/mc-core/src/cube.rs::read_consolidated` so it does
 >    not clone `self.dimensions` and does not clone any
 >    `dim.default_hierarchy()` per call.
@@ -66,8 +79,10 @@ The master roadmap is [`../roadmap/MASTER_PHASE_PLAN.md`](../roadmap/MASTER_PHAS
 >    identical results before and after the change (the cache is
 >    out-of-band; this test exercises the recompute path
 >    specifically).
-> 4. Re-run the full Phase 2A bench suite. PERF.md must be updated to
->    reflect the new numbers.
+> 4. Re-run the full Phase 2A bench suite using
+>    `--baseline phase-2a`. PERF.md must be updated to reflect the
+>    new numbers; §6.11 should include criterion's reported
+>    "improvement" % per row, not just before/after medians.
 >
 > **Hard rules:**
 > - Source change is confined to `crates/mc-core/src/cube.rs` and
