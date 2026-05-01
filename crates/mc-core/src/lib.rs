@@ -1,9 +1,9 @@
 //! `mc-core` — the MarketingCubes engine kernel.
 //!
 //! This crate is the Phase 1 deliverable. The semantics it implements are
-//! defined in `docs/engine-semantics.md`; the build contract is in
-//! `docs/phase-1-rust-kernel-build-brief.md`. Where the two differ, the
-//! brief wins (per the user's Rule 1 in the kickoff prompt).
+//! defined in `docs/specs/engine-semantics.md`; the build contract is in
+//! `docs/specs/phase-1-rust-kernel-build-brief.md`. Where the two differ,
+//! the brief wins (per the user's Rule 1 in the kickoff prompt).
 //!
 //! ## Phase 1 module status
 //!
