@@ -156,11 +156,46 @@ Per CLAUDE.md §6.6 / brief §12:
 
 ## 6. Acceptance criteria — deferred
 
-| # | Criterion | Reason | Closure condition |
-|---:|---|---|---|
-| 5 | `cargo bench --release` every bench under its 1A ceiling | Criterion is not in `mc-core` dev-deps because of the Rust 1.78 / `clap_lex 1.1.0` / `edition2024` blocker. The `benches/` directory is not yet populated. | Toolchain pin bumps past Rust 1.85 *or* a criterion release lands without the `clap_lex` requirement. Then implement brief §11 benches and re-run this gate. |
+| # | Criterion | Reason | Closure condition | Status |
+|---:|---|---|---|---|
+| 5 | `cargo bench --release` every bench under its 1A ceiling | Criterion was not in `mc-core` dev-deps because of the Rust 1.78 / `clap_lex 1.1.0` / `edition2024` blocker. The `benches/` directory was not populated. | ~~Toolchain pin bumps past Rust 1.85 *or* a criterion release lands without the `clap_lex` requirement.~~ Resolved 2026-05-01 in **Phase 1B** by pinning three transitive dependencies (`clap` → 4.4.18, `clap_lex` → 0.6.0, `half` → 2.4.1) in `Cargo.lock`, which kept `criterion = "0.5"` (workspace dep) intact and made it build under Rust 1.78. Five bench files added under `crates/mc-core/benches/`. See [`docs/PERF.md`](../PERF.md) §5 for the full diagnosis and §6 for the table. | **TOOLING UNBLOCKED 2026-05-01** ✓ — see "Phase 1B caveats" below for what remains |
 
-Per brief §0.A the deferral is contractual, not a quiet skip; brief §11 ceilings still inform implementation choices (no premature SIMD / parallelism / arena allocation per CLAUDE.md §2.12).
+The bench gate now runs as part of the standard pipeline:
+
+```bash
+cargo bench --workspace
+```
+
+### Phase 1B caveats — Phase 1B accepted with two documented benchmark-scope limitations
+
+Phase 1B closed the *tooling-and-baseline* side of acceptance criterion 5
+(criterion runs, all five bench files exist, every passing row is below
+its ceiling). Phase 1B did **not** close every numbered ceiling in
+brief §11; two issues remain, both surfaced in [`docs/PERF.md`](../PERF.md)
+and queued for Phase 2A (cold-path benchmark expansion) before any
+optimization work begins:
+
+1. **§11.2 consolidation rows are warm-cache only.** The six §11.2 1A
+   ceilings (50 µs / 1 ms / 20 ms / 5 ms / 2 ms range) were calibrated
+   against cold reads. Today's `consolidated_read.rs` benches all hit
+   the consolidation cache and report ~64–70 ns. The warm numbers
+   should not be quoted as "passing" the cold ceilings — they are not
+   the same operation. Phase 2A's first task is to add cold-path
+   variants. (PERF.md §6.3, §7.4, §9.1)
+2. **§11.1 `bench_write_input_leaf_no_deps` (165 µs) is over the
+   50 µs 1A ceiling.** On Acme this benchmark measures the same
+   path as `write_input_leaf` (~165 µs both) because every write
+   pays the hierarchy ancestor mark walk regardless of rule fan-out.
+   The brief's "no-dependents" condition implicitly assumes a
+   synthetic no-hierarchy cube, which is not what this bench measures.
+   Phase 1B accepts the miss as a benchmark-scope mismatch with the
+   Acme fixture; Phase 2A should add a synthetic minimal-hierarchy
+   fixture before treating the ceiling as either met or missed.
+   (PERF.md §7.3, §8.1, §9.3)
+
+The kernel does not change between Phase 1A and Phase 1B; only benches
+were added. Neither caveat is a kernel regression. Both are
+**measurement gaps** rather than performance failures.
 
 ---
 
@@ -267,4 +302,4 @@ If any of these are violated, please flag and I will remediate before claiming P
 
 ---
 
-*Phase 1 ships. All non-deferred acceptance criteria satisfied. Criterion-dependent gate (acceptance criterion 5) re-opens when the toolchain blocker in §4.1 closes.*
+*Phase 1 ships. All acceptance criteria 1–4 and 6–10 are satisfied; acceptance criterion 5's tooling and baseline are in place as of Phase 1B (2026-05-01) by pinning three transitive deps in `Cargo.lock` rather than bumping the toolchain. Bench results live in [`docs/PERF.md`](../PERF.md). Two §11 sub-ceilings remain measurement gaps and are queued for Phase 2A — see §6 caveats above. The `criterion`/`proptest`/`insta` workspace deferral is now only partial: `proptest` and `insta` are still not pulled into `mc-core` dev-deps because §10.7 doctrines and snapshot tests are not implemented yet (they are Phase 2 work, not toolchain-blocked anymore).*

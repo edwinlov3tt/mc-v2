@@ -59,7 +59,7 @@ If your intuition disagrees with anything above it, **your intuition is wrong**.
 | Workspace | Cargo workspace at repo root, three crates: `mc-core`, `mc-fixtures`, `mc-cli` |
 | Toolchain | Rust 1.78, pinned in `rust-toolchain.toml` |
 | Allowed runtime deps (mc-core) | `smallvec`, `ahash`, `thiserror`, `once_cell` |
-| Phase 1 dev deps (mc-core) | **None.** `criterion`/`proptest`/`insta` are declared at workspace level but **not** pulled into `mc-core` until the toolchain incompatibility resolves (see §1.1 below) |
+| Phase 1 dev deps (mc-core) | `mc-fixtures`, `criterion` (Phase 1B). `proptest`/`insta` are still declared at workspace level only — not pulled into `mc-core` (see §1.1 below) |
 | Banned deps | `serde`, `tokio`, `async-std`, `rayon`, `anyhow`, anything else not in §2.5 of the brief |
 | Demo cube | "Acme_MarketingFinance" — 6 dimensions, 11 measures, 5 rules, 2,520 input cells |
 | Dimension order | `[Scenario, Version, Time, Channel, Market, Measure]` — exactly, always |
@@ -69,40 +69,52 @@ If your intuition disagrees with anything above it, **your intuition is wrong**.
 If you find yourself wanting to add a dependency, change a dimension order, or
 introduce a trait abstraction not in the brief — **stop**.
 
-### 1.1 The criterion/proptest/insta deviation (active)
+### 1.1 The criterion/proptest/insta deviation (criterion CLOSED 2026-05-01; proptest/insta still active)
 
 The brief §2.5 lists `criterion = "0.5"`, `proptest = "1"`, and `insta = "1"`
 as workspace dev-dependencies, and §10/§11 reference proptest tests and
-criterion benchmarks. The current `mc-core/Cargo.toml` has dropped them
+criterion benchmarks. Originally none of them were pulled into `mc-core`
 because:
 
 > On Rust 1.78 (pinned in `rust-toolchain.toml`), criterion's transitive
 > dependency `clap_lex 1.1.0` requires `edition2024`, which was only
 > stabilized in 1.85.
 
-This is a **known, in-flight deviation from the brief, not a license to
-permanently skip those crates.** While the deviation is active:
+**Phase 1B (2026-05-01) closed the criterion side** by pinning three
+transitive deps in `Cargo.lock` (`clap` → 4.4.18, `clap_lex` → 0.6.0,
+`half` → 2.4.1). `criterion = "0.5"` (the brief's pin) is unchanged at
+the workspace level; only `mc-core/Cargo.toml` gained
+`criterion.workspace = true` plus five `[[bench]]` entries. `cargo bench
+--workspace` now runs the brief §11 suite and is part of the gate. See
+[`docs/PERF.md`](docs/PERF.md) for the full diagnosis and benchmark
+table.
 
-- Do **not** re-add `criterion`, `proptest`, or `insta` to `mc-core`'s
-  dev-deps. The workspace declarations in the root `Cargo.toml` stay; only
-  `mc-core` opts out.
-- Do **not** implement the proptest tests in §10.7 (`doctrine_atomicity_of_write`,
-  `doctrine_causality`, `t_acme_trace_root_value_equals_read_value`'s
-  proptest variant) until proptest comes back. Leave them as `// TODO(proptest):`
-  stubs with a comment pointing at the brief section.
-- Do **not** create the `benches/` directory or implement §11 benchmarks
-  until criterion comes back. Leave a `BENCHES_DEFERRED.md` note in
-  `mc-core/` pointing at the brief and the toolchain blocker.
-- Determinism per §6.1 step 5 is still verified via 10 consecutive
-  `cargo test --workspace` runs (proptest is not the only path to
-  determinism testing).
-- The `cargo bench` gate in §6.4 is **temporarily inert** until criterion
-  comes back. Phase 1 still ships when correctness gates pass; benchmark
-  gates resume once the toolchain unblocks.
+`proptest` and `insta` are **still not** in `mc-core` dev-deps. That
+side of the deviation is no longer toolchain-blocked — Phase 1B
+demonstrated that pre-edition2024 transitive pins make the toolchain
+viable. They are deferred for a separate reason now: the §10.7
+proptest doctrines and any insta-driven snapshot tests are themselves
+Phase 2 work, and pulling the crates in without using them would only
+slow `cargo build`. While that side of the deviation is active:
 
-If you encounter the §10.7 proptest stubs or the missing `benches/`
-directory and your instinct is "I'll just add `proptest` real quick" — **no**.
-The block is real. Surface it in chat instead.
+- Do **not** add `proptest` or `insta` to `mc-core` dev-deps unless
+  you're also implementing the test that needs them.
+- Do **not** implement the proptest tests in §10.7
+  (`doctrine_atomicity_of_write`, `doctrine_causality`,
+  `t_acme_trace_root_value_equals_read_value`'s proptest variant)
+  without a Phase-2 prompt. Leave them as `// TODO(proptest):` stubs
+  with a comment pointing at the brief section.
+- The criterion-side rules above are **closed** — the `benches/`
+  directory exists, `[[bench]]` entries are in
+  `crates/mc-core/Cargo.toml`, and `cargo bench` is contractual via
+  §6.1 step 4 + the new ceiling check in §6.4.
+
+If you encounter the §10.7 proptest stubs and your instinct is "I'll
+just add `proptest` real quick" — that work belongs to Phase 2. Surface
+it in chat or open an ADR; don't quietly add it.
+
+When pinning needs revisiting (e.g. on Rust 1.85+ bump), see
+[`docs/PERF.md`](docs/PERF.md) §9.7 for the housekeeping checklist.
 
 ---
 
@@ -582,20 +594,39 @@ it. If no, you've added something not in the contract — stop and ask.
 
 ### 6.4 The benchmark gate (only when claiming Phase 1 done)
 
-> **Currently deferred** — see §1.1. Criterion is not pulled into `mc-core`
-> on Rust 1.78 due to the `clap_lex 1.1.0`/`edition2024` blocker. The
-> `benches/` directory is not yet populated. Until that resolves, this
-> gate is skipped and Phase 1 ships on correctness gates only.
-
-When criterion comes back:
+> **Active as of Phase 1B (2026-05-01).** Criterion 0.5 builds on
+> Rust 1.78 with three transitive pins in `Cargo.lock` (see §1.1).
+> The five bench files live in `crates/mc-core/benches/` and are wired
+> via `[[bench]]` entries in `crates/mc-core/Cargo.toml`.
 
 ```bash
-cargo bench --release
+cargo bench --workspace
 ```
 
 Compare every benchmark result against its 1A ceiling in §11 of the brief.
-Any benchmark above its 1A ceiling is a ship-blocker. (1B targets are not
-ship-blockers but should be logged in `PERF.md`.)
+Any benchmark above its 1A ceiling is a ship-blocker, **with two
+documented Phase 1B caveats** that only Phase 2A can resolve. Do **not**
+quote those caveats as "the ceilings passed":
+
+- **Brief §11.2 consolidation rows** (cold-read ceilings) are not
+  comparable to today's `consolidated_read.rs` numbers. The benches
+  measure warm-cache hits (~67 ns); the brief's 50 µs / 1 ms / 20 ms /
+  5 ms / 2 ms ceilings were calibrated against cold reads. See
+  [`docs/PERF.md`](docs/PERF.md) §6.3 banner + §7.4. Phase 2A's first
+  task is to add cold-path variants (PERF.md §9.1).
+- **`write_input_leaf_no_deps`** (1A < 50 µs) measures ~165 µs on Acme,
+  which equals `write_input_leaf` because every write pays the
+  hierarchy ancestor mark walk regardless of rule fan-out. The brief's
+  "no-deps" condition implicitly assumes a synthetic no-hierarchy cube
+  that does not exist yet. Phase 1B accepts this as a benchmark-scope
+  mismatch; Phase 2A should add the synthetic fixture before treating
+  the ceiling as either met or missed (PERF.md §7.3, §9.3).
+
+Don't loosen ceilings to "pass" them. Don't optimize the kernel against
+warm-cache numbers. Treat both caveats as **measurement gaps**, not
+performance failures.
+
+1B targets are not ship-blockers but should be logged in `PERF.md`.
 
 ### 6.5 The CLI demo gate
 
@@ -615,7 +646,7 @@ Before the final "Phase 1 done" claim, walk every one of the 10 items in
 - [ ] (2) `cargo clippy --all-targets --workspace -- -D warnings` exits 0
 - [ ] (3) `cargo fmt --check --all` exits 0
 - [ ] (4) `cargo test --workspace` 100% pass (excluding §10.7 proptest stubs deferred per §1.1)
-- [ ] (5) `cargo bench --release` every bench under its 1A ceiling — **DEFERRED per §1.1** until criterion returns
+- [ ] (5) `cargo bench --workspace` every bench under its 1A ceiling — Phase 1B (2026-05-01) shipped tooling + baseline; 8/14 §11 ceilings directly comparable and pass; 6 §11.2 consolidation ceilings are warm-only (cold-path benches deferred to Phase 2A); 1 §11.1 row over ceiling as documented benchmark-scope mismatch. See [`docs/PERF.md`](docs/PERF.md) §6.3, §7.3, §7.4.
 - [ ] (6) `target/release/mc demo` matches §4.6 output
 - [ ] (7) `docs/specs/engine-semantics.md` and `docs/specs/phase-1-rust-kernel-build-brief.md` unchanged
 - [ ] (8) No `mc-core` reference to any §1 out-of-scope item

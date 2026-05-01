@@ -8,7 +8,8 @@ For the **operating manual** (rules of engagement, hierarchy of authority, gates
 
 1. [`HANDOFF.md`](./HANDOFF.md) — 5-minute orientation. Who, what, where the active work is.
 2. [`CURRENT_STATE.md`](./CURRENT_STATE.md) — what is live right now (commit, gates, deferrals).
-3. [`specs/`](./specs/) — the contract documents.
+3. [`roadmap/MASTER_PHASE_PLAN.md`](./roadmap/MASTER_PHASE_PLAN.md) — the master roadmap (Phase 1 → Phase 7). The single source of truth for what phase is next; do not invent phase names without updating it.
+4. [`specs/`](./specs/) — the contract documents.
 
 ## Layout
 
@@ -17,6 +18,8 @@ docs/
 ├── README.md                          (this file)
 ├── HANDOFF.md                         5-min orientation + pointer to active handoff
 ├── CURRENT_STATE.md                   build / test / gate / deferral snapshot
+├── PERF.md                            performance baseline (Phase 1B + Phase 2A)
+├── roadmap/                           master phase plan (kernel → productization)
 ├── product/                           product framing (PRDs, inventories) — historical
 ├── specs/                             engine semantics + phase briefs (the contracts)
 ├── decisions/                         architecture decision records (ADRs)
@@ -35,6 +38,7 @@ For raw reference material (PDFs, books, vendor docs), see [`../research/`](../r
 | Folder | What lives here | What does NOT |
 |---|---|---|
 | [`specs/`](./specs/) | The contract: engine semantics, phase briefs. **Locked during a phase.** | Decisions, reports, prose. |
+| [`roadmap/`](./roadmap/) | The master phase plan and any forward-looking sequencing docs. **Single source of truth for "what phase next."** | Detailed implementation plans (those go in handoffs); decisions (those go in `decisions/`). |
 | [`product/`](./product/) | PRDs and transfer inventories from the pre-engine phase. Historical. | Anything currently load-bearing. The brief consumed these and is the authority now. |
 | [`decisions/`](./decisions/) | ADRs — one per decision, append-only, supersession-aware. | Implementation notes (those go in code) or routine choices that follow the brief verbatim. |
 | [`reports/`](./reports/) | Phase completion reports + performance reports (`PERF.md`). One per phase. | Decisions (those are ADRs); ongoing work logs. |

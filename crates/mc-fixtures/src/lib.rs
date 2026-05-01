@@ -1,6 +1,8 @@
-//! `mc-fixtures` — the Acme demo cube fixture.
+//! `mc-fixtures` — cube fixtures for tests and benches.
 //!
-//! Per phase-1-rust-kernel-build-brief.md §4. Builds:
+//! ## Acme demo cube (brief §4)
+//!
+//! `build_acme_cube()` builds:
 //!
 //! - 6 dimensions: Scenario, Version, Time, Channel, Market, Measure.
 //! - 3 default hierarchies: Time (Month → Quarter → Year), Channel
@@ -16,6 +18,26 @@
 //! Plus `write_canonical_inputs` which writes 2,520 input cells (1
 //! scenario × 1 version × 12 months × 5 channels × 7 markets × 6 input
 //! measures) per the formulas in brief §4.5.
+//!
+//! ## Phase 2A synthetic fixtures (cold-path benchmarks)
+//!
+//! Phase 2A adds two synthetic builders to isolate the hierarchy
+//! ancestor-walk cost (PERF.md §7.3, §8.1, §9.3) and the brief §11.1
+//! `bench_write_input_leaf_no_deps` ceiling that Acme's hierarchy
+//! fan-out makes unmeasurable:
+//!
+//! - `build_minimal_cube()` — 2-dim cube (Time + Measure) with **no**
+//!   hierarchies and **no** derived measures. A single Spend write at
+//!   the lone leaf coord pays only the per-write fixed costs (permission,
+//!   type, lock, NaN, version, store write, revision bump) and zero
+//!   ancestor-mark / rev-edge-walk cost.
+//! - `build_graduated_hierarchy_cube(depth)` — 2-dim cube where the Time
+//!   dim carries a `depth`-deep linear hierarchy (depth ∈ {0, 1, 2, 3}).
+//!   Marginal write cost between adjacent depths isolates the hierarchy
+//!   ancestor mark contribution.
+//!
+//! These fixtures are **only** used by Phase 2A benches. They are not on
+//! the Phase 1 critical path and add no behavior to `mc-core`.
 
 #![deny(rust_2018_idioms)]
 
@@ -1078,6 +1100,244 @@ impl CubeBuilderHelpers for CubeBuilder {
     }
 }
 
+// ===========================================================================
+// Phase 2A synthetic fixtures
+// ===========================================================================
+
+/// Identifiers for the cube returned by [`build_minimal_cube`]. Threaded
+/// through to benches so they can build a `CellCoordinate` without
+/// re-resolving by name. Phase 2A only.
+#[derive(Debug, Clone, Copy)]
+pub struct MinimalRefs {
+    pub root_principal: PrincipalId,
+    pub cube_id: CubeId,
+    pub time_dim: DimensionId,
+    /// The single non-Measure leaf element. The Time dimension has no
+    /// hierarchy edges (synth flat default), so this element is treated
+    /// as a leaf by `Cube::is_consolidated_coord`.
+    pub time_only: ElementId,
+    pub measure_dim: DimensionId,
+    /// The single Input measure. There are no Derived measures, so a
+    /// write here triggers no rev-edge walk and no derived-measure
+    /// dirty propagation.
+    pub spend: ElementId,
+}
+
+/// Build a 2-dim "Time × Measure" cube with **no hierarchies** and
+/// **no derived measures**. A Spend write at the lone leaf coord
+/// produces zero hierarchy ancestor marks (per `compute_dirty_ancestors`
+/// in `cube.rs`), zero rev-edge marks (no rules → empty dependency
+/// graph → empty closure), and zero added derived-measure invalidations.
+/// The dirty-set delta after one write is therefore exactly **0** —
+/// the freshly-written coord is by definition clean (`mark_closure`
+/// excludes `root`, and `compute_dirty_ancestors` skips the
+/// `(leaf, written_measure)` cell).
+///
+/// Used by the `synthetic_no_deps` bench to evaluate the brief §11.1
+/// `bench_write_input_leaf_no_deps < 50 µs` ceiling against the
+/// brief's original mental model (a synthetic no-hierarchy cube),
+/// closing the Phase 1B benchmark-scope-mismatch caveat (PERF.md §7.3).
+///
+/// Phase 2A only; not on the Phase 1 critical path.
+pub fn build_minimal_cube() -> Result<(Cube, MinimalRefs), EngineError> {
+    let g = IdGenerator::new();
+    let cube_id = g.cube();
+    let root_principal = g.principal();
+
+    let time_dim_id = g.dimension();
+    let measure_dim_id = g.dimension();
+    let time_only = g.element();
+    let spend = g.element();
+
+    // Time dim: 1 leaf, no hierarchy. DimensionBuilder synthesizes a
+    // flat default hierarchy with empty edges, so `is_consolidated_coord`
+    // treats `time_only` as a leaf and `compute_dirty_ancestors` walks
+    // zero ancestors for this dim.
+    let time_dim = Dimension::builder(time_dim_id, "Time", DimensionKind::Standard)
+        .add_element(Element::leaf(time_only, "TimeOnly", time_dim_id))?
+        .build()?;
+
+    // Measure dim: 1 Input, no Derived. compute_dirty_ancestors's
+    // measures_to_mark vec contains only the written measure, and the
+    // pure-leaf branch skips `(leaf, written_measure)` — net zero
+    // ancestor coords marked.
+    let measure_dim = Dimension::builder(measure_dim_id, "Measure", DimensionKind::Measure)
+        .add_element(Element::measure(
+            spend,
+            "Spend",
+            measure_dim_id,
+            CellDataType::F64,
+            MeasureRole::Input,
+            AggregationRule::Sum,
+        ))?
+        .build()?;
+
+    let cube = Cube::builder(cube_id, "Minimal_NoHierarchy_NoDerived")
+        .add_dimension(time_dim)
+        .add_dimension(measure_dim)
+        .measure_dimension("Measure")
+        .root_principal(root_principal)
+        .build()?;
+
+    Ok((
+        cube,
+        MinimalRefs {
+            root_principal,
+            cube_id,
+            time_dim: time_dim_id,
+            time_only,
+            measure_dim: measure_dim_id,
+            spend,
+        },
+    ))
+}
+
+/// Build a coord against the [`build_minimal_cube`] dim order
+/// `[Time, Measure]`. Public so benches can construct coords without
+/// re-deriving slot positions.
+pub fn minimal_coord(refs: &MinimalRefs) -> CellCoordinate {
+    CellCoordinate::from_parts(refs.cube_id, [refs.time_only, refs.spend])
+}
+
+/// Identifiers for the cube returned by
+/// [`build_graduated_hierarchy_cube`]. The `time_leaf` is the writable
+/// leaf; `time_consolidated` is the `depth`-element ancestor chain
+/// from the immediate parent (index 0) up to the root (index
+/// `depth - 1`). For `depth = 0` the chain is empty and only
+/// `time_leaf` exists.
+#[derive(Debug, Clone)]
+pub struct GraduatedRefs {
+    pub root_principal: PrincipalId,
+    pub cube_id: CubeId,
+    pub time_dim: DimensionId,
+    /// Leaf element (the only writable Time element).
+    pub time_leaf: ElementId,
+    /// Ancestor chain from immediate parent up to the root. Length is
+    /// equal to `depth`; empty when `depth == 0`.
+    pub time_consolidated: Vec<ElementId>,
+    pub measure_dim: DimensionId,
+    pub spend: ElementId,
+    pub depth: u8,
+}
+
+/// Build a 2-dim "Time × Measure" cube where the Time dim carries a
+/// linear `depth`-element ancestor chain above its single leaf. The
+/// Measure dim has exactly one Input measure (Spend, no derived), so a
+/// Spend write at the leaf isolates the **hierarchy ancestor mark walk**
+/// from the rev-edge walk and from derived-measure cross-product
+/// invalidation. Phase 2A bench `hierarchy_mark` reads marginal cost
+/// per ancestor by differencing adjacent depths.
+///
+/// `depth` must be ≤ 3 in Phase 2A. The chain shape:
+///
+/// - `depth = 0`: 1 element (leaf), no hierarchy → 0 ancestors.
+/// - `depth = 1`: 2 elements (leaf, parent), `parent → leaf` → 1 ancestor.
+/// - `depth = 2`: 3 elements, `gp → parent → leaf` → 2 ancestors.
+/// - `depth = 3`: 4 elements, `ggp → gp → parent → leaf` → 3 ancestors.
+///
+/// Per `cube.rs::compute_dirty_ancestors`, a write at `(leaf, spend)`
+/// produces a dirty-set delta equal to `depth` (one consolidated coord
+/// per ancestor element × the single `spend` measure).
+pub fn build_graduated_hierarchy_cube(depth: u8) -> Result<(Cube, GraduatedRefs), EngineError> {
+    if depth > 3 {
+        // Phase 2A only exercises depth ∈ {0,1,2,3}; reject anything
+        // bigger here so a future caller doesn't silently get an
+        // unbounded chain.
+        return Err(EngineError::Internal(
+            "build_graduated_hierarchy_cube: depth must be 0..=3",
+        ));
+    }
+
+    let g = IdGenerator::new();
+    let cube_id = g.cube();
+    let root_principal = g.principal();
+
+    let time_dim_id = g.dimension();
+    let measure_dim_id = g.dimension();
+    let time_leaf = g.element();
+    let measure_id_spend = g.element();
+
+    // Allocate `depth` consolidated ancestor IDs.
+    let mut time_consolidated: Vec<ElementId> = Vec::with_capacity(depth as usize);
+    for _ in 0..depth {
+        time_consolidated.push(g.element());
+    }
+
+    // Build the Time dim. When depth == 0, no Hierarchy is added — the
+    // builder synthesizes a flat default with empty edges. When depth
+    // > 0, build a linear chain: top → … → parent → leaf.
+    let mut time_builder = Dimension::builder(time_dim_id, "Time", DimensionKind::Standard)
+        .add_element(Element::leaf(time_leaf, "Leaf", time_dim_id))?;
+    for (i, &id) in time_consolidated.iter().enumerate() {
+        let name = format!("Anc{i}");
+        time_builder = time_builder.add_element(Element::leaf(id, &name, time_dim_id))?;
+    }
+
+    let time_dim = if depth == 0 {
+        time_builder.build()?
+    } else {
+        // Build the chain: top (depth-1) → next (depth-2) → … → parent (0) → leaf.
+        // time_consolidated[0] is the immediate parent of the leaf.
+        let h_id = g.hierarchy();
+        let mut h_builder = Hierarchy::builder(h_id, "GraduatedChain", time_dim_id);
+        // Edge from each ancestor to the next-lower ancestor (or to the leaf at index 0).
+        for i in 0..(depth as usize) {
+            let parent = time_consolidated[i];
+            let child = if i == 0 {
+                time_leaf
+            } else {
+                time_consolidated[i - 1]
+            };
+            h_builder = h_builder.add_edge(parent, child, 1.0);
+        }
+        let hier = h_builder.build()?;
+        time_builder
+            .add_hierarchy(hier)?
+            .default_hierarchy("GraduatedChain")
+            .build()?
+    };
+
+    // Measure dim: Spend Input only, no Derived measures.
+    let measure_dim = Dimension::builder(measure_dim_id, "Measure", DimensionKind::Measure)
+        .add_element(Element::measure(
+            measure_id_spend,
+            "Spend",
+            measure_dim_id,
+            CellDataType::F64,
+            MeasureRole::Input,
+            AggregationRule::Sum,
+        ))?
+        .build()?;
+
+    let cube_name = format!("Graduated_Depth{depth}_NoDerived");
+    let cube = Cube::builder(cube_id, cube_name)
+        .add_dimension(time_dim)
+        .add_dimension(measure_dim)
+        .measure_dimension("Measure")
+        .root_principal(root_principal)
+        .build()?;
+
+    Ok((
+        cube,
+        GraduatedRefs {
+            root_principal,
+            cube_id,
+            time_dim: time_dim_id,
+            time_leaf,
+            time_consolidated,
+            measure_dim: measure_dim_id,
+            spend: measure_id_spend,
+            depth,
+        },
+    ))
+}
+
+/// Build a coord against the [`build_graduated_hierarchy_cube`] dim
+/// order `[Time, Measure]` for the writable leaf.
+pub fn graduated_leaf_coord(refs: &GraduatedRefs) -> CellCoordinate {
+    CellCoordinate::from_parts(refs.cube_id, [refs.time_leaf, refs.spend])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1126,5 +1386,154 @@ mod tests {
         assert!((inp.customers() - 46.0 / 3.0).abs() < 1e-9);
         assert!((inp.revenue() - 9_200.0 / 3.0).abs() < 1e-9);
         assert!((inp.gross_profit() - 6_440.0 / 3.0).abs() < 1e-9);
+    }
+
+    // ----- Phase 2A synthetic fixtures -----
+
+    #[test]
+    fn build_minimal_cube_has_no_hierarchies_and_no_derived() {
+        let (cube, refs) = build_minimal_cube().expect("build_minimal_cube");
+        assert_eq!(cube.dimensions().len(), 2);
+        // No non-Measure dim has any hierarchy edges (the synth flat
+        // default is empty).
+        for dim in cube.dimensions() {
+            if dim.kind != DimensionKind::Measure {
+                assert!(
+                    dim.default_hierarchy().edges.is_empty(),
+                    "minimal cube must have no hierarchy edges on dim {}",
+                    dim.name
+                );
+            }
+        }
+        // No Derived measures.
+        let derived_count = cube
+            .measure_dimension()
+            .elements
+            .iter()
+            .filter(|e| {
+                e.measure_meta()
+                    .map(|m| m.role == MeasureRole::Derived)
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(
+            derived_count, 0,
+            "minimal cube must have zero Derived measures"
+        );
+        // Sanity: refs match cube state.
+        assert_eq!(refs.cube_id, cube.id);
+        assert!(cube.dimension(refs.time_dim).is_some());
+        assert!(cube.dimension(refs.measure_dim).is_some());
+    }
+
+    #[test]
+    fn build_minimal_cube_single_write_produces_zero_dirty_delta() {
+        let (mut cube, refs) = build_minimal_cube().expect("build_minimal_cube");
+        let coord = minimal_coord(&refs);
+        let dirty_before = cube.dirty().len();
+        let result = cube
+            .write(WritebackRequest {
+                coord: coord.clone(),
+                new_value: ScalarValue::F64(42.0),
+                principal: refs.root_principal,
+                intent: WriteIntent::Set,
+                expected_revision: None,
+                now_unix_seconds: 0,
+            })
+            .expect("write must succeed");
+        let dirty_after = cube.dirty().len();
+        // No hierarchy → 0 ancestor marks. No rules → empty rev-edge
+        // closure. No other Derived measures → no cross-measure
+        // invalidation. The freshly-written coord itself is excluded
+        // from `mark_closure` (cube.rs:42 dirty.rs) and is the
+        // `is_pure_leaf && m == measure_id` skip-case in
+        // `compute_dirty_ancestors`. Net delta = 0.
+        assert_eq!(
+            dirty_after - dirty_before,
+            0,
+            "minimal cube must mark zero coords dirty after one write \
+             (no hierarchy ancestors, no rev-edges, no derived measures)"
+        );
+        assert!(
+            result.invalidated.is_empty(),
+            "WritebackResult.invalidated must be empty for the minimal cube"
+        );
+        // And the value round-trips.
+        let v = cube.read(&coord, refs.root_principal).expect("read");
+        assert_eq!(v.value.as_f64(), Some(42.0));
+    }
+
+    #[test]
+    fn build_graduated_hierarchy_cube_zero_depth_matches_minimal_invariants() {
+        let (cube, refs) = build_graduated_hierarchy_cube(0).expect("graduated 0");
+        assert_eq!(refs.depth, 0);
+        assert!(refs.time_consolidated.is_empty());
+        let time_dim = cube.dimension(refs.time_dim).expect("time dim");
+        assert!(
+            time_dim.default_hierarchy().edges.is_empty(),
+            "depth=0 must have no hierarchy edges"
+        );
+        assert_eq!(time_dim.elements.len(), 1);
+    }
+
+    #[test]
+    fn build_graduated_hierarchy_cube_depth_three_chain_is_linear() {
+        let (cube, refs) = build_graduated_hierarchy_cube(3).expect("graduated 3");
+        assert_eq!(refs.depth, 3);
+        assert_eq!(refs.time_consolidated.len(), 3);
+        let time_dim = cube.dimension(refs.time_dim).expect("time dim");
+        let h = time_dim.default_hierarchy();
+        // 3 edges: each ancestor → child link.
+        assert_eq!(h.edges.len(), 3);
+        // Walking ancestors of the leaf must surface exactly the 3
+        // consolidated elements in chain order.
+        let ancestors: Vec<ElementId> = h
+            .ancestors(refs.time_leaf)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(
+            ancestors.len(),
+            3,
+            "depth=3 leaf must have exactly 3 ancestors"
+        );
+        // Ancestors must match the chain we built (immediate parent at
+        // index 0, top at index 2).
+        for (i, &expected) in refs.time_consolidated.iter().enumerate() {
+            assert!(
+                ancestors.contains(&expected),
+                "ancestor index {i} ({expected:?}) missing from h.ancestors(leaf): {ancestors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_graduated_hierarchy_cube_depth_one_write_dirty_delta_matches_depth() {
+        let (mut cube, refs) = build_graduated_hierarchy_cube(1).expect("graduated 1");
+        let coord = graduated_leaf_coord(&refs);
+        let dirty_before = cube.dirty().len();
+        cube.write(WritebackRequest {
+            coord,
+            new_value: ScalarValue::F64(7.0),
+            principal: refs.root_principal,
+            intent: WriteIntent::Set,
+            expected_revision: None,
+            now_unix_seconds: 0,
+        })
+        .expect("write");
+        let dirty_after = cube.dirty().len();
+        // 1 ancestor element × 1 (Spend) measure = 1 consolidated coord
+        // marked dirty. No derived measures, no rev-edges.
+        assert_eq!(
+            dirty_after - dirty_before,
+            1,
+            "depth=1 write must mark exactly 1 ancestor coord dirty"
+        );
+    }
+
+    #[test]
+    fn build_graduated_hierarchy_cube_rejects_excessive_depth() {
+        let err = build_graduated_hierarchy_cube(4).expect_err("depth=4 must reject");
+        assert!(matches!(err, EngineError::Internal(_)));
     }
 }

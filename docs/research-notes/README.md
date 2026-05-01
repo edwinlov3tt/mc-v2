@@ -15,18 +15,20 @@ If the finding is one phase's report (we shipped X with these gates), write it i
 
 ## Status
 
-Empty as of Phase 1A ship.
+Six Phase 1A notes shipped 2026-05-01. Phase 1B is expected to add two more (criterion compatibility, hierarchy-clone overhead).
 
-## Candidate topics
+## Active notes
 
-The Phase 1A code embodies several non-obvious choices whose rationale is currently distributed across the brief, the report, and CLAUDE.md. Promoting any of these into a self-contained research note is appropriate when a future phase needs to lean on the rationale:
+Phase 1A rationale that was previously scattered across the brief, the completion report, CLAUDE.md, and source comments — promoted here as self-contained notes for future phases:
 
-- **Lazy dependency graph.** Why edges materialize on first read rather than at construction. Sources: [`../specs/phase-1-rust-kernel-build-brief.md`](../specs/phase-1-rust-kernel-build-brief.md) §3.12, [`../../crates/mc-core/src/dependency.rs`](../../crates/mc-core/src/dependency.rs), [`../../CLAUDE.md`](../../CLAUDE.md) §2.1.
-- **Dirty propagation as a per-write delta.** Why §10.1 dirty-set assertions are framed as deltas, not absolutes. Source: [`../reports/phase-1-completion-report.md`](../reports/phase-1-completion-report.md) §4.2.
-- **Null vs zero vs NaN.** The spec §7 rules, where they're enforced, what bugs they prevent. Sources: [`../specs/phase-1-rust-kernel-build-brief.md`](../specs/phase-1-rust-kernel-build-brief.md) §7, [`../../CLAUDE.md`](../../CLAUDE.md) §2.5, [`../../crates/mc-core/src/value.rs`](../../crates/mc-core/src/value.rs), [`../../crates/mc-core/src/rule.rs`](../../crates/mc-core/src/rule.rs).
-- **Weighted-average consolidation.** Why CPC / CVR / Close_Rate / AOV / COGS_Rate don't simple-sum. Sources: [`../specs/phase-1-rust-kernel-build-brief.md`](../specs/phase-1-rust-kernel-build-brief.md) §3.17, [`../../CLAUDE.md`](../../CLAUDE.md) §2.10, [`../../crates/mc-core/src/consolidation.rs`](../../crates/mc-core/src/consolidation.rs).
-- **Two caching layers in `read`.** Derived-leaf cache + consolidated cache, the dirty bit as cache invalidator, the trace-bypass-cache rule. Source: [`../../crates/mc-core/src/cube.rs`](../../crates/mc-core/src/cube.rs) `read_derived_leaf` and `read_consolidated`.
-- **Snapshot as deep-clone.** Why Phase 1 snapshots are clones rather than COW. Sources: [`../specs/phase-1-rust-kernel-build-brief.md`](../specs/phase-1-rust-kernel-build-brief.md) §3.16, [`../../CLAUDE.md`](../../CLAUDE.md) §2.18, [`../../crates/mc-core/src/snapshot.rs`](../../crates/mc-core/src/snapshot.rs).
+- [`lazy-dependency-graph.md`](./lazy-dependency-graph.md) — why edges materialize on first read rather than at construction.
+- [`dirty-propagation-as-per-write-delta.md`](./dirty-propagation-as-per-write-delta.md) — why §10.1 dirty-set assertions are framed as deltas, not absolutes.
+- [`null-vs-zero-vs-nan.md`](./null-vs-zero-vs-nan.md) — the §7 rules, where they're enforced, what bugs they prevent.
+- [`weighted-average-consolidation.md`](./weighted-average-consolidation.md) — why CPC / CVR / Close_Rate / AOV / COGS_Rate don't simple-sum, and the funnel-position weight chain.
+- [`two-caching-layers-in-read.md`](./two-caching-layers-in-read.md) — derived-leaf cache + consolidated cache, dirty bit as invalidator, trace-bypass rule.
+- [`snapshot-as-deep-clone.md`](./snapshot-as-deep-clone.md) — why Phase 1 snapshots are full clones rather than COW.
+
+## Expected next notes
 
 Phase 1B benchmarks are likely to produce two more research notes:
 

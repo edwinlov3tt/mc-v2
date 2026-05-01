@@ -15,17 +15,52 @@ once_cell.workspace = true
 
 [dev-dependencies]
 mc-fixtures = { path = "../mc-fixtures" }
+criterion.workspace = true
 
-# `criterion`, `proptest`, and `insta` are declared at the workspace level
-# (workspace.dependencies in the root Cargo.toml) but are NOT pulled into
-# mc-core yet — none of this deliverable's tests use them, and on Rust
-# 1.78 a transitive dep of criterion (`clap_lex 1.1.0`) now requires
-# edition 2024 which only stabilizes in 1.85. They get added back here
-# alongside the bench files (build-brief §15 step 18) and proptest tests
-# (build-brief §10.7 doctrine_atomicity_of_write etc.) — at which point
-# either the toolchain bumps or those deps are version-pinned to older
-# revisions that work on 1.78.
+# `proptest` and `insta` are still declared at the workspace level
+# (workspace.dependencies in the root Cargo.toml) but are NOT pulled
+# into mc-core. None of this deliverable's tests use them. They get
+# added back here when the §10.7 proptest doctrines and any
+# snapshot-style tests are written.
 #
-# `[[bench]]` entries land alongside the bench files themselves (build-brief
-# §15 step 18). Declaring them without backing files would make `cargo
-# bench` fail on missing targets, so they're absent in this deliverable.
+# `criterion` is back in Phase 1B (handoff dated 2026-05-01). On Rust
+# 1.78 it builds cleanly with `default-features = false` (set at the
+# workspace level), sidestepping the `clap_lex` / `edition2024`
+# transitive that broke an earlier attempt.
+
+[[bench]]
+name = "leaf_read_write"
+harness = false
+
+[[bench]]
+name = "derived_read"
+harness = false
+
+[[bench]]
+name = "consolidated_read"
+harness = false
+
+[[bench]]
+name = "dirty_propagation"
+harness = false
+
+[[bench]]
+name = "demo_path"
+harness = false
+
+# Phase 2A bench files (cold-path expansion). See
+# `docs/handoffs/phase-2a-handoff.md` and `docs/PERF.md` §6.7–§6.10.
+# These extend the Phase 1B suite without modifying any kernel
+# behavior; the synthetic fixtures live in mc-fixtures.
+
+[[bench]]
+name = "synthetic_no_deps"
+harness = false
+
+[[bench]]
+name = "snapshot_clone"
+harness = false
+
+[[bench]]
+name = "hierarchy_mark"
+harness = false
