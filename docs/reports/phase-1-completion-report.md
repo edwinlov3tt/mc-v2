@@ -1,8 +1,8 @@
 # Phase 1 Completion Report
 
 **Project:** MarketingCubes V2 — Rust kernel
-**Brief:** [phase-1-rust-kernel-build-brief.md](../phase-1-rust-kernel-build-brief.md)
-**Semantics spec:** [engine-semantics.md](../engine-semantics.md)
+**Brief:** [phase-1-rust-kernel-build-brief.md](../specs/phase-1-rust-kernel-build-brief.md)
+**Semantics spec:** [engine-semantics.md](../specs/engine-semantics.md)
 **Operating manual:** [`CLAUDE.md`](../../CLAUDE.md)
 **Initial commit:** `4aa674a` — *Initial commit: Phase 1 Rust kernel for MarketingCubes V2*
 **Toolchain:** Rust 1.78 (pinned in [`rust-toolchain.toml`](../../rust-toolchain.toml))
@@ -223,9 +223,9 @@ Per brief §0.A the deferral is contractual, not a quiet skip; brief §11 ceilin
 
 ### Documentation
 
-- [`docs/engine-semantics.md`](../engine-semantics.md) — semantics spec (unchanged)
-- [`docs/phase-1-rust-kernel-build-brief.md`](../phase-1-rust-kernel-build-brief.md) — build brief (unchanged)
-- [`docs/planning/transfer-inventory.md`](../planning/transfer-inventory.md) — transfer inventory (unchanged)
+- [`docs/engine-semantics.md`](../specs/engine-semantics.md) — semantics spec (unchanged)
+- [`docs/phase-1-rust-kernel-build-brief.md`](../specs/phase-1-rust-kernel-build-brief.md) — build brief (unchanged)
+- [`docs/product/transfer-inventory.md`](../product/transfer-inventory.md) — transfer inventory (unchanged)
 - [`docs/reports/phase-1-completion-report.md`](./phase-1-completion-report.md) — *this file*
 
 ---

@@ -2,9 +2,11 @@
 
 Reference PDFs, books, and vendor documents that inform the engine's design but are not themselves contracts. **Binary files only.**
 
-For markdown research artifacts (LLM responses, design notes, etc.) see [`../docs/external-research/`](../docs/external-research/).
+For markdown research artifacts (verbatim LLM dialogues), see [`../docs/external-conversations/`](../docs/external-conversations/).
+For distilled lessons, see [`../docs/research-notes/`](../docs/research-notes/).
+For decisions, see [`../docs/decisions/`](../docs/decisions/).
 
-For the Phase 1 contracts see [`../docs/engine-semantics.md`](../docs/engine-semantics.md) and [`../docs/phase-1-rust-kernel-build-brief.md`](../docs/phase-1-rust-kernel-build-brief.md).
+For the Phase 1 contracts see [`../docs/specs/engine-semantics.md`](../docs/specs/engine-semantics.md) and [`../docs/specs/phase-1-rust-kernel-build-brief.md`](../docs/specs/phase-1-rust-kernel-build-brief.md).
 
 ## Structure
 
@@ -16,10 +18,10 @@ For the Phase 1 contracts see [`../docs/engine-semantics.md`](../docs/engine-sem
 
 - Drop the file in the right subfolder. Rename to a stable, no-spaces, no-special-character filename if needed.
 - Add a one-line entry to the subfolder's `README.md` describing what the file is and why it's here.
-- If the reference triggered a design decision, write it up in [`../docs/concepts/`](../docs/concepts/) — don't bury insights in research/ READMEs.
+- If the reference triggered a takeaway worth preserving, write a research note at [`../docs/research-notes/`](../docs/research-notes/). If it triggered a non-trivial scope or design decision, write an ADR at [`../docs/decisions/`](../docs/decisions/). **Don't bury insights in research/ READMEs.**
 
 ## What does NOT belong here
 
-- Markdown research → [`../docs/external-research/`](../docs/external-research/).
-- Project planning artifacts (PRDs, transfer inventories) → [`../docs/planning/`](../docs/planning/).
+- Markdown research artifacts → [`../docs/external-conversations/`](../docs/external-conversations/) (transcripts) or [`../docs/research-notes/`](../docs/research-notes/) (distilled).
+- Product framing (PRDs, transfer inventories) → [`../docs/product/`](../docs/product/).
 - Code → [`../crates/`](../crates/).

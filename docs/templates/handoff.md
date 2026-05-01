@@ -58,7 +58,7 @@ Files you should **NOT** touch unless [explicit condition the prompt allows]:
 - Anything in `crates/mc-core/src/` — production behavior is locked.
 - `crates/mc-core/tests/*.rs` — tests are contracts; don't loosen.
 - [List others.]
-- The locked input contracts: [`../engine-semantics.md`](../engine-semantics.md), [`../phase-1-rust-kernel-build-brief.md`](../phase-1-rust-kernel-build-brief.md).
+- The locked input contracts: [`../engine-semantics.md`](../specs/engine-semantics.md), [`../phase-1-rust-kernel-build-brief.md`](../specs/phase-1-rust-kernel-build-brief.md).
 
 ---
 
@@ -96,7 +96,7 @@ If you are uncertain at any point, the resolution order is:
 
 1. The Phase [N] prompt above.
 2. [`../reports/phase-[N-1]-completion-report.md`](../reports/phase-[N-1]-completion-report.md).
-3. [`../engine-semantics.md`](../engine-semantics.md) and [`../phase-1-rust-kernel-build-brief.md`](../phase-1-rust-kernel-build-brief.md).
+3. [`../engine-semantics.md`](../specs/engine-semantics.md) and [`../phase-1-rust-kernel-build-brief.md`](../specs/phase-1-rust-kernel-build-brief.md).
 4. [`../../CLAUDE.md`](../../CLAUDE.md).
 5. Anything else.
 

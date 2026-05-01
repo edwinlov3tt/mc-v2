@@ -264,7 +264,7 @@ Files you should **NOT** touch unless a benchmark exposes a clear bug (per the p
 - Anything in `crates/mc-core/src/` — production behavior is locked.
 - `crates/mc-core/tests/*.rs` — tests are contracts; don't loosen.
 - `crates/mc-fixtures/src/lib.rs` — fixture is sealed for §10 contracts.
-- [`docs/engine-semantics.md`](../engine-semantics.md), [`docs/phase-1-rust-kernel-build-brief.md`](../phase-1-rust-kernel-build-brief.md) — locked input documents.
+- [`docs/engine-semantics.md`](../specs/engine-semantics.md), [`docs/phase-1-rust-kernel-build-brief.md`](../specs/phase-1-rust-kernel-build-brief.md) — locked input documents.
 
 If you need a new public helper on `mc-fixtures` (e.g. a benchmark-only "warm everything" pass), prefer adding it next to `materialize_all_dependencies` — that's the precedent for benchmark-shaped helpers.
 
@@ -309,7 +309,7 @@ The CLI demo's expected shape is in brief §4.6. The current run prints the §4.
 If you are uncertain at any point, the resolution order from CLAUDE.md §0 is:
 1. Phase 1B prompt above.
 2. [`phase-1-completion-report.md`](../reports/phase-1-completion-report.md).
-3. [`engine-semantics.md`](../engine-semantics.md) and [`phase-1-rust-kernel-build-brief.md`](../phase-1-rust-kernel-build-brief.md).
+3. [`engine-semantics.md`](../specs/engine-semantics.md) and [`phase-1-rust-kernel-build-brief.md`](../specs/phase-1-rust-kernel-build-brief.md).
 4. [`../CLAUDE.md`](../../CLAUDE.md).
 5. Anything else.
 

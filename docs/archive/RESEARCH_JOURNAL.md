@@ -1,5 +1,11 @@
 # RESEARCH_JOURNAL
 
+> **Superseded by:** the spec-driven docs layout (see [`../README.md`](../README.md)). The chronological-log shape was retired on 2026-05-01 when the project shifted from a claw-core-style experiment-repo pattern to a spec-driven Rust systems project. Decisions now live in [`../decisions/`](../decisions/), distilled findings in [`../research-notes/`](../research-notes/), per-phase audits in [`../reports/`](../reports/), and current state in [`../CURRENT_STATE.md`](../CURRENT_STATE.md).
+>
+> The entries below are preserved as the Phase 1A session history. Folder names and link targets in older entries reflect the pre-reorg layout (`docs/concepts/`, `docs/experiments/`, `docs/external-research/`, `docs/planning/`, etc.); they have been intentionally left as-is since they are part of the historical record.
+
+---
+
 > Chronological log of what we tried, what shipped, what failed. **Append, never rewrite.** New entries go at the top.
 
 ---

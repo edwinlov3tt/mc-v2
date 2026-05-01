@@ -1,12 +1,14 @@
 # reports/
 
-Phase completion reports. **One file per phase**, written when the phase ships.
+Phase completion reports and performance reports. **One file per phase**, written when the phase ships.
 
 Use [`../templates/phase-completion-report.md`](../templates/phase-completion-report.md) as the starting point. Do not paraphrase the brief; do paraphrase your decisions.
 
 ## Contents
 
 - [`phase-1-completion-report.md`](./phase-1-completion-report.md) — Phase 1A audit: commands run, 203 / 0 test count, 5 deviations with rationale, acceptance criteria status (9 of 10 satisfied; criterion 5 deferred), files implemented, Phase 2 follow-ups, no out-of-scope features.
+
+Phase 1B will land [`PERF.md`](./PERF.md) here when the benchmark gate closes (see [`../handoffs/phase-1b-handoff.md`](../handoffs/phase-1b-handoff.md)).
 
 ## What every report MUST include
 

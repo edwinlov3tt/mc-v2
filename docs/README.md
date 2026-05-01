@@ -1,81 +1,81 @@
 # MarketingCubes V2 — Documentation
 
-This is the **research, planning, and learning log** for the MarketingCubes V2 Rust kernel.
+Spec-driven Rust systems project. This folder is the project's written record: contracts, decisions, reports, handoffs, and curated research.
 
 For the **operating manual** (rules of engagement, hierarchy of authority, gates) see [`../CLAUDE.md`](../CLAUDE.md). That file wins every conflict with anything in this folder.
 
-For the **locked-input contract documents** see:
-- [`engine-semantics.md`](./engine-semantics.md) — what the kernel *means* (invariants, semantics).
-- [`phase-1-rust-kernel-build-brief.md`](./phase-1-rust-kernel-build-brief.md) — what to *build* in Phase 1 (exact types, tests, fixtures).
+## Start here
 
-These two are **never edited** during a phase. If they need amendments, they happen in their own commit, before any code work.
+1. [`HANDOFF.md`](./HANDOFF.md) — 5-minute orientation. Who, what, where the active work is.
+2. [`CURRENT_STATE.md`](./CURRENT_STATE.md) — what is live right now (commit, gates, deferrals).
+3. [`specs/`](./specs/) — the contract documents.
 
----
+## Layout
 
-## Navigation
+```
+docs/
+├── README.md                          (this file)
+├── HANDOFF.md                         5-min orientation + pointer to active handoff
+├── CURRENT_STATE.md                   build / test / gate / deferral snapshot
+├── product/                           product framing (PRDs, inventories) — historical
+├── specs/                             engine semantics + phase briefs (the contracts)
+├── decisions/                         architecture decision records (ADRs)
+├── reports/                           phase completion reports + perf reports
+├── handoffs/                          phase-to-phase handoff docs
+├── research-notes/                    distilled lessons from research / spikes / benchmarks
+├── external-conversations/            verbatim LLM dialogues that informed design
+├── templates/                         blank templates (ADR, handoff, completion report, …)
+└── archive/                           superseded files preserved for reference
+```
 
-**Start here for a new session:**
+For raw reference material (PDFs, books, vendor docs), see [`../research/`](../research/).
 
-1. [`HANDOFF.md`](./HANDOFF.md) — pointer to the current active handoff and the 60-second project orientation.
-2. [`CURRENT_STATE.md`](./CURRENT_STATE.md) — what's live RIGHT NOW (commit, test count, gates, deferrals).
-3. [`RESEARCH_JOURNAL.md`](./RESEARCH_JOURNAL.md) — chronological log of what was tried, what shipped, what failed.
+## Folder map
 
-**Locked input documents (do not edit):**
+| Folder | What lives here | What does NOT |
+|---|---|---|
+| [`specs/`](./specs/) | The contract: engine semantics, phase briefs. **Locked during a phase.** | Decisions, reports, prose. |
+| [`product/`](./product/) | PRDs and transfer inventories from the pre-engine phase. Historical. | Anything currently load-bearing. The brief consumed these and is the authority now. |
+| [`decisions/`](./decisions/) | ADRs — one per decision, append-only, supersession-aware. | Implementation notes (those go in code) or routine choices that follow the brief verbatim. |
+| [`reports/`](./reports/) | Phase completion reports + performance reports (`PERF.md`). One per phase. | Decisions (those are ADRs); ongoing work logs. |
+| [`handoffs/`](./handoffs/) | Per-phase handoff documents. The bridge between phase N and phase N+1. | Permanent contracts; those go in `specs/`. |
+| [`research-notes/`](./research-notes/) | Distilled lessons. One concept / finding per file, written for a future reader. | Raw transcripts (those go in `external-conversations/`). |
+| [`external-conversations/`](./external-conversations/) | Verbatim LLM responses, vendor email threads, etc. — primary sources. | Decisions derived from them (those become ADRs or research-notes). |
+| [`templates/`](./templates/) | Blank templates: ADR, handoff, completion report, research note. | Filled-in copies (those go in their target folder). |
+| [`archive/`](./archive/) | Superseded files preserved for reference. | Active work. |
 
-- [`engine-semantics.md`](./engine-semantics.md)
-- [`phase-1-rust-kernel-build-brief.md`](./phase-1-rust-kernel-build-brief.md)
+## Filing rules
 
-**Phase work:**
+1. **Specs are locked during a phase.** [`specs/engine-semantics.md`](./specs/engine-semantics.md) and [`specs/phase-1-rust-kernel-build-brief.md`](./specs/phase-1-rust-kernel-build-brief.md) do not get edited mid-phase. Future briefs (Phase 1B, Phase 2…) are added as new files; they do not overwrite earlier ones.
 
-- [`reports/`](./reports/) — phase completion reports (one per phase, written when the phase ships)
-- [`handoffs/`](./handoffs/) — handoff documents from one phase to the next
+2. **Every phase ships a completion report.** Use [`templates/phase-completion-report.md`](./templates/phase-completion-report.md). The report lists commands run, exact test count, deviations from the brief with rationale, acceptance criteria status, files changed, deferred items, and explicit confirmation that no out-of-scope features were added. See [`reports/phase-1-completion-report.md`](./reports/phase-1-completion-report.md).
 
-**Knowledge (cross-phase):**
+3. **Every phase hands off via a handoff doc.** Use [`templates/handoff.md`](./templates/handoff.md). The handoff embeds the next-phase prompt verbatim, captures landmarks the receiving instance will need (commit hash, test counts, fixture surface, caches), and lists touch / don't-touch files. See [`handoffs/phase-1b-handoff.md`](./handoffs/phase-1b-handoff.md).
 
-- [`concepts/`](./concepts/) — engine-level concepts that span phases (lazy dep graph, dirty propagation semantics, weighted aggregation, etc.)
-- [`experiments/`](./experiments/) — dated experiment reports (benchmarks, alternative implementations, characterization runs). Null results required.
-- [`hypotheses/`](./hypotheses/) — open research questions with status (`open | testing | confirmed | rejected`).
-- [`dead-ends/`](./dead-ends/) — approaches that failed; each entry includes "exact conditions at failure" and "what would need to change for this to work."
-- [`audits/`](./audits/) — external or self-run audit reports.
+4. **Every non-trivial decision gets an ADR.** Use [`templates/adr.md`](./templates/adr.md). Status (`Proposed | Accepted | Deprecated | Superseded by ADR-NNNN`), context, decision, consequences, alternatives considered. ADRs are append-only — when revised, the new one supersedes the old. See [`decisions/0001-phase-1-scope.md`](./decisions/0001-phase-1-scope.md).
 
-**Planning + history:**
+5. **Every research finding worth keeping gets a research note.** Use [`templates/research-note.md`](./templates/research-note.md). One concept per file. Cross-link to source code, ADRs, and external-conversation primary sources.
 
-- [`planning/`](./planning/) — original PRDs and transfer inventories from the project's pre-engine phase. Historical, kept for context.
-- [`external-research/`](./external-research/) — back-and-forth research with external models (GPT-5, Claude, etc.) that informed the design.
-- [`archive/`](./archive/) — older docs that have been superseded but worth keeping for reference.
+6. **Cross-link everywhere.** Reports link to ADRs. ADRs link to specs. Research notes link to external conversations. Use relative paths so links work when browsing the filesystem.
 
-**Authoring tools:**
+7. **Specs override everything else** (per [`../CLAUDE.md`](../CLAUDE.md) §0). When an ADR or report appears to disagree with a spec, the spec wins; surface the conflict explicitly rather than normalizing it.
 
-- [`templates/`](./templates/) — blank templates for experiments, hypotheses, concepts, dead-ends, handoffs, and phase completion reports. Copy these; don't reinvent them.
+## How a typical phase flows
 
----
+```
+specs/<phase>-brief.md          (locked input — written before the phase starts)
+       │
+       ▼
+decisions/<NNNN>-<slug>.md      (ADRs written when scope/design choices land)
+       │
+       ▼
+[implementation in crates/]
+       │
+       ▼
+reports/phase-<N>-completion-report.md
+       │
+       ▼
+handoffs/phase-<N+1>-handoff.md
+```
 
-## Filing rules (non-negotiable)
-
-These mirror the claw-core conventions that made that project's research log useful across many sessions.
-
-1. **Every experiment gets a file.** Use [`templates/experiment.md`](./templates/experiment.md). Null results are required to be documented — a failed experiment prevents re-attempts and is worth as much as a successful one.
-
-2. **Every phase ships with a completion report.** Use [`templates/phase-completion-report.md`](./templates/phase-completion-report.md). The report lists commands run, exact test count, deviations from the brief with rationale, acceptance criteria status, files changed, deferred items, and a confirmation that no out-of-scope features were added. See [`reports/phase-1-completion-report.md`](./reports/phase-1-completion-report.md) for the live example.
-
-3. **Every phase hands off via a handoff doc.** Use [`templates/handoff.md`](./templates/handoff.md). The handoff embeds the next-phase prompt verbatim, captures landmarks the receiving instance will need (commit hash, test counts, fixture surface, caches), and lists touch / don't-touch files. See [`handoffs/phase-1b-handoff.md`](./handoffs/phase-1b-handoff.md) for the live example.
-
-4. **Every open question gets a hypothesis.** Use [`templates/hypothesis.md`](./templates/hypothesis.md). Include prerequisites (what needs to exist before testing) and expected test method.
-
-5. **Every failed approach gets a dead-end file.** Use [`templates/dead-end.md`](./templates/dead-end.md). **Must include** "Exact conditions at failure" and "What would need to change for this to work" so future sessions know when to revisit.
-
-6. **Every cross-phase insight gets a concept file.** Use [`templates/concept.md`](./templates/concept.md). This is the knowledge layer that transfers across phases.
-
-7. **Every significant session updates [`RESEARCH_JOURNAL.md`](./RESEARCH_JOURNAL.md)** with a dated entry summarizing what was tried. Link to the detail files.
-
-8. **Cross-link everything.** Experiments link to concepts. Concepts link to experiments. Issues link to concepts and experiments. Use relative paths so the links work when browsing the filesystem.
-
-9. **Every file declares its status** in the front-matter or first paragraph: `active | complete | superseded | open | closed`.
-
-10. **Locked inputs are locked.** [`engine-semantics.md`](./engine-semantics.md) and [`phase-1-rust-kernel-build-brief.md`](./phase-1-rust-kernel-build-brief.md) are part of the Phase 1 acceptance criterion (#7 — "unchanged"). Future briefs (Phase 1B, Phase 2…) get their own files; they do not edit the originals.
-
----
-
-## Where research artifacts live
-
-External binary references (PDFs, books, vendor docs) are in [`../research/`](../research/), not in this folder. See [`../research/README.md`](../research/README.md) for the index.
+Research notes, external conversations, and product artifacts feed in throughout — they are sources, not phase outputs.

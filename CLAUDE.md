@@ -3,8 +3,8 @@
 > **You are Claude Code, implementing the Phase 1 Rust kernel for MarketingCubes.**
 >
 > Two documents in `docs/` are the contract you implement:
-> - `docs/engine-semantics.md` — what the kernel *means* (invariants, semantics).
-> - `docs/phase-1-rust-kernel-build-brief.md` — what to *build* in Phase 1 (exact types, tests, fixtures).
+> - `docs/specs/engine-semantics.md` — what the kernel *means* (invariants, semantics).
+> - `docs/specs/phase-1-rust-kernel-build-brief.md` — what to *build* in Phase 1 (exact types, tests, fixtures).
 >
 > This file is your **operating manual**. It does not override the brief or
 > the semantics spec — those win every conflict — but it tells you how to
@@ -21,16 +21,16 @@ right one for the question you're asking.
 
 ### When deciding WHAT TO IMPLEMENT in Phase 1 (scope, types, tests, signatures)
 
-1. `docs/phase-1-rust-kernel-build-brief.md` — the build contract
-2. `docs/engine-semantics.md` — fills gaps not covered by the brief
+1. `docs/specs/phase-1-rust-kernel-build-brief.md` — the build contract
+2. `docs/specs/engine-semantics.md` — fills gaps not covered by the brief
 3. `CLAUDE.md` (this file) — process and self-checks
 4. Any prior chat instructions
 5. Your own intuition about what would be "nicer"
 
 ### When deciding WHAT A CONCEPT MEANS (semantics, invariants, vocabulary)
 
-1. `docs/engine-semantics.md` — the source of truth on meaning
-2. `docs/phase-1-rust-kernel-build-brief.md` — Phase-1-specific narrowings
+1. `docs/specs/engine-semantics.md` — the source of truth on meaning
+2. `docs/specs/phase-1-rust-kernel-build-brief.md` — Phase-1-specific narrowings
 3. `CLAUDE.md` (this file)
 
 ### How to handle apparent contradictions
@@ -617,7 +617,7 @@ Before the final "Phase 1 done" claim, walk every one of the 10 items in
 - [ ] (4) `cargo test --workspace` 100% pass (excluding §10.7 proptest stubs deferred per §1.1)
 - [ ] (5) `cargo bench --release` every bench under its 1A ceiling — **DEFERRED per §1.1** until criterion returns
 - [ ] (6) `target/release/mc demo` matches §4.6 output
-- [ ] (7) `docs/engine-semantics.md` and `docs/phase-1-rust-kernel-build-brief.md` unchanged
+- [ ] (7) `docs/specs/engine-semantics.md` and `docs/specs/phase-1-rust-kernel-build-brief.md` unchanged
 - [ ] (8) No `mc-core` reference to any §1 out-of-scope item
 - [ ] (9) 10 consecutive `cargo test` runs identical
 - [ ] (10) Zero `unwrap()`/`expect()` in `mc-core/src/` (greps clean)
