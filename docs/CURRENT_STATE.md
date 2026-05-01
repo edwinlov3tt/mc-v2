@@ -4,8 +4,7 @@
 
 **Last updated:** 2026-05-01 (Phase 2A cold-path benchmark expansion complete)
 **Last Phase 1A commit:** `bee2812` — *mc-core: update lib.rs doc-comment to point at docs/specs/* (Phase 1A kernel at `4aa674a`)
-**Last Phase 1B commit:** _replace this with the `phase-1b-benchmark-baseline` commit hash on tag_
-**Last Phase 2A commit:** _replace this with the Phase 2A cold-path commit hash on tag_
+**Last Phase 1B + Phase 2A commit:** `48d52e9` — *bench: complete Phase 2A cold-path benchmark expansion* (Phase 1B and Phase 2A bundled into one commit; tag `phase-2a-cold-path-baseline` at this hash)
 **Branch:** `main` (tracking `origin/main` at github.com/edwinlov3tt/mc-v2)
 
 ---
