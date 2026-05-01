@@ -17,7 +17,8 @@
 
 ## What's queued
 
-- **Phase 2B — Kernel Optimization (not scheduled).** Phase 2A's data is now in [`PERF.md`](./PERF.md) §6.7–§6.10 + §9. Candidates with magnitudes: hierarchy mark closure (PERF.md §9.3 — marginal cost per ancestor measured in §6.10), `is_consolidated_coord` fast path (§9.2), `read_consolidated` hierarchy clone hot path (§9.4 — newly measurable on cold reads now that §6.7 is real), snapshot COW (§9.5 — quantified by §6.9). **Pick from data.**
+- **Phase 2B — Consolidation Fast Path (not scheduled).** Handoff doc ready at [`handoffs/phase-2b-handoff.md`](./handoffs/phase-2b-handoff.md). One targeted kernel change in [`cube.rs::read_consolidated`](../crates/mc-core/src/cube.rs#L526) to eliminate per-call dimension/hierarchy clones; data-justified by PERF.md §6.7 (3-leaf cold consol 14.3 µs vs 1B target 3 µs) + §9.4. Recommended approach: `Arc<Hierarchy>`. Source change confined to `cube.rs` + at most `dimension.rs` + `hierarchy.rs`.
+- **Phase 2C+ (not pre-named).** TBD per [`roadmap/MASTER_PHASE_PLAN.md`](./roadmap/MASTER_PHASE_PLAN.md). Open a new sub-phase only when a fresh PERF.md run justifies it. Likely first candidate: §9.3 hierarchy mark closure (bitset-backed dirty tracker path).
 
 ## Active ADRs
 

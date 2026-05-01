@@ -37,31 +37,17 @@ Full audits: [`reports/phase-1-completion-report.md`](./reports/phase-1-completi
 
 ## What is queued
 
-**Phase 2A — Cold-path benchmark expansion.** Handoff doc ready at [`handoffs/phase-2a-handoff.md`](./handoffs/phase-2a-handoff.md). Not started, not scheduled. **Measure first; do not optimize the kernel until Phase 2A's data is in.** Phase 1B established that warm reads are cheap and writes are expensive on Acme, but two things are currently hidden:
+**Phase 2B — Consolidation Fast Path.** Handoff doc ready at [`handoffs/phase-2b-handoff.md`](./handoffs/phase-2b-handoff.md). Not started, not scheduled. One targeted kernel change: eliminate the per-call `self.dimensions.clone()` + `dim.default_hierarchy().clone()` in [`cube.rs::read_consolidated`](../crates/mc-core/src/cube.rs#L526) so the brief §11.2 3-leaf 1B target (≤ 3 µs cold) is met. Phase 2A measured the miss at 14.3 µs and localized the cause; Phase 2B closes it.
 
-- The consolidation cache hides the cold-path cost (today's ~67 ns numbers are cache hits, not cost-of-walk).
-- The Acme hierarchy fan-out hides the true "no-dependents" write cost (`write_input_leaf_no_deps` and `write_input_leaf` measure the same thing on Acme, ~165 µs both).
+- **Recommended approach (Option A in the handoff):** wrap each dimension's hierarchies in `Arc` so the per-call clone is a refcount bump rather than a deep clone. Source change confined to `cube.rs` + at most `dimension.rs` + `hierarchy.rs`. No new dependency (`Arc` is in `std`). No public API change.
+- **Acceptance gate:** PERF.md §6.7's `consolidation_cold/Q1_PaidSearch_Tampa/Spend (3 leaves)` ≤ 3 µs. Higher-fan-out rows should improve by approximately the same constant.
+- **Out of scope:** §9.3 hierarchy mark closure work (next phase); any non-`cube.rs` / `dimension.rs` / `hierarchy.rs` source change; new dependencies; toolchain bump.
 
-Phase 2A's job is to close those two holes before any kernel optimization decision is made. Concretely:
+**Read the full Phase 2B handoff:** [`handoffs/phase-2b-handoff.md`](./handoffs/phase-2b-handoff.md). It contains the Phase 2B prompt verbatim plus eight "context-the-prompt-doesn't-spell-out" sections (the exact code to optimize, why the existing clones exist, three implementation options with the recommended path, the bench acceptance gate, the regression guard, the no-Arc-rule analysis, the tests that may need attention, the determinism gate).
 
-1. **Cold consolidation benchmarks.** Per-iteration setup that issues a write to invalidate the cache before each timed read, mirroring the cold/warm split in `derived_read.rs`. Until this lands, brief §11.2's 1A ceilings (50 µs / 1 ms / 20 ms / 5 ms / 2 ms) are uncomparable. (PERF.md §9.1)
-2. **Synthetic minimal-hierarchy fixture for `no_deps` writes.** A second fixture with no Time/Channel/Market hierarchies, so a Spend write actually has zero ancestors to mark. Resolves the §7.3 benchmark-scope mismatch and gives the brief §11.1 50 µs ceiling something to measure against. (PERF.md §7.3, §9.3)
-3. **Snapshot clone benchmark.** `Snapshot::take` at scale. Phase 1 ships deep-clone; not exercised by the current bench suite. (PERF.md §8.3, §9.5)
-4. **Hierarchy ancestor marking microbench.** Isolate the dominant write cost from other write fixed costs (permission/lock/type checks, store insert, revision bump). (PERF.md §8.1, §9.3)
+**After Phase 2B:** the next sub-phase is TBD per [`roadmap/MASTER_PHASE_PLAN.md`](./roadmap/MASTER_PHASE_PLAN.md) "Phase 2 — Performance & Optimization". Likely candidates anchored in PERF.md §9: `§9.3` hierarchy mark closure (bitset-backed dirty tracker path), `§9.2` leaf-flag cache. **Snapshot COW (§9.5) is NOT data-justified** at Acme scale — defer.
 
-**Phase 2B — Optimization.** Only after 2A's data justifies the work. Candidates (do not start until 2A points at them with numbers):
-
-- `is_consolidated_coord` fast-path (cache `is_leaf_in_default_hierarchy` on `Element`). (PERF.md §8.5, §9.2)
-- Hierarchy mark-closure: lazy ancestor marks vs bitset-backed dirty tracker. (PERF.md §9.3)
-- `read_consolidated` hierarchy-clone hot path. (PERF.md §8.2, §9.4; Phase 1A follow-up #9)
-- `Snapshot` COW. (PERF.md §9.5; Phase 1A follow-up #3)
-- `CellStore` trait introduction. (Phase 1A follow-up; not justified by Phase 1B data — defer until a second store impl is genuinely needed.)
-
-**Phase 2 housekeeping (not gating; not optimization).**
-
-- Toolchain bump revisit — unlocks `proptest` (§10.7 doctrines) and `insta` (snapshot tests). Procedure in [`PERF.md`](./PERF.md) §9.7. CLAUDE.md §1.1 now treats `proptest`/`insta` as Phase-2-paired-work, not toolchain-blocked.
-
-**Read the full Phase 2A handoff:** [`handoffs/phase-2a-handoff.md`](./handoffs/phase-2a-handoff.md). It contains the Phase 2A prompt verbatim plus seven "context-the-prompt-doesn't-spell-out" sections (consolidation cache mechanics, mc-fixtures extension, iter_batched_ref pattern, hierarchy ancestor walk isolation, snapshot internals, brief §11 ceiling map, Cargo.lock pin protection) and the touch/don't-touch file list.
+**Phase 2 housekeeping (not gating; not optimization):** toolchain bump revisit — unlocks `proptest` (§10.7 doctrines) and `insta` (snapshot tests). Procedure in [`PERF.md`](./PERF.md) §9.7. CLAUDE.md §1.1 now treats `proptest`/`insta` as Phase-paired-work, not toolchain-blocked.
 
 ---
 
