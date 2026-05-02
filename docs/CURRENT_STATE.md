@@ -19,7 +19,10 @@
 
 ## What's queued
 
-- **Phase 2C+ (not pre-named).** TBD per [`roadmap/MASTER_PHASE_PLAN.md`](./roadmap/MASTER_PHASE_PLAN.md). Open a new sub-phase only when a fresh PERF.md run justifies it. Phase 2B closes PERF.md §9.4. Highest-priority remaining candidate per current PERF.md §9: §9.2 (per-dim leaf-flag caching to fast-path `is_consolidated_coord`) or §9.3 (hierarchy mark closure / bitset-backed dirty tracker). Master plan's Q1 housekeeping (workload sketch ADR) should land before the next sub-phase pick so candidate priority is anchored in user-perception thresholds.
+- **Phase 2 housekeeping — Q3 (criterion baseline tracking).** **Closed retroactively 2026-05-01.** Both `phase-2a` and `phase-2b` baselines captured under [`reports/bench-data/`](./reports/bench-data/) (1.4 MB JSON; 45 rows × 2 phases × 4 files). Workflow proven end-to-end. Phase 2C onward must use `cargo bench -p mc-core --bench <name> -- --baseline phase-2b`. See [`reports/phase-2b-completion-report.md`](./reports/phase-2b-completion-report.md) §6.A.1 for the closure record.
+- **Phase 2 housekeeping — Q1 (workload sketch ADR).** Not started. Strategic gate for everything past Phase 2B. See master plan §"Phase 2 housekeeping → Q1." Recommended before any Phase 2C source change so the priority pick (§9.2 vs §9.3 vs continued read-side) is anchored in user-perception thresholds.
+- **Phase 2 housekeeping — Q2 (toolchain bump).** Deferred until any new runtime dep needs it (likely Phase 3A's parser dep choice).
+- **Phase 2C+ (not pre-named).** TBD per [`roadmap/MASTER_PHASE_PLAN.md`](./roadmap/MASTER_PHASE_PLAN.md). Open a new sub-phase only when a fresh PERF.md run justifies it AND Q1 has settled the workload-sketch question. Phase 2B closed PERF.md §9.4. Highest-priority remaining candidate per current PERF.md §9: §9.2 (per-dim leaf-flag caching to fast-path `is_consolidated_coord`) or §9.3 (hierarchy mark closure / bitset-backed dirty tracker). Pick from data once Q1 lands.
 
 ## Active ADRs
 

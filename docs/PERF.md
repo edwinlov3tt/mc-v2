@@ -503,11 +503,15 @@ on Phase 2B optimization choices.
 > recompute reads and asserts structural equality.
 
 **Cold consolidation rows — before / after** (release bench, isolated
-machine state; full bench JSON output is **not yet captured** —
-Phase 2B deferred the Q3 baseline-tracking workflow setup, see Phase
-2B completion report §6.A. Phase 2C closes the gap by landing
-`docs/reports/bench-data/phase-2b/` and `phase-2a/` baselines as its
-actual step 0):
+machine state; full bench JSON output is captured under
+[`reports/bench-data/phase-2a/`](./reports/bench-data/phase-2a/) and
+[`reports/bench-data/phase-2b/`](./reports/bench-data/phase-2b/) —
+the Q3 baseline-tracking workflow that Phase 2B initially deferred
+(see Phase 2B completion report §6.A) was closed retroactively later
+the same day. Reproduces 12.65 µs → 2.38 µs on the 3-leaf row,
+within drift of the document-asserted 14.3 → 2.53 µs below. Re-run
+any row via `cp -R docs/reports/bench-data/phase-2b/* crates/mc-core/target/criterion/`
+then `cargo bench -p mc-core --bench consolidated_read -- --baseline phase-2b`):
 
 | Bench | Pre-2B median | Post-2B median | Δ | 1B target | Status |
 |---|---:|---:|---:|---:|:---:|

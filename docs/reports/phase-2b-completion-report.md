@@ -270,6 +270,37 @@ deferral follows the same CLAUDE.md §11 pattern that produced
 ADR-0002: when a hard-rule scope item slipped, name it explicitly
 so the next phase has a clear closure target.
 
+### 6.A.1 Retroactive closure (2026-05-01, same day)
+
+The slip described above was closed in a follow-on commit later the
+same day, before any Phase 2C work began. Steps actually taken:
+
+1. Ran `cargo bench -p mc-core --bench <name> -- --save-baseline phase-2b`
+   for each of the 8 bench files at the post-Phase-2B HEAD
+   (commit `992be0a`, tag `phase-2b-consolidation-fast-path`).
+2. `git checkout phase-2a-cold-path-baseline` (commit `48d52e9`,
+   pre-Arc kernel).
+3. Re-ran the same loop with `--save-baseline phase-2a` to capture
+   the pre-2B baseline retroactively.
+4. `git checkout main`.
+5. Copied both `target/criterion/<bench>/<id>/{phase-2a,phase-2b}/`
+   subdirs into [`bench-data/phase-2a/`](../reports/bench-data/phase-2a/)
+   and [`bench-data/phase-2b/`](../reports/bench-data/phase-2b/) —
+   45 rows × 2 phases × 4 small JSON files = 1.4 MB total. No
+   `raw.csv` (criterion's `default-features = false` skips raw
+   sample CSV).
+6. Sanity-check confirmed the JSON medians reproduce PERF.md §6.11's
+   document-asserted numbers within run-to-run drift: the 3-leaf
+   cold consol gate row reads 12.65 µs → 2.38 µs across the two
+   captured baselines (vs the §6.11 document-form 14.3 µs → 2.53 µs).
+
+The original "SLIPPED" deviation header above is preserved as the
+audit trail for *why* this section exists; this §6.A.1 records the
+closure. **Phase 2C inherits a working Q3:** the validation-gate
+expectation in any Phase 2C handoff should be `cargo bench -p mc-core
+--bench <name> -- --baseline phase-2b` against the saved JSON, not a
+hand-rolled before/after.
+
 ---
 
 ## 7. Implemented files / modules
