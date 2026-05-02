@@ -582,6 +582,10 @@ rewritten to semantic assertions (not timing) per ADR-0002 + the
 Phase 2B SPEC QUESTION round-trip; see §10 below for the full file
 manifest and the completion report's deviation entry.
 
+### 6.12 Phase 2C — Workload-Shaped Benchmarks (pending)
+
+Reserved for the production-shaped data described in [`handoffs/phase-2c-handoff.md`](./handoffs/phase-2c-handoff.md). Populated as Phase 2C lands. Will include 10× / 50× / 100× scaled-Acme isolated-operation rows (§6.12), a combined-workflow bench at 50× and 100× (§6.13), and a per-operation scaling-shape summary (§6.14) — the load-bearing interpretation that gates the §9.3 vs §9.2 priority call in Phase 2D.
+
 ---
 
 ## 7. Interpretation — bench by bench
@@ -849,6 +853,8 @@ in Phase 2.
 
 Listed in rough priority order. **None are gating.** Phase 2B should
 prioritize from data, not from this list.
+
+> **Phase 2C will produce workload-shaped data before any further §9 row is opened.** The remaining candidates' priority order is provisional until that data lands. See [`handoffs/phase-2c-handoff.md`](./handoffs/phase-2c-handoff.md) for the measurement scope and [`decisions/0003-workload-sketch.md`](./decisions/0003-workload-sketch.md) for the workload curve (10× / 50× / 100× Acme) the data will be calibrated against.
 
 ### 9.1 ~~Cold consolidation benchmarks~~ — closed in Phase 2A (§6.7)
 
