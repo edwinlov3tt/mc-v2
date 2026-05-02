@@ -256,6 +256,107 @@ fn bench_rollback_materialized(c: &mut Criterion) {
     bench_rollback(c, "rollback/materialized", build_materialized);
 }
 
+// ---------------------------------------------------------------------------
+// Phase 2C — scaled snapshot/rollback rows (loaded cardinality only).
+//
+// Per `docs/handoffs/phase-2c-handoff.md` §"Phase 2C scope" item 2: extend
+// `bench_snapshot` and `bench_rollback` at each cardinality. The scaled
+// rows use the "loaded" cardinality (post-write_canonical_inputs_scaled,
+// pre-materialize) so per-scale snapshot cost is comparable across the
+// curve without the per-scale materialize cost dominating setup. The
+// existing 1× rows already cover the materialized cardinality at Acme
+// scale; PERF.md §6.9 + ADR-0003 Decision 6 use the scaled-loaded curve
+// to gate whether §9.5 (Snapshot COW) reopens.
+// ---------------------------------------------------------------------------
+
+use mc_fixtures::{
+    build_scaled_acme_cube_100x, build_scaled_acme_cube_10x, build_scaled_acme_cube_50x,
+    write_canonical_inputs_scaled, ScaledAcmeRefs,
+};
+
+fn build_loaded_scaled(scale: u32) -> (Cube, ScaledAcmeRefs) {
+    let (mut cube, refs) = match scale {
+        10 => build_scaled_acme_cube_10x(),
+        50 => build_scaled_acme_cube_50x(),
+        100 => build_scaled_acme_cube_100x(),
+        other => panic!("unsupported scale: {other}"),
+    }
+    .expect("scaled fixture must build");
+    write_canonical_inputs_scaled(&mut cube, &refs).expect("scaled inputs");
+    (cube, refs)
+}
+
+fn bench_snapshot_loaded_scaled(c: &mut Criterion, scale: u32) {
+    let cells = 2_520 * scale as usize;
+    let (cube, _refs) = build_loaded_scaled(scale);
+    let label = format!("snapshot/{scale}x_loaded ({cells} cells)");
+    c.bench_function(&label, |b| {
+        b.iter(|| {
+            let snap = cube.snapshot(black_box(None));
+            black_box(snap);
+        });
+    });
+}
+
+fn bench_rollback_loaded_scaled(c: &mut Criterion, scale: u32) {
+    let cells = 2_520 * scale as usize;
+    let label = format!("rollback/{scale}x_loaded ({cells} cells)");
+    c.bench_function(&label, |b| {
+        b.iter_batched_ref(
+            || {
+                // Per-iter setup: load the scaled cube, snapshot it,
+                // mutate one anchor cell so rollback has work to do.
+                let (mut cube, refs) = build_loaded_scaled(scale);
+                let snap = cube.snapshot(None);
+                let mutate_coord = coord(
+                    cube.id,
+                    &refs.base,
+                    refs.base.scen_baseline,
+                    refs.base.ver_working,
+                    refs.base.mar_2026,
+                    refs.base.paid_search,
+                    refs.base.tampa,
+                    refs.base.spend,
+                );
+                cube.write(WritebackRequest {
+                    coord: mutate_coord,
+                    new_value: ScalarValue::F64(99_999.0),
+                    principal: refs.base.root_principal,
+                    intent: WriteIntent::Set,
+                    expected_revision: None,
+                    now_unix_seconds: 0,
+                })
+                .expect("mutate");
+                (cube, snap)
+            },
+            |(cube, snap)| {
+                let r = cube.rollback_to(black_box(snap)).expect("rollback");
+                black_box(r);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
+fn bench_snapshot_loaded_10x(c: &mut Criterion) {
+    bench_snapshot_loaded_scaled(c, 10);
+}
+fn bench_snapshot_loaded_50x(c: &mut Criterion) {
+    bench_snapshot_loaded_scaled(c, 50);
+}
+fn bench_snapshot_loaded_100x(c: &mut Criterion) {
+    bench_snapshot_loaded_scaled(c, 100);
+}
+fn bench_rollback_loaded_10x(c: &mut Criterion) {
+    bench_rollback_loaded_scaled(c, 10);
+}
+fn bench_rollback_loaded_50x(c: &mut Criterion) {
+    bench_rollback_loaded_scaled(c, 50);
+}
+fn bench_rollback_loaded_100x(c: &mut Criterion) {
+    bench_rollback_loaded_scaled(c, 100);
+}
+
 criterion_group!(
     benches,
     bench_snapshot_fresh,
@@ -266,5 +367,12 @@ criterion_group!(
     bench_rollback_100,
     bench_rollback_2520,
     bench_rollback_materialized,
+    // Phase 2C scaled snapshot/rollback rows (loaded cardinality).
+    bench_snapshot_loaded_10x,
+    bench_snapshot_loaded_50x,
+    bench_snapshot_loaded_100x,
+    bench_rollback_loaded_10x,
+    bench_rollback_loaded_50x,
+    bench_rollback_loaded_100x,
 );
 criterion_main!(benches);

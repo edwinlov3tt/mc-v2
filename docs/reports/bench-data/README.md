@@ -14,8 +14,11 @@ docs/reports/bench-data/
 │       ├── sample.json           per-sample iteration counts + times
 │       ├── tukey.json            outlier thresholds (Tukey method)
 │       └── raw.csv               raw per-iteration timings (large; pruned)
-└── phase-2b/                     baseline at the `phase-2b-consolidation-fast-path` tag
-    └── <bench>/<id>/             same shape as phase-2a/
+├── phase-2b/                     baseline at the `phase-2b-consolidation-fast-path` tag
+│   └── <bench>/<id>/             same shape as phase-2a/
+└── phase-2c/                     baseline at the (prospective) `phase-2c-workload-baseline` tag
+    ├── README.md                 phase-2c-specific metadata + headline finding
+    └── <bench>/<id>/             same shape as phase-2a/, plus 10× / 50× / 100× scaled-Acme rows and combined_workflow rows
 ```
 
 `raw.csv` files are pruned from the committed snapshot — they're large
@@ -65,7 +68,8 @@ To run a Phase 2C (or later) optimization with a real before/after diff:
 | Tag | Captured | Purpose |
 |---|---|---|
 | `phase-2a-cold-path-baseline` | All Phase 1B + Phase 2A bench rows at the pre-Phase-2B kernel | Establishes the cold-path baseline before the Arc fast path. Diffing `phase-2b` against `phase-2a` reproduces PERF.md §6.11's before/after numbers via criterion's statistical bounds rather than document-asserted medians. |
-| `phase-2b-consolidation-fast-path` | All Phase 1B + Phase 2A bench rows at the post-Arc-fast-path kernel | The forward baseline. Phase 2C and later optimizations run `--baseline phase-2b` to get an automatic diff against the current shipping kernel. |
+| `phase-2b-consolidation-fast-path` | All Phase 1B + Phase 2A bench rows at the post-Arc-fast-path kernel | The Phase 2B baseline. Phase 2C ran `--baseline phase-2b` to capture the workload-shaped deltas in PERF.md §6.12. |
+| `phase-2c-workload-baseline` *(prospective tag)* | All Phase 1B + Phase 2A + Phase 2B + Phase 2C bench rows including the new 10× / 50× / 100× scaled-Acme variants and `combined_workflow` at 50× / 100×. Same kernel as phase-2b — Phase 2C is measurement only. | The forward baseline for Phase 2D. Per ADR-0003 + the Phase 2C handoff, Phase 2D's §9 priority pick reads from PERF.md §6.14 (which is built from this baseline) and runs `--baseline phase-2c` for the Phase 2D optimization's diff. See [`phase-2c/README.md`](./phase-2c/README.md) for the headline finding. |
 
 ## Why this directory exists
 

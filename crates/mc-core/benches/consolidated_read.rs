@@ -626,6 +626,285 @@ fn fy_all_channels_usa_spend_golden() -> f64 {
     sum
 }
 
+// ---------------------------------------------------------------------------
+// Phase 2C — scaled cold consolidation variants.
+//
+// Per `docs/handoffs/phase-2c-handoff.md` §"Phase 2C scope" item 2: extend
+// `bench_consolidation_cold` at the 27-leaf and 420-leaf fan-outs
+// (Q1×Paid_Media×Florida × Spend and FY×All_Channels×USA × Spend) for
+// 10× / 50× / 100× cubes. The same logical coord is read at every scale;
+// because Florida widens with scale (original 3 cities plus 3 extras per
+// scale tick), the actual leaf count under Q1×Paid_Media×Florida is
+// 27 × scale at scale N, and FY×All_Channels×USA is 420 × scale.
+//
+// Cold-state goldens are computed self-consistently from `canonical_inputs_for`
+// against the cube's actual market-leaf list (the scale=1 case is
+// independently verified against brief §4.5.1 by `assert_cold_golden`
+// above and by the equivalence test in mc-fixtures).
+// ---------------------------------------------------------------------------
+
+use mc_fixtures::{
+    build_scaled_acme_cube_100x, build_scaled_acme_cube_10x, build_scaled_acme_cube_50x,
+    materialize_all_dependencies_scaled, write_canonical_inputs_scaled, ScaledAcmeRefs,
+    ScaledMarketLeaf,
+};
+
+fn build_for_consolidation_scaled(scale: u32) -> (Cube, ScaledAcmeRefs) {
+    let (mut cube, refs) = match scale {
+        10 => build_scaled_acme_cube_10x(),
+        50 => build_scaled_acme_cube_50x(),
+        100 => build_scaled_acme_cube_100x(),
+        other => panic!("unsupported scale: {other}"),
+    }
+    .expect("scaled acme fixture must build");
+    write_canonical_inputs_scaled(&mut cube, &refs).expect("scaled inputs");
+    materialize_all_dependencies_scaled(&mut cube, &refs).expect("scaled materialize");
+    (cube, refs)
+}
+
+fn consol_scaled(
+    cube: &Cube,
+    refs: &ScaledAcmeRefs,
+    time: mc_core::ElementId,
+    channel: mc_core::ElementId,
+    market: mc_core::ElementId,
+    measure: mc_core::ElementId,
+) -> CellCoordinate {
+    coord(
+        cube.id,
+        &refs.base,
+        refs.base.scen_baseline,
+        refs.base.ver_working,
+        time,
+        channel,
+        market,
+        measure,
+    )
+}
+
+fn invalidating_leaf_coord_scaled(cube: &Cube, refs: &ScaledAcmeRefs) -> CellCoordinate {
+    // Mar_2026 / Paid_Search / Tampa is a leaf inside both
+    // Q1×Paid_Media×Florida and FY×All_Channels×USA at every scale —
+    // Tampa is one of the seven preserved Acme base cities.
+    coord(
+        cube.id,
+        &refs.base,
+        refs.base.scen_baseline,
+        refs.base.ver_working,
+        refs.base.mar_2026,
+        refs.base.paid_search,
+        refs.base.tampa,
+        refs.base.spend,
+    )
+}
+
+fn force_cold_scaled(cube: &mut Cube, refs: &ScaledAcmeRefs, target: &CellCoordinate) {
+    let leaf = invalidating_leaf_coord_scaled(cube, refs);
+    let canon = mc_fixtures::canonical_inputs_for(3, 0, 0); // Mar=3, Paid_Search=0, Tampa=0
+    cube.write(WritebackRequest {
+        coord: leaf,
+        new_value: ScalarValue::F64(canon.spend),
+        principal: refs.base.root_principal,
+        intent: WriteIntent::Set,
+        expected_revision: None,
+        now_unix_seconds: 0,
+    })
+    .expect("invalidating write must succeed");
+    assert!(
+        cube.dirty().is_dirty(target),
+        "cold-read setup failed: target consolidated coord is not dirty"
+    );
+}
+
+/// Self-consistent golden for Q1×Paid_Media×Florida × Spend at scale N:
+/// sum over (3 Q1 months × 3 Paid_Media leaves × all-Florida-cities) of
+/// `canonical_inputs_for(t, c, m_idx).spend`. Florida-cities = base 3
+/// (market_idx 0, 1, 2) + extras whose `parent_state` is Florida.
+fn q1_paid_media_florida_spend_golden(refs: &ScaledAcmeRefs) -> f64 {
+    let times: [u32; 3] = [1, 2, 3]; // Jan, Feb, Mar
+    let channels: [u32; 3] = [0, 1, 2]; // Paid_Search, Paid_Social, Display
+    let florida_leaves = florida_market_leaves(refs);
+    let mut sum = 0.0;
+    for &t in &times {
+        for &c in &channels {
+            for leaf in &florida_leaves {
+                sum += mc_fixtures::canonical_inputs_for(t, c, leaf.market_idx).spend;
+            }
+        }
+    }
+    sum
+}
+
+/// Self-consistent golden for FY×All_Channels×USA × Spend at scale N:
+/// sum over the entire 12 × 5 × (7N) input grid.
+fn fy_all_channels_usa_spend_golden_scaled(refs: &ScaledAcmeRefs) -> f64 {
+    let mut sum = 0.0;
+    for t in 1..=12 {
+        for c in 0..5 {
+            for leaf in &refs.all_market_leaves {
+                sum += mc_fixtures::canonical_inputs_for(t, c, leaf.market_idx).spend;
+            }
+        }
+    }
+    sum
+}
+
+/// Filter Market leaves whose parent state is Florida. Used by the
+/// 27-leaf cold golden helper. Identifies "Florida" by referencing the
+/// known base-city Tampa's parent state on `refs.base`.
+fn florida_market_leaves(refs: &ScaledAcmeRefs) -> Vec<ScaledMarketLeaf> {
+    let florida = refs.base.florida;
+    refs.all_market_leaves
+        .iter()
+        .filter(|l| l.parent_state == florida)
+        .cloned()
+        .collect()
+}
+
+fn assert_cold_golden_scaled(scale: u32, target_label: &str, golden: f64) {
+    let (mut cube, refs) = build_for_consolidation_scaled(scale);
+    let target = match target_label {
+        "Q1_PaidMedia_Florida_Spend" => consol_scaled(
+            &cube,
+            &refs,
+            refs.base.q1_2026,
+            refs.base.paid_media,
+            refs.base.florida,
+            refs.base.spend,
+        ),
+        "FY_AllChannels_USA_Spend" => consol_scaled(
+            &cube,
+            &refs,
+            refs.base.fy_2026,
+            refs.base.all_channels,
+            refs.base.usa,
+            refs.base.spend,
+        ),
+        other => panic!("unknown scaled cold-golden target: {other}"),
+    };
+    force_cold_scaled(&mut cube, &refs, &target);
+    let v = cube
+        .read(&target, refs.base.root_principal)
+        .expect("cold read")
+        .value
+        .as_f64()
+        .expect("F64");
+    assert!(
+        (v - golden).abs() / golden.abs().max(1.0) < 1e-9,
+        "scaled cold-path golden mismatch for {target_label} at {scale}x: \
+         got {v}, expected {golden}"
+    );
+}
+
+fn bench_cold_scaled(
+    c: &mut Criterion,
+    label: &str,
+    scale: u32,
+    target: fn(&Cube, &ScaledAcmeRefs) -> CellCoordinate,
+) {
+    c.bench_function(label, |b| {
+        b.iter_batched_ref(
+            || {
+                let (mut cube, refs) = build_for_consolidation_scaled(scale);
+                let coord = target(&cube, &refs);
+                force_cold_scaled(&mut cube, &refs, &coord);
+                (cube, refs, coord)
+            },
+            |(cube, refs, coord)| {
+                let v = cube
+                    .read(black_box(coord), refs.base.root_principal)
+                    .expect("cold read");
+                black_box(v);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
+/// Gate the scaled cold-consolidation benches behind an env var. The
+/// reason: each setup call to `build_for_consolidation_scaled` does a
+/// fresh build + 2520×scale canonical writes + 2100×scale cold reads
+/// (materialize). At 100× that's ~10 minutes per setup invocation,
+/// and criterion calls setup MANY times (one per iteration). The
+/// targeted Phase 2C gate (run_phase_2c_targeted.sh) skips these by
+/// default; set `MC_BENCH_CONSOL_SCALED=1` to opt in for a re-run when
+/// Phase 2D actually needs the data.
+fn scaled_consol_disabled() -> bool {
+    std::env::var("MC_BENCH_CONSOL_SCALED").as_deref() != Ok("1")
+}
+
+// 27-leaf at 1× → 27×scale leaves at scale N (Q1 × Paid_Media × Florida).
+fn bench_cold_q1_pm_fla_spend_scaled(c: &mut Criterion, scale: u32) {
+    if scaled_consol_disabled() {
+        eprintln!(
+            "[consolidation_cold/Q1_PaidMedia_Florida/Spend/{scale}x] SKIPPED — set MC_BENCH_CONSOL_SCALED=1 to run \
+             (per-setup build+load+materialize takes ~minutes at 100×; see Phase 2C completion report §6 deferrals)"
+        );
+        return;
+    }
+    let (_, refs) = build_for_consolidation_scaled(scale);
+    let golden = q1_paid_media_florida_spend_golden(&refs);
+    drop(refs);
+    assert_cold_golden_scaled(scale, "Q1_PaidMedia_Florida_Spend", golden);
+    let leaves = 27 * scale;
+    let label = format!("consolidation_cold/Q1_PaidMedia_Florida/Spend/{scale}x ({leaves} leaves)");
+    bench_cold_scaled(c, &label, scale, |cube, refs| {
+        consol_scaled(
+            cube,
+            refs,
+            refs.base.q1_2026,
+            refs.base.paid_media,
+            refs.base.florida,
+            refs.base.spend,
+        )
+    });
+}
+
+// 420-leaf at 1× → 420×scale leaves at scale N (FY × All_Channels × USA).
+fn bench_cold_fy_all_usa_spend_scaled(c: &mut Criterion, scale: u32) {
+    if scaled_consol_disabled() {
+        eprintln!(
+            "[consolidation_cold/FY_AllChannels_USA/Spend/{scale}x] SKIPPED — set MC_BENCH_CONSOL_SCALED=1 to run"
+        );
+        return;
+    }
+    let (_, refs) = build_for_consolidation_scaled(scale);
+    let golden = fy_all_channels_usa_spend_golden_scaled(&refs);
+    drop(refs);
+    assert_cold_golden_scaled(scale, "FY_AllChannels_USA_Spend", golden);
+    let leaves = 420 * scale;
+    let label = format!("consolidation_cold/FY_AllChannels_USA/Spend/{scale}x ({leaves} leaves)");
+    bench_cold_scaled(c, &label, scale, |cube, refs| {
+        consol_scaled(
+            cube,
+            refs,
+            refs.base.fy_2026,
+            refs.base.all_channels,
+            refs.base.usa,
+            refs.base.spend,
+        )
+    });
+}
+
+fn bench_cold_q1_pm_fla_spend_10x(c: &mut Criterion) {
+    bench_cold_q1_pm_fla_spend_scaled(c, 10);
+}
+fn bench_cold_q1_pm_fla_spend_50x(c: &mut Criterion) {
+    bench_cold_q1_pm_fla_spend_scaled(c, 50);
+}
+fn bench_cold_q1_pm_fla_spend_100x(c: &mut Criterion) {
+    bench_cold_q1_pm_fla_spend_scaled(c, 100);
+}
+fn bench_cold_fy_all_usa_spend_10x(c: &mut Criterion) {
+    bench_cold_fy_all_usa_spend_scaled(c, 10);
+}
+fn bench_cold_fy_all_usa_spend_50x(c: &mut Criterion) {
+    bench_cold_fy_all_usa_spend_scaled(c, 50);
+}
+fn bench_cold_fy_all_usa_spend_100x(c: &mut Criterion) {
+    bench_cold_fy_all_usa_spend_scaled(c, 100);
+}
+
 criterion_group!(
     benches,
     bench_consol_q1_ps_tampa_spend,
@@ -639,5 +918,12 @@ criterion_group!(
     bench_cold_q1_pm_fla_cpc,
     bench_cold_q1_pm_fla_revenue,
     bench_cold_fy_all_usa_spend,
+    // Phase 2C scaled cold variants.
+    bench_cold_q1_pm_fla_spend_10x,
+    bench_cold_q1_pm_fla_spend_50x,
+    bench_cold_q1_pm_fla_spend_100x,
+    bench_cold_fy_all_usa_spend_10x,
+    bench_cold_fy_all_usa_spend_50x,
+    bench_cold_fy_all_usa_spend_100x,
 );
 criterion_main!(benches);

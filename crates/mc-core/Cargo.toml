@@ -64,3 +64,13 @@ harness = false
 [[bench]]
 name = "hierarchy_mark"
 harness = false
+
+# Phase 2C combined-workflow bench. Simulates a 100-iteration planner
+# session at 50× and 100× Acme — the load-bearing measurement that
+# distinguishes between §9.3 (write-side data structure on critical
+# path) and §9.2 (per-write fixed cost dominates) for Phase 2D's pick.
+# See `docs/handoffs/phase-2c-handoff.md` §"Phase 2C scope" item 3.
+
+[[bench]]
+name = "combined_workflow"
+harness = false

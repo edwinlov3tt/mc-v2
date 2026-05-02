@@ -237,6 +237,55 @@ fn bench_load_canonical_inputs(c: &mut Criterion) {
     });
 }
 
+// ---------------------------------------------------------------------------
+// Phase 2C — scaled bulk-ingest variants of `bench_load_canonical_inputs`.
+//
+// Per `docs/handoffs/phase-2c-handoff.md` §"Phase 2C scope" item 2:
+// extend the bulk-ingest row at 10× / 50× / 100× to measure ingest
+// scaling shape against ADR-0003 Decision 5's "ingest is the gating
+// budget" hypothesis. Each scaled row writes 2,520 × scale input cells
+// onto a fresh scaled-Acme cube. Asserts the count exactly.
+// ---------------------------------------------------------------------------
+
+use mc_fixtures::{
+    build_scaled_acme_cube_100x, build_scaled_acme_cube_10x, build_scaled_acme_cube_50x,
+    write_canonical_inputs_scaled,
+};
+
+fn bench_load_canonical_inputs_scaled(c: &mut Criterion, scale: u32) {
+    let cells = 2_520 * scale as usize;
+    let label = format!("demo_path/load_canonical_inputs/{scale}x ({cells} writes)");
+    c.bench_function(&label, |b| {
+        b.iter_batched_ref(
+            || {
+                match scale {
+                    10 => build_scaled_acme_cube_10x(),
+                    50 => build_scaled_acme_cube_50x(),
+                    100 => build_scaled_acme_cube_100x(),
+                    other => panic!("unsupported scale: {other}"),
+                }
+                .expect("scaled fixture must build")
+            },
+            |(cube, refs)| {
+                let n = write_canonical_inputs_scaled(cube, refs).expect("scaled inputs");
+                assert_eq!(n, cells);
+                black_box(n);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
+fn bench_load_canonical_inputs_10x(c: &mut Criterion) {
+    bench_load_canonical_inputs_scaled(c, 10);
+}
+fn bench_load_canonical_inputs_50x(c: &mut Criterion) {
+    bench_load_canonical_inputs_scaled(c, 50);
+}
+fn bench_load_canonical_inputs_100x(c: &mut Criterion) {
+    bench_load_canonical_inputs_scaled(c, 100);
+}
+
 criterion_group!(
     benches,
     bench_build_only,
@@ -245,5 +294,8 @@ criterion_group!(
     bench_full_demo_reads,
     bench_full_revenue_slice_warm,
     bench_load_canonical_inputs,
+    bench_load_canonical_inputs_10x,
+    bench_load_canonical_inputs_50x,
+    bench_load_canonical_inputs_100x,
 );
 criterion_main!(benches);

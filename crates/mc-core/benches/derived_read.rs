@@ -189,6 +189,104 @@ fn bench_cold_gross_profit(c: &mut Criterion) {
     bench_cold_derived(c, "read_derived_leaf_cold/Gross_Profit", |r| r.gross_profit);
 }
 
+// ---------------------------------------------------------------------------
+// Phase 2C — scaled Revenue cold-read variants.
+//
+// Per `docs/handoffs/phase-2c-handoff.md` §"Phase 2C scope" item 2: extend
+// `bench_read_derived_leaf_cold` for Revenue (the rule-chain depth-5 row)
+// at 10× / 50× / 100×. Anchor coord (Mar/Paid_Search/Tampa) is preserved
+// across scales — only total cube size + cache state at scale change.
+// ---------------------------------------------------------------------------
+
+use mc_fixtures::{
+    build_scaled_acme_cube_100x, build_scaled_acme_cube_10x, build_scaled_acme_cube_50x,
+    materialize_all_dependencies_scaled, write_canonical_inputs_scaled, ScaledAcmeRefs,
+};
+
+fn build_warm_scaled(scale: u32) -> (Cube, ScaledAcmeRefs) {
+    let (mut cube, refs) = match scale {
+        10 => build_scaled_acme_cube_10x(),
+        50 => build_scaled_acme_cube_50x(),
+        100 => build_scaled_acme_cube_100x(),
+        other => panic!("unsupported scale: {other}"),
+    }
+    .expect("scaled acme fixture must build");
+    write_canonical_inputs_scaled(&mut cube, &refs).expect("scaled inputs");
+    materialize_all_dependencies_scaled(&mut cube, &refs).expect("scaled materialize");
+    // Warm the anchor coord's derived chain explicitly, matching the
+    // 1× build_warm helper above.
+    for measure in [
+        refs.base.clicks,
+        refs.base.leads,
+        refs.base.customers,
+        refs.base.revenue,
+        refs.base.gross_profit,
+    ] {
+        let c = anchor_scaled(&cube, &refs, measure);
+        let _ = cube
+            .read(&c, refs.base.root_principal)
+            .expect("warmup read must succeed");
+    }
+    (cube, refs)
+}
+
+fn build_cold_scaled(scale: u32) -> (Cube, ScaledAcmeRefs) {
+    let (mut cube, refs) = build_warm_scaled(scale);
+    let spend_coord = anchor_scaled(&cube, &refs, refs.base.spend);
+    cube.write(WritebackRequest {
+        coord: spend_coord,
+        new_value: ScalarValue::F64(50_000.0),
+        principal: refs.base.root_principal,
+        intent: WriteIntent::Set,
+        expected_revision: None,
+        now_unix_seconds: 0,
+    })
+    .expect("dirty write must succeed");
+    (cube, refs)
+}
+
+fn anchor_scaled(
+    cube: &Cube,
+    refs: &ScaledAcmeRefs,
+    measure: mc_core::ElementId,
+) -> CellCoordinate {
+    coord(
+        cube.id,
+        &refs.base,
+        refs.base.scen_baseline,
+        refs.base.ver_working,
+        refs.base.mar_2026,
+        refs.base.paid_search,
+        refs.base.tampa,
+        measure,
+    )
+}
+
+fn bench_cold_revenue_scaled(c: &mut Criterion, scale: u32) {
+    let label = format!("read_derived_leaf_cold/Revenue/{scale}x");
+    c.bench_function(&label, |b| {
+        b.iter_batched_ref(
+            || build_cold_scaled(scale),
+            |(cube, refs)| {
+                let coord = anchor_scaled(cube, refs, refs.base.revenue);
+                let v = cube.read(&coord, refs.base.root_principal).expect("read");
+                black_box(v);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
+fn bench_cold_revenue_10x(c: &mut Criterion) {
+    bench_cold_revenue_scaled(c, 10);
+}
+fn bench_cold_revenue_50x(c: &mut Criterion) {
+    bench_cold_revenue_scaled(c, 50);
+}
+fn bench_cold_revenue_100x(c: &mut Criterion) {
+    bench_cold_revenue_scaled(c, 100);
+}
+
 criterion_group!(
     benches,
     bench_warm_clicks,
@@ -201,5 +299,8 @@ criterion_group!(
     bench_cold_customers,
     bench_cold_revenue,
     bench_cold_gross_profit,
+    bench_cold_revenue_10x,
+    bench_cold_revenue_50x,
+    bench_cold_revenue_100x,
 );
 criterion_main!(benches);

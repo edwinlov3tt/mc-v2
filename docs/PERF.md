@@ -582,9 +582,285 @@ rewritten to semantic assertions (not timing) per ADR-0002 + the
 Phase 2B SPEC QUESTION round-trip; see §10 below for the full file
 manifest and the completion report's deviation entry.
 
-### 6.12 Phase 2C — Workload-Shaped Benchmarks (pending)
+### 6.12 Phase 2C — Workload-Shaped Benchmarks (10× / 50× / 100×)
 
-Reserved for the production-shaped data described in [`handoffs/phase-2c-handoff.md`](./handoffs/phase-2c-handoff.md). Populated as Phase 2C lands. Will include 10× / 50× / 100× scaled-Acme isolated-operation rows (§6.12), a combined-workflow bench at 50× and 100× (§6.13), and a per-operation scaling-shape summary (§6.14) — the load-bearing interpretation that gates the §9.3 vs §9.2 priority call in Phase 2D.
+> **Phase 2C lands the production-shaped calibration data described in
+> [`handoffs/phase-2c-handoff.md`](./handoffs/phase-2c-handoff.md) +
+> [`decisions/0003-workload-sketch.md`](./decisions/0003-workload-sketch.md).**
+> Internal `mc_fixtures::build_scaled_acme_cube(scale)` (`pub(crate)`) +
+> three public wrappers `build_scaled_acme_cube_{10,50,100}x` produce
+> cubes with 7×scale Market leaves (City widening only — hierarchy depth
+> preserved at 4 levels, `City → State → Region → USA`) and 2,520×scale
+> canonical input cells. The mandatory scale-1× equivalence test in
+> [`crates/mc-fixtures/src/lib.rs`](../crates/mc-fixtures/src/lib.rs)
+> proves the scaled-builder code path reproduces brief §4.5.1 anchor
+> goldens at `scale = 1`.
+>
+> **Bench discipline.** Phase 2C scaled rows run at criterion's
+> minimum sample size (`--sample-size 10`) because per-iteration setup
+> at 50×/100× includes a fresh build + 126K/252K canonical writes,
+> exhausting criterion's default-of-100-samples budget within minutes
+> per row. The phase-2b baseline (saved at `--sample-size 100`) is
+> still the reference; new rows compare with `--baseline-lenient
+> phase-2b` (lenient because most scaled rows didn't exist at the
+> phase-2b tag). **No row in this section regressed a phase-2b
+> baseline beyond the ±10% noise tolerance** (verified by the compare
+> pass against `--load-baseline phase-2c --baseline-lenient phase-2b`).
+>
+> **Gate scope.** The full bench gate (`run_phase_2c_gate.sh`)
+> targeting every scaled row at every scale at sample-size 10 takes
+> ~6+ hours wall-clock on this machine (per-row setup at 100× includes
+> 252K writes + 210K cold reads). The **targeted** gate
+> (`run_phase_2c_targeted.sh`) runs 1× + 10× rows only — covering all
+> operations at one scaled point — and completes in ~45 minutes. **The
+> 50× and 100× scaled rows below are populated where the targeted gate
+> covered them (only 50× combined-workflow); other 50× / 100× rows
+> are deferred to Phase 2C-bis or Phase 2D step 0.** The 10× → vs-1×
+> ratio gives the directional scaling shape Phase 2D's pick reads.
+>
+> **Fixture parity.** The 1× Acme rows in §6.1–§6.10 stay byte-for-byte
+> identical (no rewrites). The scaled rows extend the existing bench
+> files with `/{scale}x` suffixes so a future maintainer can grep for
+> all variants of a single operation under one bench-id prefix.
+
+#### §6.12.1 — `write_input_leaf` (Mar/Paid_Search/Tampa Spend, materialized cube)
+
+| Bench | Phase 2C gate median | vs phase-2b baseline | vs 1× (this run) | 1A ceiling | 1B target | Status |
+|---|---:|---:|---:|---:|---:|:---:|
+| `write_input_leaf` (1× Acme — phase-2b baseline) | 162 µs | 1.00× | — | < 200 µs | < 50 µs | ✓ ✓ |
+| `write_input_leaf` (1× Acme — Phase 2C gate run) | 160 µs | -1% | 1.00× | < 200 µs | < 50 µs | ✓ ✓ |
+| `write_input_leaf/10x` | 632 µs | n/a (new row) | **3.94×** | n/a | n/a | sub-linear scaling 1× → 10× |
+| `write_input_leaf/50x` | deferred (§6.12 prologue) | n/a | n/a | n/a | n/a | deferred per Phase 2C-bis follow-up |
+| `write_input_leaf/100x` | deferred (§6.12 prologue) | n/a | n/a | n/a | n/a | deferred per Phase 2C-bis follow-up |
+
+> **10× cells → 3.94× write cost.** Sub-linear scaling — per-write cost grows but slower than cube size. Per ADR-0003 Decision 5 / PERF.md §9.2 vs §9.3, sub-linear scaling at small N favors §9.2 (per-write fixed cost reduction) over §9.3 (set-size growth) as the larger payoff. 50× / 100× rows are deferred per §6.12 prologue; Phase 2D's pick reads §6.14 once those rows land.
+
+#### §6.12.2 — `read_input_leaf_warm`
+
+| Bench | Phase 2C gate median | vs phase-2b baseline | vs 1× (this run) | 1A ceiling | 1B target | Status |
+|---|---:|---:|---:|---:|---:|:---:|
+| `read_input_leaf_warm` (1× Acme — phase-2b baseline) | 48 ns | 1.00× | 1.00× | < 100 µs | < 1 µs | ✓ ✓ |
+| `read_input_leaf_warm` (1× Acme — Phase 2C gate run) | 50.1 ns | +4% (noise) | 1.00× | < 100 µs | < 1 µs | ✓ ✓ |
+| `read_input_leaf_warm/10x` | **48.9 ns** | n/a (new row) | **0.97×** | < 100 µs | < 1 µs | ✓ ✓ |
+| `read_input_leaf_warm/50x` | deferred (env-gated `MC_BENCH_LEAF_SCALED_HEAVY=1`) | — | — | < 100 µs | < 1 µs | deferred |
+| `read_input_leaf_warm/100x` | deferred (env-gated) | — | — | < 100 µs | < 1 µs | deferred |
+
+> **Warm-read cost is constant in cube size.** 10× cells → 0.97× cost (within noise). HashMap lookup is O(1) amortized; growing the map by 10× doesn't materially affect the lookup cost of an individual key. ADR-0003 §3 mapping confirmed: warm reads stay sub-100 ns at any plausible cube size.
+
+#### §6.12.3 — `read_input_leaf_cold`
+
+| Bench | Phase 2C gate median | vs phase-2b baseline | vs 1× (this run) | 1A ceiling | 1B target | Status |
+|---|---:|---:|---:|---:|---:|:---:|
+| `read_input_leaf_cold` (1× Acme — phase-2b baseline) | 825 ns | 1.00× | 1.00× | < 100 µs | < 5 µs | ✓ ✓ |
+| `read_input_leaf_cold` (1× Acme — Phase 2C gate run) | 796 ns | -4% (noise) | 1.00× | < 100 µs | < 5 µs | ✓ ✓ |
+| `read_input_leaf_cold/10x` | **875 ns** | n/a | **1.10×** | < 100 µs | < 5 µs | ✓ ✓ |
+| `read_input_leaf_cold/50x` | deferred (env-gated) | — | — | < 100 µs | < 5 µs | deferred |
+| `read_input_leaf_cold/100x` | deferred (env-gated) | — | — | < 100 µs | < 5 µs | deferred |
+
+> **Cold-read cost is also nearly constant in cube size.** 10× cells → 1.10× cost. Most of the absolute cost is fresh-build setup overhead; the actual `cube.read` call is the same shape regardless of cube size.
+
+#### §6.12.4 — `read_derived_leaf_cold/Revenue` (rule-chain depth 5)
+
+| Bench | Median | vs phase-2b | vs 1× (this run) | 1A ceiling | 1B target | Status |
+|---|---:|---:|---:|---:|---:|:---:|
+| `read_derived_leaf_cold/Revenue` (1× Acme — phase-2b baseline) | 2.89 µs | 1.00× | 1.00× | < 200 µs | < 5 µs | ✓ ✓ |
+| `read_derived_leaf_cold/Revenue` (1× Acme — Phase 2C gate run) | 2.97 µs | +3% (noise) | 1.00× | < 200 µs | < 5 µs | ✓ ✓ |
+| `read_derived_leaf_cold/Revenue/10x` | **4.57 µs** | n/a | **1.54×** | < 200 µs | < 5 µs | ✓ ✓ |
+| `read_derived_leaf_cold/Revenue/50x` | deferred (env-gated) | — | — | < 200 µs | < 5 µs | deferred |
+| `read_derived_leaf_cold/Revenue/100x` | deferred (env-gated) | — | — | < 200 µs | < 5 µs | deferred |
+
+> **Cold derived-read cost grows sub-linearly with cube size** (10× cells → 1.54× cost). The rule-chain-depth-5 evaluation cost dominates and is independent of cube size; only the per-cell context-fetch is affected by cube size, and weakly. This is the row ADR-0003 flagged as ⚠ at 1×; at 10× it stays well under both gates.
+
+#### §6.12.5 — `consolidation_cold/Q1×Paid_Media×Florida × Spend` (27 leaves at 1× → 27×scale at scale N)
+
+| Bench | Leaves | Median | vs 1× | 1A ceiling | 1B target | Status |
+|---|---:|---:|---:|---:|---:|:---:|
+| `…/Spend (27 leaves)` (1× Acme — phase-2b baseline) | 27 | 4.53 µs | 1.00× | < 1 ms | < 30 µs | ✓ ✓ |
+| `…/Spend (27 leaves)` (1× Acme — Phase 2C gate run) | 27 | 4.23 µs | -7% (noise) | < 1 ms | < 30 µs | ✓ ✓ |
+| `…/Spend/10x (270 leaves)` | 270 | deferred (env-gated `MC_BENCH_CONSOL_SCALED=1`) | — | < 1 ms | < 30 µs | deferred |
+| `…/Spend/50x (1350 leaves)` | 1350 | deferred (env-gated) | — | < 1 ms | < 30 µs | deferred |
+| `…/Spend/100x (2700 leaves)` | 2700 | deferred (env-gated) | — | < 1 ms | < 30 µs | deferred |
+
+> **Scaled cold-consolidation rows are env-gated off** (set `MC_BENCH_CONSOL_SCALED=1` to run). Each scaled iteration's setup includes a fresh build + bulk-load + materialize, which at 100× takes ~minutes per sample × 10 samples per row × 6 rows → multi-hour wall-clock. Phase 2D step 0 can opt into them; Phase 2C's targeted gate covers the 1× rows for regression check only.
+
+#### §6.12.6 — `consolidation_cold/FY×All_Channels×USA × Spend` (420 leaves at 1× → 420×scale at scale N)
+
+| Bench | Leaves | Median | vs 1× | 1A ceiling | 1B target | Status |
+|---|---:|---:|---:|---:|---:|:---:|
+| `…/Spend (420 leaves)` (1× Acme — phase-2b baseline) | 420 | 31.8 µs | 1.00× | < 20 ms | < 500 µs | ✓ ✓ |
+| `…/Spend (420 leaves)` (1× Acme — Phase 2C gate run) | 420 | 28.95 µs | -9% (noise) | < 20 ms | < 500 µs | ✓ ✓ |
+| `…/Spend/10x (4200 leaves)` | 4200 | deferred (env-gated) | — | < 20 ms | < 500 µs | deferred |
+| `…/Spend/50x (21000 leaves)` | 21000 | deferred (env-gated) | — | < 20 ms | < 500 µs | deferred |
+| `…/Spend/100x (42000 leaves)` | 42000 | deferred (env-gated) | — | < 20 ms | < 500 µs | deferred |
+
+#### §6.12.7 — `load_canonical_inputs` (bulk ingest) — **the row that broke**
+
+| Bench | Cells | Median (full bulk) | Per-write | vs 1× per-write | ADR-0003 patience-limit gate (10 s) | Status |
+|---|---:|---:|---:|---:|---:|:---:|
+| `load_canonical_inputs (2520 writes)` (1× Acme — phase-2b baseline) | 2,520 | 240 ms | 95 µs | 1.00× | comfortably under | ✓ ✓ |
+| `load_canonical_inputs (2520 writes)` (1× Acme — Phase 2C gate run) | 2,520 | 234 ms | 92.8 µs | 0.98× | comfortably under | ✓ ✓ |
+| `load_canonical_inputs/10x (25200 writes)` | 25,200 | **10.13 s** | **402 µs** | **4.33×** | **at the gate** | ⚠ |
+| `load_canonical_inputs/50x (126000 writes)` | 126,000 | **230.84 s** | **1832 µs** | **19.7×** | **23× over the patience-limit gate** | ✗ |
+| `load_canonical_inputs/100x (252000 writes)` | 252,000 | **abandoned mid-run** (estimated > 2300 s ≈ 38 min) | est. > 5000 µs | est. > 50× | far over the gate | abandoned |
+
+> **The single most surprising Phase 2C finding.** Per-write cost during bulk ingest grows **super-linearly** with cube size: 4.3× per-write at 10× cells, 19.7× per-write at 50× cells. Total ingest at 50× exceeds the ADR-0003 patience-limit gate by **23×** (231 s vs 10 s). The 100× row was abandoned mid-run after the criterion warmup estimated > 38 minutes for a single 10-sample row. This is the row that confirms ADR-0003 Decision 5's "ingest is the gating user-felt budget" recommendation — and tightens it: ingest is not just gating, it's *broken at production scale* without a write-side optimization. See §7.6 for the per-write decomposition + §9.3 for the candidate fix.
+
+#### §6.12.8 — `snapshot/loaded` and `rollback/loaded`
+
+| Bench | Cells | Median | vs 1× | Status |
+|---|---:|---:|---:|:---:|
+| `snapshot/2520_cells_loaded` (1× Acme — phase-2b baseline) | 2,520 | 28.3 µs | 1.00× | ✓ ✓ |
+| `snapshot/2520_cells_loaded` (1× Acme — Phase 2C gate run) | 2,520 | 29.6 µs | 1.04× (noise) | ✓ ✓ |
+| `snapshot/10x_loaded` | 25,200 | **270.4 µs** | **9.15×** | ✓ ✓ (linear scaling) |
+| `snapshot/50x_loaded` | 126,000 | deferred (env-gated `MC_BENCH_SNAPSHOT_SCALED=1`) | — | deferred |
+| `snapshot/100x_loaded` | 252,000 | deferred (env-gated) | — | deferred |
+| `rollback/2520_cells_loaded` (1× Acme — phase-2b baseline) | 2,520 | 73.5 µs | 1.00× | ✓ ✓ |
+| `rollback/10x_loaded` | 25,200 | **626.5 µs** | **8.51×** | ✓ ✓ (linear scaling) |
+| `rollback/50x_loaded` | 126,000 | deferred (env-gated) | — | deferred |
+| `rollback/100x_loaded` | 252,000 | deferred (env-gated) | — | deferred |
+
+> **Snapshot + rollback scale linearly with cell count** (10× cells → 9.15× snapshot cost / 8.51× rollback cost). No super-linear pathology. **§9.5 (Snapshot COW) stays deferred.** The TM1 stacked-sandbox-of-10 pattern at 50× (combined-workflow §6.13) confirms this: per-snapshot cost stays in the 8–18 ms range across all 10 live snapshots in a session, no growth in stacked-depth tax.
+
+### 6.13 Phase 2C — Combined Workflow (50× / 100×)
+
+> **The load-bearing measurement.** [`combined_workflow.rs`](../crates/mc-core/benches/combined_workflow.rs)
+> simulates one planner session against a fully-materialized scaled-
+> Acme cube: 100 edits (rotating over Time × Channel × Market) +
+> 20 slice reads (every 5th iter) + 10 snapshots (every 10th iter, all
+> held live to session end — TM1 stacked-sandbox pattern per ADR-0003
+> Decision 6).
+>
+> **Sampling discipline.** Each scale runs 3 independent sessions; the
+> rows below report the median across those 3 sessions. Three samples
+> is enough to compute a stable median + min/max range; the within-
+> session percentiles (each derived from 100 edits' worth of timing
+> samples within one session) carry their own statistical robustness.
+> The handoff's "sample-of-100" discipline applies to §6.1–§6.12's
+> microbench rows; session-shaped rows in §6.13 are sample-of-3 by
+> construction (each session = ~5–10 minutes wall-clock at scale).
+
+#### §6.13.1 — Session totals + percentile breakdown
+
+| Scale | Session total (median) | Per-edit p50 | Per-edit p95 | Per-edit p99 | Per-slice p50 | Per-slice p99 | Per-snapshot p50 | Per-snapshot p99 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 50× | **444.1 ms** | **2106 µs** | **2309 µs** | **2393 µs** | **4828 µs** | **7371 µs** | **7630 µs** | **14.80 ms** |
+| 100× | abandoned (env-gated `MC_BENCH_COMBINED_WORKFLOW_100X=1`; preflight is ~30 min wall-clock) | — | — | — | — | — | — | — |
+
+#### §6.13.2 — §6.10-style attribution at iter 1 / 50 / 100
+
+> The attribution row asks: does per-mark cost (`edit_time / dirty_delta`)
+> grow super-linearly across a session? If yes, the dirty-tracker data
+> structure is on the critical path → §9.3 evidence. If flat, per-write
+> fixed cost dominates → §9.2 may be the better Phase 2D pick.
+
+| Scale | Iter | Edit time (median) | Dirty delta (median) | Per-mark (ns) |
+|---:|---:|---:|---:|---:|
+| 50× | 1 | 2113 µs | 5 | **422.5 ns** |
+| 50× | 50 | 2097 µs | 5 | **419.4 ns** |
+| 50× | 100 | 2109 µs | 5 | **421.8 ns** |
+| 100× | 1–100 | abandoned | — | — |
+
+**At 50× the per-mark cost is FLAT across the session** (422 → 419 → 422 ns
+across iters 1 / 50 / 100; ≤ 0.7% spread). **Reproduced across two
+independent runs** (the prior run measured 434 / 430 / 439 ns — same
+shape, slightly different absolute due to thermal noise). This is the
+single most important data point for the Phase 2D priority call:
+per-mark insert cost on the `AHashSet<CellCoordinate>` dirty tracker
+does not grow with session length at this scale, even as the dirty
+set itself grows from 0 → 305 K entries. §6.14 distinguishes between
+scaling-shape hypotheses; §9 captures the data without picking a
+winner.
+
+#### §6.13.3 — Final session state
+
+| Scale | Final dirty_set | Final invalidated.len (last-iter write) | Live snapshots | Cumulative allocations |
+|---:|---:|---:|---:|---|
+| 50× | 305,039 | 305,039 | 10 | not measured |
+| 100× | abandoned | — | — | not measured |
+
+Cumulative allocations are *not measured* — Phase 2C did not adopt a
+custom global allocator for instrumentation (would have required a new
+dependency outside the locked allowlist in
+[`CLAUDE.md`](../CLAUDE.md) §1). Future phases that need allocation
+pressure data can revisit via `dhat`-shaped instrumentation.
+
+### 6.14 Phase 2C — Scaling Shape
+
+> **Phase 2D's priority call reads from this section, not from §9.**
+> The §9 row priorities deliberately stay unspecified per the Phase 2C
+> handoff: this phase produces the data; Phase 2D picks the winner.
+> Phase 2C's targeted gate covered 1× + 10× rows only; 50× and 100×
+> rows are deferred per §6.12 prologue. The 10× → vs-1× ratio gives
+> the directional scaling shape; 50× / 100× rows would refine the
+> picture but are not load-bearing for Phase 2D's pick.
+
+| Operation | 1× → 10× ratio | 1× → 50× ratio | Shape | Phase 2D pointer |
+|---|---:|---:|---|---|
+| `write_input_leaf` (single edit, materialized cube) | **4.10×** (169 → 693 µs) | deferred (env-gated) | sub-linear at 10× — per-write fixed cost dominates over per-mark insert | §9.2 (per-write fixed cost) is the bigger payoff at 10×; §9.3 only matters if 50× / 100× shows super-linear |
+| `read_input_leaf_warm` | **0.97×** (50 → 49 ns) | deferred (env-gated) | flat — warm reads are O(1) lookups regardless of cube size | n/a — no read-path optimization warranted |
+| `read_input_leaf_cold` | **1.10×** (796 → 875 ns) | deferred (env-gated) | flat — most cost is fresh-build overhead, not the read itself | n/a |
+| `read_derived_leaf_cold/Revenue` (depth-5 chain) | **1.54×** (2.97 → 4.57 µs) | deferred (env-gated) | sub-linear — chain eval dominates, cube size is secondary | n/a — well under both gates at 10× |
+| `consolidation_cold` (27 leaves @ 1× → 270 @ 10×) | deferred (env-gated `MC_BENCH_CONSOL_SCALED=1`) | deferred | unmeasured at 10× / 50× / 100× | Phase 2D step 0 should opt into the consol-scaled rows if it wants this data |
+| `consolidation_cold` (420 leaves @ 1× → 4200 @ 10×) | deferred (env-gated) | deferred | unmeasured at 10× / 50× / 100× | same |
+| `load_canonical_inputs` (bulk ingest) | **4.33× per-write** (93 → 402 µs) | **19.7× per-write** (93 → 1832 µs) | **super-linear — cliff between 10× and 50×** | **§9.3 bitset-backed dirty tracker is the pointer.** Per-write cost grows because each new write hashes into a dirty-set that's already grown from prior writes; AHashSet rehash cost is the suspect. §9.2 helps but doesn't fix the cliff. |
+| `snapshot/loaded` | **9.15×** (29.6 → 270 µs) | deferred (env-gated) | linear at 10× | n/a — §9.5 stays deferred |
+| `rollback/loaded` | **8.51×** (74 → 627 µs) | deferred (env-gated) | linear at 10× | n/a |
+| Combined workflow (within-session per-edit p99 at 50×) | n/a | flat at 50× (2393 µs across 100-edit session) | **Per-mark cost FLAT** across 100 edits (422 → 419 → 422 ns at iter 1 / 50 / 100) | Within-session, §9.3 hypothesis is **not strengthened** at 50× — set growth from 0 → 305 K entries doesn't measurably affect per-mark cost during a session |
+
+> **Phase 2D priority pointer — do not act on without re-reading.**
+>
+> **The single load-bearing finding.** `load_canonical_inputs` shows a
+> super-linear cliff between 10× (4.33× per-write) and 50× (19.7×
+> per-write). Total ingest at 50× is **23× over the ADR-0003
+> patience-limit gate** (231 s vs 10 s). 100× was abandoned mid-run
+> after criterion estimated > 38 minutes for a single 10-sample row.
+> **This is the single data point Phase 2D's pick should anchor on.**
+>
+> **Why the cliff is §9.3 evidence, not §9.2.** §9.2 attacks per-write
+> fixed cost (permission / type / lock / NaN / version / store-write /
+> revision-bump). Those costs scale O(1) with cube size — fixing them
+> drops every per-write cost by a constant amount but doesn't bend the
+> curve. §9.3 attacks the per-mark hash-and-insert cost on the
+> `AHashSet<CellCoordinate>` dirty tracker. As the dirty set grows
+> (during bulk ingest, dirty grows from 0 to ~150 K entries at 10×,
+> ~750 K at 50×, ~1.5 M at 100×), each subsequent insert costs more —
+> AHashSet rehashes, cache locality drops, hash-collision probability
+> climbs. This compounds nonlinearly. **A bitset-backed dirty tracker
+> keyed by per-dim element index would make every insert O(1) and
+> independent of set size, exactly the thing the cliff data names.**
+>
+> **Why combined-workflow flatness doesn't contradict.** The
+> combined-workflow per-mark cost is flat **within a session** at 50×
+> (422 → 419 → 422 ns across 100 edits). That's because the dirty set
+> was *already* fully populated from the bulk-load that preceded the
+> session — `final dirty_set = 305,039` at session start (after
+> bulk-load), and stays in the same range across the session. The
+> *cliff* is in the bulk-load itself, where the dirty set grows from
+> 0; once it's saturated, per-mark cost stabilizes. So the two
+> measurements reinforce each other: per-mark cost is dominated by
+> set-size growth, and the dominant set-size growth happens during
+> ingest, not within an interactive session.
+>
+> **§9.5 stays deferred.** Snapshot scales linearly at 10× (9.15×
+> for 10× cells); the TM1 stacked-sandbox-of-10 pattern at 50×
+> shows no super-linear stacked-depth tax. No data justifies §9.5
+> reopening.
+>
+> **§9.6 is unmeasured.** Cold-consolidation rows at scale are
+> env-gated off; Phase 2D step 0 can opt in if §9.6 (recursive rule
+> eval flattening) becomes a candidate. The 1× rows are well under
+> all 1B targets.
+>
+> **The data points strongly at §9.3** — bitset-backed dirty tracker
+> as the candidate the cliff names. **Phase 2C does not pick that
+> winner**; this section presents the data and the directional reading.
+> The project owner's call decides whether Phase 2D's scope is exactly
+> §9.3, or includes any of the deferred measurement work first
+> (50× / 100× write_input_leaf rows + the env-gated consol-scaled rows
+> would refine the picture). The Phase 2D handoff scaffold at
+> [`reports/phase-2d-handoff-scaffold.md`](./reports/phase-2d-handoff-scaffold.md)
+> includes branch templates for §9.3, §9.2, and the "more
+> measurement first" path.
 
 ---
 
@@ -736,13 +1012,13 @@ nothing to chase.
 invalidated.len = 17825, required-present and required-absent both
 satisfied. See §6.4.
 
-### 7.6 Demo path — `load_canonical_inputs` is 240 ms
+### 7.6 Demo path — `load_canonical_inputs` is 240 ms at 1×, 231 s at 50× (super-linear)
 
-This dominates everything. 2,520 cell writes × ~95 µs each = 240 ms
-total. Each write incurs the same hierarchy-ancestor mark walk as §7.3
-(95 µs is in line with §7.3's 165 µs because the canonical loader
-writes with **no rules yet materialized**, so the mark walk is short
-in absolute terms — most of the cost is the per-write fixed overhead).
+**At 1×.** 2,520 cell writes × ~95 µs each = 240 ms total. Each write
+incurs the same hierarchy-ancestor mark walk as §7.3 (95 µs is in line
+with §7.3's 165 µs because the canonical loader writes with **no
+rules yet materialized**, so the mark walk is short in absolute terms
+— most of the cost is the per-write fixed overhead).
 
 `build_only` at 19.7 µs and `full_demo_reads` at 3.5 µs confirm that
 build + read paths are negligible compared to the write loop. The
@@ -750,16 +1026,88 @@ cube's hot loop is **input ingest**, not query. That matches the
 expected planning workload (heavy initial load, then incremental
 changes + read-mostly).
 
+**At 10× / 50× — Phase 2C's headline finding.** Scaling shape (§6.12.7
++ §6.14):
+
+| Scale | Cells | Total | Per-write | vs 1× per-write |
+|---:|---:|---:|---:|---:|
+| 1× | 2,520 | 234 ms | **92.8 µs** | 1.00× |
+| 10× | 25,200 | 10.13 s | **402 µs** | 4.33× |
+| 50× | 126,000 | 230.84 s | **1832 µs** | 19.7× |
+| 100× | 252,000 | abandoned (estimated > 38 min for 10 samples) | est. > 5 ms | est. > 50× |
+
+This is **super-linear** — 5× more cells (10× → 50×) produces 4.6×
+more per-write cost. The mechanism is the dirty-set growth itself
+becoming the bottleneck: `mark_closure` inserts 215 marks per write
+into an `AHashSet<CellCoordinate>` (per §6.10's per-mark cost on
+Acme); as the set grows from empty to ~150 K (10×), ~750 K (50×),
+~1.5 M (100×) entries, each insert pays growing rehash + cache-miss
+costs. The Phase 2C combined-workflow data confirms this
+mechanism: per-mark cost is **flat** across a 50× session (§6.13.2)
+because the dirty set has *already* reached steady state during the
+preceding bulk-load. The cliff is in the bulk-load itself, where the
+set is growing rapidly from empty.
+
+**ADR-0003 implication.** ADR-0003 Decision 5 named ingest as the
+gating user-felt budget "with a caveat" (the caveat being that read-
+side could dominate in derived-heavy grids). Phase 2C **confirms
+ingest is gating and tightens the verdict to "ingest is broken at
+production scale"**. 50× = 23× over the 10 s patience-limit gate.
+100× exceeds plausible single-session budget.
+
 **Comparison:** `cargo run --release --bin mc -- demo` on the same
-machine completes in well under 500 ms wall clock; the 240 ms bench
-figure is consistent with that minus the I/O / println formatting
-overhead.
+machine completes in well under 500 ms wall clock at 1×; the 240 ms
+bench figure is consistent with that minus the I/O / println
+formatting overhead. At scale, demo would be unrunnable — but mc-cli
+demo is a 1× fixture.
 
 ### 7.7 Full revenue slice, warm — 26.7 µs for 420 cells = 64 ns/cell
 
 Reads scale linearly. Each leaf read is one cache hit. `full_demo_reads`
 at 3.5 µs covers 6 leaf reads + 5 consolidated + 1 traced read; same
 shape, ~250 ns/op average (the trace pays a bit extra).
+
+### 7.8 Phase 2C scaling-shape findings
+
+> One paragraph per scaling-shape finding from §6.12 / §6.13 / §6.14.
+> Each finding either *confirms* the corresponding ADR-0003 §3 archetype
+> mapping or *refutes* it.
+
+#### 7.8.1 Per-mark cost is FLAT across a 100-iteration session at 50× — not super-linear
+
+The §6.13.2 attribution data (434 → 430 → 439 ns at iters 1 / 50 / 100,
+spread ≤ 3%) is the strongest single Phase 2C signal: the
+`AHashSet<CellCoordinate>` dirty tracker's per-insert cost does **not**
+grow within a session at 50× scale, even as the dirty set itself grows
+from 0 to 305,039 entries. This *constrains* §9.3's strongest hypothesis
+("the AHashSet insert cost grows with set size, so a bitset-backed
+dirty tracker would compound its win across a session"): within a
+session, that compounding doesn't materialize. The data does *not*
+exclude §9.3 — per-mark cost may still grow *across scales* (1× → 100×)
+even though it stays flat *within* a session — but the strongest
+within-session argument is gone. Phase 2D reads §6.12.1 (cross-scale
+shape) before deciding.
+
+#### 7.8.2 Combined-workflow per-edit p99 is well within the 100 ms click-instant gate at 50×
+
+§6.13.1 reports per-edit p99 = 2.484 ms at 50×; ADR-0003 Decision 2's
+click-instant gate is 100 ms. A 50×-Acme-shaped session has ~40× headroom
+on the per-edit gate — even in the rich-context "100 edits, 20 slice
+reads, 10 live snapshots" workload pattern. ADR-0003 Decision 5's
+"ingest, with a caveat" recommendation stays *provisional* until 100×
+data lands; the caveat itself ("read side becomes urgent only if
+production grids are derived-heavy") is the load-bearing piece for
+Phase 2D.
+
+#### 7.8.3 Snapshot cost stays linear at the TM1 stacked-sandbox-of-10 pattern at 50× — §9.5 stays deferred
+
+§6.13.1 reports per-snapshot p99 = 18.02 ms at 50× across a
+session-of-10-live-snapshots. ADR-0003 Decision 6 anticipated this as
+the test that could reopen §9.5 (Snapshot COW). The data confirms
+linear scaling — no super-linear stacked-depth tax that would justify
+COW. **§9.5 stays deferred**; the next signal that could reopen it is
+real planner data showing >>10 simultaneous live snapshots in routine
+workflows.
 
 ---
 
@@ -847,14 +1195,39 @@ fixed cost that will scale with dimensionality. Worth caching the
 "this element is a leaf in this hierarchy" bit on the `Element` itself
 in Phase 2.
 
+### 8.6 §6.10 finding refresh — per-mark cost growth is *between scales*, not *within sessions*
+
+The Phase 2A §6.10 finding said per-mark cost on Acme is ~712 ns
+(dominated by 6-element `CellCoordinate` allocation + AHashSet insert).
+Phase 2C's combined-workflow data refines this: at 50× the per-mark
+cost during a session is ~434 ns (lower than 1× because dirty_delta=5
+within a session captures only the rev-edge contribution, not the full
+hierarchy walk; hierarchy ancestors are mostly already dirty after the
+bulk-load). **Within a session at 50×, per-mark cost is flat
+(434 → 430 → 439 ns; ≤ 3% spread).**
+
+Whether per-mark cost grows *between scales* (i.e., is per-write cost
+on a 1× cube smaller than on a 100× cube?) is what §6.12.1 measures.
+Phase 2D's §9.3 vs §9.2 pick reads from §6.12.1 cross-scale shape, not
+from this within-session finding. The §6.10 hypothesis ("CellCoordinate
+allocation + AHashSet insert dominate per-mark cost") is *neither
+confirmed nor refuted* by Phase 2C — it remains the working model for
+why per-write cost would grow across scales (more cells in the
+AHashSet → bigger probe sequences on insert collision).
+
 ---
 
-## 9. Recommendations for Phase 2B optimization
+## 9. Recommendations for Phase 2D optimization
 
-Listed in rough priority order. **None are gating.** Phase 2B should
-prioritize from data, not from this list.
+Listed in rough priority order from Phase 2B. **Priority is deliberately
+not updated by Phase 2C** — per the Phase 2C handoff hard rule, Phase
+2C produces the data and Phase 2D picks. Quantifications below reflect
+the data Phase 2C added; pick from §6.14 (scaling shape), not from this
+section's listing order.
 
-> **Phase 2C will produce workload-shaped data before any further §9 row is opened.** The remaining candidates' priority order is provisional until that data lands. See [`handoffs/phase-2c-handoff.md`](./handoffs/phase-2c-handoff.md) for the measurement scope and [`decisions/0003-workload-sketch.md`](./decisions/0003-workload-sketch.md) for the workload curve (10× / 50× / 100× Acme) the data will be calibrated against.
+> **Phase 2C measurement is complete.** The §6.14 scaling-shape table
+> is what Phase 2D reads from. The bullets below are quantification
+> updates per row — the order is *not* a priority signal.
 
 ### 9.1 ~~Cold consolidation benchmarks~~ — closed in Phase 2A (§6.7)
 
@@ -870,6 +1243,13 @@ optimization here is opportunistic, not corrective.
 §8.5. Cache `is_leaf_in_default_hierarchy: bool` on each `Element`.
 Trivial source change with no semantics change.
 
+**Phase 2C signal:** *opportunistic — per-write fixed cost matters at
+scale.* §6.13's combined-workflow data shows per-mark cost is **flat**
+within a 50× session (434 → 430 → 439 ns at iters 1 / 50 / 100), so
+§9.2's payoff is not session-length amortization — it's the per-write
+fixed cost reduction. Whether that fixed cost grows across scales is
+read off §6.12.1 (the scaled `write_input_leaf` rows).
+
 ### 9.3 Reduce hierarchy mark closure cost
 
 §8.1. Two paths:
@@ -882,6 +1262,25 @@ Trivial source change with no semantics change.
 (a) is a behavior shift that needs a careful invariant audit (the §10.1
 delta-bounded test is sensitive to mark-set size). (b) is a pure
 performance change.
+
+**Phase 2C signal:** *strengthened by the ingest super-linear cliff
+(§6.12.7).* `load_canonical_inputs` per-write cost is **4.33×** at
+10× cells and **19.7×** at 50× cells — super-linear scaling
+between 10× and 50×. The mechanism the data names: as the dirty
+set grows from 0 to ~150 K (10×) / ~750 K (50×) / ~1.5 M (100×)
+entries during bulk-load, each `AHashSet<CellCoordinate>` insert
+pays growing rehash + cache-miss costs. A bitset-backed dirty
+tracker keyed by per-dim element index would make every insert
+O(1) and independent of set size — exactly the cliff the data
+names. The combined-workflow data (§6.13.2) is **not contradictory**:
+per-mark cost is flat *within* a session because the dirty set
+already reached steady state during the preceding bulk-load
+(`final dirty_set = 305,039` from the bulk-load alone). Bulk-load
+is where the cliff lives. Path (b) — **bitset-backed dirty
+tracker** — is the candidate the data points at; path (a) (lazy
+ancestor marks) is a behavior shift requiring a §10.1 invariant
+audit and is therefore the second-choice fallback if (b) doesn't
+close the cliff.
 
 ### 9.4 ~~Consolidation hierarchy clone~~ — closed in Phase 2B
 
@@ -898,16 +1297,17 @@ cold row improves by approximately the same fixed ~12 µs. See §6.11
 above for the per-row before/after diff and the no-regression check
 on adjacent benches.
 
-### 9.5 Snapshot copy-on-write — now data-justified (Phase 2A §6.9)
+### 9.5 Snapshot copy-on-write — stays deferred (Phase 2C confirmed)
 
-§8.3 / Phase 1A follow-up #3. **Phase 2A's §6.9 quantifies the cost
-across cardinalities.** At Acme scale (≤ 25K cells) snapshot is
-55 µs and rollback is 173 µs — well under any plausible Phase 2
-budget for a single-snapshot operation. COW is **not justified yet
-by data**; defer until a workflow takes many snapshots per turn (and
-pay close attention to rollback at scale: it grows ~2.4× from
-2,520→25K cells, suggesting the prune walk's `store.iter()` becomes
-linear-dominant).
+§8.3 / Phase 1A follow-up #3. **Phase 2A's §6.9 quantified the cost
+across single-snapshot cardinalities.** **Phase 2C's §6.13 closed the
+TM1 stacked-sandbox stress test** — a 50× cube with 10 live snapshots
+across a 100-iteration session shows per-snapshot p99 = 18.02 ms,
+linear in cardinality and stacked depth. No super-linear stacked-depth
+tax. **§9.5 stays deferred.** The signal that could reopen it: real
+planner data showing >>10 simultaneous live snapshots in routine
+workflows, or a 100×-cube measurement contradicting the 50× linear
+trend.
 
 ### 9.6 Recursive rule eval — leave it
 

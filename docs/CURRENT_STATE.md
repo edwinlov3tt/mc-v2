@@ -2,11 +2,12 @@
 
 > **What's live right now.** Update whenever a phase ships, a gate flips, or a deferral closes.
 
-**Last updated:** 2026-05-01 (Phase 2 closure: Phase 2B committed, Q3 closed, ADR-0003 accepted, Phase 2C handoff drafted)
+**Last updated:** 2026-05-02 (Phase 2C measurement landed; uncommitted, awaiting project-owner review per CLAUDE.md §"Executing actions with care")
 **Last Phase 1A commit:** `bee2812` — *mc-core: update lib.rs doc-comment to point at docs/specs/* (Phase 1A kernel at `4aa674a`)
 **Last Phase 1B + Phase 2A commit:** `48d52e9` — *bench: complete Phase 2A cold-path benchmark expansion* (Phase 1B and Phase 2A bundled into one commit; tag `phase-2a-cold-path-baseline` at this hash)
 **Phase 2B commit / tag:** `6ea58ab` (tag `phase-2b-consolidation-fast-path`)
 **Phase 2 housekeeping Q3 closure commit:** `9f7420c`
+**Phase 2C HEAD:** uncommitted; prospective tag `phase-2c-workload-baseline`
 **Branch:** `main` (tracking `origin/main` at github.com/edwinlov3tt/mc-v2)
 
 ---
@@ -17,13 +18,14 @@
 - **Phase 1B — Benchmark Baseline + PERF.md.** Complete 2026-05-01. Acceptance criterion 5 closed via Cargo.lock transitive pins (no toolchain bump). See [`PERF.md`](./PERF.md).
 - **Phase 2A — Cold-Path Benchmark Expansion.** Complete 2026-05-01. Both Phase 1B measurement gaps closed: cold consolidation rows added against §11.2 ceilings (PERF.md §6.7); synthetic no-deps write fixture added against §11.1 50 µs ceiling (PERF.md §6.8). Two new diagnostic suites (snapshot clone PERF.md §6.9; hierarchy ancestor mark microbench PERF.md §6.10). **No `crates/mc-core/src/` files modified.** See [`reports/phase-2a-completion-report.md`](./reports/phase-2a-completion-report.md).
 - **Phase 2B — Consolidation Fast Path.** Complete 2026-05-01, committed at `6ea58ab` (tag `phase-2b-consolidation-fast-path`). One targeted kernel change in [`cube.rs::read_consolidated`](../crates/mc-core/src/cube.rs) plus a `Vec<Arc<Hierarchy>>` shape change in [`dimension.rs`](../crates/mc-core/src/dimension.rs); replaces per-call `Vec<Dimension>` + `Vec<Hierarchy>` deep-clones with one `Arc::clone` + a `Vec<Arc<Hierarchy>>` collect (refcount-bumps). PERF.md §6.7 3-leaf cold consol drops 14.3 µs → **2.53 µs** (clears brief §11.2 1B target ≤ 3 µs); every other §6.7 row improves by ~12 µs absolute. New kernel unit test `consecutive_recompute_reads_match_phase_2b` (handoff item 3). One contract test rewritten (`t_consolidation_caches_value_within_revision`, semantic-not-timing) per ADR-0002 + the SPEC QUESTION round-trip approval. See [`reports/phase-2b-completion-report.md`](./reports/phase-2b-completion-report.md) and [`PERF.md`](./PERF.md) §6.11 + §9.4 + §10.
+- **Phase 2C — Production-Shaped Workload Benchmarks.** **Pending project-owner review and commit (uncommitted at HEAD).** Measurement-only phase; **no `crates/mc-core/src/` change.** Adds internal `mc_fixtures::build_scaled_acme_cube(scale)` (`pub(crate)`) + three public wrappers `_10x` / `_50x` / `_100x` + 6 unit tests including the mandatory scale-1× equivalence test against brief §4.5.1 anchor goldens. Adds 27 new bench rows extending the existing five Phase 1B/2A bench files at 10× / 50× / 100×. Adds new [`combined_workflow.rs`](../crates/mc-core/benches/combined_workflow.rs) that simulates a 100-iteration planner session at 50× and 100× with stacked-snapshot hold (TM1 sandbox pattern per ADR-0003 Decision 6). PERF.md §6.12 / §6.13 / §6.14 written from the gate run. **Did not pick a Phase 2D winner** — §9 priority deliberately unspecified. See [`reports/phase-2c-completion-report.md`](./reports/phase-2c-completion-report.md).
 
 ## What's queued
 
-- **Phase 2 housekeeping — Q3 (criterion baseline tracking).** **Closed retroactively 2026-05-01.** Workflow proven end-to-end at commit `9f7420c`. Both `phase-2a` and `phase-2b` baselines captured under [`reports/bench-data/`](./reports/bench-data/) (1.4 MB JSON; 45 rows × 2 phases × 4 files). Phase 2C onward must use `cargo bench -p mc-core --bench <name> -- --baseline phase-2b`. See [`reports/phase-2b-completion-report.md`](./reports/phase-2b-completion-report.md) §6.A.1 for the closure record.
-- **Phase 2 housekeeping — Q1 (workload sketch ADR).** **Accepted (provisional) 2026-05-01.** [`decisions/0003-workload-sketch.md`](./decisions/0003-workload-sketch.md) — sunset clause auto-flips status to "Needs revision" on first real planner usage data or 2026-11-01, whichever comes first. The workload curve (10× / 50× / 100× Acme) and 100 ms click-instant threshold from this ADR are what Phase 2C calibrates against.
+- **Phase 2 housekeeping — Q3 (criterion baseline tracking).** **Closed retroactively 2026-05-01.** Workflow proven end-to-end at commit `9f7420c`. Both `phase-2a` and `phase-2b` baselines captured under [`reports/bench-data/`](./reports/bench-data/) (1.4 MB JSON; 45 rows × 2 phases × 4 files). Phase 2C onward must use `cargo bench -p mc-core --bench <name> -- --baseline phase-2b`. See [`reports/phase-2b-completion-report.md`](./reports/phase-2b-completion-report.md) §6.A.1 for the closure record. **Phase 2C extended this to a third baseline:** `phase-2c` saved under [`reports/bench-data/phase-2c/`](./reports/bench-data/phase-2c/) (post-2C scaled-row data captured at sample-size 10).
+- **Phase 2 housekeeping — Q1 (workload sketch ADR).** **Accepted (provisional) 2026-05-01.** [`decisions/0003-workload-sketch.md`](./decisions/0003-workload-sketch.md) — sunset clause auto-flips status to "Needs revision" on first real planner usage data or 2026-11-01, whichever comes first. The workload curve (10× / 50× / 100× Acme) and 100 ms click-instant threshold from this ADR are what Phase 2C calibrates against. **Phase 2C produced the workload-shaped data ADR-0003 anchored to;** ADR-0003 stays Accepted — Provisional, no amendment yet.
 - **Phase 2 housekeeping — Q2 (toolchain bump).** Deferred until any new runtime dep needs it (likely Phase 3A's parser dep choice).
-- **Phase 2C — Production-Shaped Workload Benchmarks.** Measurement phase, not optimization. Adds 10× / 50× / 100× Acme calibration fixtures, isolated-operation benches against each scale, and one combined-workflow bench measuring per-edit p50/p99 across a session. Outputs feed the §9.3 vs §9.2 priority decision in Phase 2D. Source: `crates/mc-core/src/` is locked. Handoff at [`handoffs/phase-2c-handoff.md`](./handoffs/phase-2c-handoff.md).
+- **Phase 2D — pick the §9 winner.** Reads from PERF.md §6.14 (scaling-shape table) to decide between §9.3 (bitset-backed dirty tracker), §9.2 (leaf-flag cache), or something else the data surfaces. Phase 2C confirmed §9.3's per-mark-cost-grows-with-set-size hypothesis is **not** strengthened *within a session* at 50× (the cost is flat at 434 / 430 / 439 ns at iters 1 / 50 / 100 of a 100-iteration session). Whether the cost grows *across scales* is read off §6.12.1; that is Phase 2D's call. Handoff TBD.
 
 ## Active ADRs
 
@@ -40,10 +42,10 @@
 | Build | `cargo build --release --workspace` | ✓ zero warnings |
 | Format | `cargo fmt --check --all` | ✓ |
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` | ✓ |
-| Tests | `cargo test --workspace` | ✓ 210 / 0 (was 209; +1 new kernel unit test `consecutive_recompute_reads_match_phase_2b` from Phase 2B handoff item 3; one contract test rewritten under ADR-0002, count unchanged) |
-| Determinism (10×) | `for i in $(seq 1 10); do cargo test --workspace -q ...; done` | ✓ 10 / 10 identical at 210 / 0 each run |
-| CLI demo | `cargo run --release --bin mc -- demo` | ✓ matches brief §4.6 |
-| Benchmarks | `cargo bench --workspace` | ✓ Phase 1B baseline + Phase 2A cold-path expansion + Phase 2B fast path all green. Numbers in [`PERF.md`](./PERF.md) §6 (Phase 1B), §6.7–§6.10 (Phase 2A), and §6.11 (Phase 2B before/after). **Brief §11.2 3-leaf 1B target now passes**: §6.7 row drops 14.3 µs → 2.53 µs (≤ 3 µs ✓). Every other §6.7 cold row improved by ~12 µs absolute. Warm rows + adjacent §6.1/§6.4/§6.5/§6.8/§6.9/§6.10 within ±10% noise — no regressions. PERF.md §9.4 closed. |
+| Tests | `cargo test --workspace` | ✓ 216 / 0 (was 210; +6 from Phase 2C `mc-fixtures` unit tests covering scaled fixtures + the mandatory scale-1× equivalence test) |
+| Determinism (10×) | `for i in $(seq 1 10); do cargo test --workspace -q ...; done` | ✓ 10 / 10 identical at 216 / 0 each run |
+| CLI demo | `cargo run --release --bin mc -- demo` | ✓ matches brief §4.6 (kernel unchanged) |
+| Benchmarks | `cargo bench --workspace` | ✓ Phase 1B baseline + Phase 2A cold-path expansion + Phase 2B fast path + **Phase 2C workload-shaped benches** all green. Numbers in [`PERF.md`](./PERF.md) §6 (Phase 1B), §6.7–§6.10 (Phase 2A), §6.11 (Phase 2B before/after), and **§6.12 / §6.13 / §6.14 (Phase 2C 10× / 50× / 100× rows + combined-workflow + scaling-shape summary)**. Phase 2C scaled rows compared against `--baseline phase-2b`; no Phase 1B/2A/2B regression beyond ±10% noise. **Phase 2C did not pick a Phase 2D winner** — §9 row priorities stay unspecified per the handoff hard rule. |
 
 ---
 
@@ -63,15 +65,17 @@
 | `tests/duplicate_elements.rs` | 6 |
 | `tests/coordinate_validity.rs` | 9 |
 | `tests/value_nan.rs` | 8 |
-| `mc-fixtures` unit tests (Phase 1A: 4 + Phase 2A: 6) | 10 |
-| **Total** | **210** |
+| `mc-fixtures` unit tests (Phase 1A: 4 + Phase 2A: 6 + Phase 2C: 6) | 16 |
+| **Total** | **216** |
 
 `mc-core` unit tests are 84 (was 83) after Phase 2B added
 `cube::tests::consecutive_recompute_reads_match_phase_2b` per the
 Phase 2B handoff §3 mandate. `tests/consolidation.rs` is still 12 —
 one test (`t_consolidation_caches_value_within_revision`) was
 rewritten under ADR-0002 + the SPEC QUESTION approval but the count
-is unchanged.
+is unchanged. Phase 2C added 6 tests in `mc-fixtures` (10 → 16):
+mandatory scale-1× equivalence test + invariant tests at 10× / 50×
+/ 100× + extra-leaf round-trip at 10× + scale-zero rejection.
 
 ---
 
@@ -111,14 +115,14 @@ These are documented in [`reports/phase-1-completion-report.md`](./reports/phase
 
 Source-tagged hooks and surfaced findings. **Not scheduled.** Full lists in [`reports/phase-1-completion-report.md`](./reports/phase-1-completion-report.md) §8 (Phase 1A) and [`PERF.md`](./PERF.md) §8 / §9 (Phase 1B + Phase 2A).
 
-**Phase 2A closed Phase 1B's measurement gaps.** **Phase 2B closed PERF.md §9.4** (consolidation hierarchy clone). The open follow-ups below are the remaining Phase 2C+ optimization candidates whose magnitudes are quantified by current PERF.md data.
+**Phase 2A closed Phase 1B's measurement gaps.** **Phase 2B closed PERF.md §9.4** (consolidation hierarchy clone). **Phase 2C produced the workload-shaped data ADR-0003 anchored to** but did *not* pick a Phase 2D winner — see PERF.md §6.14 for the scaling-shape table that the next phase reads from.
 
 Optimization candidates surfaced from current data:
 
 - ~~Hierarchy-clone hot-path in `cube.rs::read_consolidated`.~~ **Closed in Phase 2B** ([PERF.md](./PERF.md) §6.11 + §9.4).
-- Per-dim leaf-flag caching to fast-path `is_consolidated_coord` ([PERF.md §9.2](./PERF.md)).
-- Hierarchy mark closure cost (lazy ancestor marks or bitset-backed dirty tracker — [PERF.md §9.3](./PERF.md)).
-- `Snapshot` copy-on-write at scale (Phase 1 ships deep-clone — [PERF.md §9.5](./PERF.md)).
+- Per-dim leaf-flag caching to fast-path `is_consolidated_coord` ([PERF.md §9.2](./PERF.md)). **Phase 2C signal:** *opportunistic* — combined-workflow data shows per-mark cost is flat at 50× (no within-session blow-up); §9.2's payoff is the per-write fixed cost, not session-length growth.
+- Hierarchy mark closure cost (lazy ancestor marks or bitset-backed dirty tracker — [PERF.md §9.3](./PERF.md)). **Phase 2C signal:** *suggestive but not conclusive at session level* — per-mark cost flat across the 50× session contradicts the strongest §9.3 hypothesis (the AHashSet insert cost grows with set size). Cross-scale 1× → 100× growth is what §6.12.1 measures; Phase 2D's pick reads from there.
+- `Snapshot` copy-on-write at scale (Phase 1 ships deep-clone — [PERF.md §9.5](./PERF.md)). **Phase 2C signal:** *stays deferred* — TM1 stacked-sandbox pattern (10 live snapshots at 50×) shows linear scaling, no super-linear stacked-depth tax.
 - `CellStore` trait introduction (Phase 1 ships concrete `HashMapStore`).
 - Lock-acquisition capability check hardening.
 - Toolchain bump → unlocks `proptest` / `insta` for the §10.7 doctrines and any insta-driven snapshot tests ([PERF.md §9.7](./PERF.md) housekeeping checklist).

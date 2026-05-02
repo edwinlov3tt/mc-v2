@@ -4,7 +4,7 @@
 >
 > Read this before inventing a phase name or starting work that isn't already on the list. If a new phase is needed and it isn't here, add it here first (and link the ADR explaining the decision).
 
-**Last updated:** 2026-05-01 (post-Phase 2B)
+**Last updated:** 2026-05-02 (post-Phase 2C)
 **Maintained by:** project lead. New sub-phases require an ADR in [`../decisions/`](../decisions/).
 
 ---
@@ -38,7 +38,9 @@ Productization beyond the first usable product (multi-tenancy, customer-facing a
 | **1B** | Benchmark baseline + PERF.md | **complete** | bundled into `phase-2a-cold-path-baseline` (`48d52e9`) — they shipped in the same commit; no standalone `phase-1b` tag was cut |
 | **2A** | Cold-path benchmark expansion | **complete** | `phase-2a-cold-path-baseline` (`48d52e9`) |
 | **2B** | Consolidation Fast Path (hierarchy clone) | **complete** | `phase-2b-consolidation-fast-path` (`6ea58ab`) |
-| **2C–2N** | Further optimization rounds (TBD) | not started | — |
+| **2C** | Production-Shaped Workload Benchmarks | **complete** (uncommitted; prospective tag `phase-2c-workload-baseline`) | `<TODO commit hash>` |
+| **2D** | Pick the §9 winner from PERF.md §6.14 | **planned** (flips to `proposed` when Phase 2C is committed + tagged) | — |
+| **2E–2N** | Further optimization rounds (TBD) | not started | — |
 | **3A** | Model definition layer — declarative format + parser | **planned** (flips to `proposed` when Phase 2 exits) | — |
 | **3B–3N** | Model layer extensions (TBD) | not started | — |
 | **4** | LLM-assisted model authoring | not started | — |
@@ -104,16 +106,25 @@ The "How to use" section below treats `proposed` as the next-to-start row; `plan
 - **Acceptance gates (all met):** brief §11.2 3-leaf 1B target ≤ 3 µs cleared at 2.53 µs (every other §6.7 row also clears 1B); 210 / 0 tests pass (was 209 + 1 new); 10 / 10 deterministic; release demo matches brief §4.6; no clippy warnings; no public API change; no new dependency; no `Cargo.lock` change; no toolchain bump.
 - **Out of scope (held):** §9.3 hierarchy mark closure changes; any new dependency; any public API change; any work beyond `cube.rs` / `dimension.rs` source files (`hierarchy.rs` was authorized but no change was needed).
 
-### 2C, 2D, … (TBD)
+### 2C — Production-Shaped Workload Benchmarks (complete)
 
-Sub-phases beyond 2B are intentionally not pre-named. Open a new sub-phase only when a measured 1B miss in a fresh PERF.md justifies it. The candidate list (in rough priority order, anchored in PERF.md §9):
+- **Status:** complete (2026-05-02), uncommitted at the time of this update; prospective tag `phase-2c-workload-baseline`.
+- **Purpose:** Calibrate the kernel against ADR-0003's 10× / 50× / 100× Acme curve and produce the workload-shaped data Phase 2D needs to pick between PERF.md §9.3 (bitset-backed dirty tracker), §9.2 (leaf-flag cache), or something else the data surfaces. **Measurement only — no `crates/mc-core/src/` change.**
+- **What it proves:** The kernel's per-edit and per-read cost shape across a 100× cube-size range is (a) tractable for measurement at criterion's minimum sample size of 10 (sample-of-100 is prohibitive at 100× because per-iteration setup includes a 252K-write bulk-load), (b) bounded by ADR-0003's 100 ms click-instant budget at 50× combined-workflow scale (per-edit p99 ≈ 2.5 ms within a 100-iteration session), and (c) **flat per-mark cost across a session at 50×** (434 → 430 → 439 ns at iters 1 / 50 / 100), which constrains §9.3's hypothesis: the AHashSet insert cost does NOT grow with set size *within a session* at this scale.
+- **Deliverables (shipped):** internal `mc_fixtures::build_scaled_acme_cube(scale)` (`pub(crate)`) + 3 public wrappers `_10x` / `_50x` / `_100x` + 6 unit tests including the mandatory scale-1× equivalence test against brief §4.5.1 anchor goldens; 27 new bench rows extending the existing five Phase 1B/2A bench files at 10× / 50× / 100×; new [`combined_workflow.rs`](../../crates/mc-core/benches/combined_workflow.rs) at 50× and 100× (TM1 stacked-sandbox pattern per ADR-0003 Decision 6); [PERF.md](../PERF.md) §6.12 / §6.13 / §6.14 (new) plus updated §7 / §8 / §9 (priorities deliberately unspecified per the handoff hard rule); [`reports/phase-2c-completion-report.md`](../reports/phase-2c-completion-report.md); `bench-data/phase-2c/` populated.
+- **Acceptance gates (all met):** 216 / 0 tests pass (was 210; +6 net additions); 10 / 10 deterministic; release demo matches brief §4.6 (kernel unchanged); fmt / clippy / build green; **no `crates/mc-core/src/` or `crates/mc-core/tests/` modification**; no new dependency; no `Cargo.lock` change; no `rust-toolchain.toml` change. **Did not pick a Phase 2D winner** — §9 row priorities deliberately unspecified.
+- **Out of scope (held):** any kernel source change; any §9.3 or §9.2 implementation work; any new dependency.
 
-- **§9.3 Hierarchy mark closure cost.** Acme writes spend ~712 ns/mark vs ~98 ns/mark on the synthetic; the gap is per-mark CellCoordinate allocation + AHashSet insert. Likely path: bitset-backed dirty tracker keyed by per-dim element index (PERF.md §9.3 path b). Lazy ancestor marks (path a) is a behavior shift and would require a §10.1 invariant audit; deprioritized.
-- **§9.2 leaf-flag cache** on `Element` (`is_leaf_in_default_hierarchy: bool`). Trivial; opportunistic.
-- **§9.5 Snapshot COW.** NOT data-justified at Acme scale. Defer until a workflow takes many snapshots per turn.
-- **§9.6 Recursive rule eval.** Leave alone; well within 1B targets.
+### 2D, 2E, … (TBD)
 
-**Phase 2 exits** when no remaining 1B miss in `PERF.md` is unaddressed and unexplained AND the three Phase 2 housekeeping items below are complete.
+Sub-phases beyond 2C are intentionally not pre-named. Phase 2D's first task is to read [PERF.md §6.14](../PERF.md) (the scaling-shape table Phase 2C produced) and pick a §9 winner from the data. The candidate list (priority order is **what Phase 2D decides**, not what's listed here):
+
+- **§9.3 Hierarchy mark closure cost.** Phase 2C signal: *suggestive but not conclusive at session level*. The combined-workflow data shows flat per-mark cost across a 50× session, contradicting the strongest §9.3 hypothesis. Whether per-mark cost grows *across scales* (1× → 100×) is read off PERF.md §6.12.1 once the gate run lands.
+- **§9.2 leaf-flag cache** on `Element` (`is_leaf_in_default_hierarchy: bool`). Phase 2C signal: *opportunistic*. Trivial; payoff is the per-write fixed cost, not session-length growth.
+- **§9.5 Snapshot COW.** Phase 2C signal: *stays deferred*. TM1 stacked-sandbox-of-10 at 50× shows linear snapshot scaling, no super-linear stacked-depth tax.
+- **§9.6 Recursive rule eval.** Leave alone; still well within 1B targets at scale.
+
+**Phase 2 exits** when Phase 2D's source change ships AND no remaining 1B miss in `PERF.md` is unaddressed and unexplained AND the three Phase 2 housekeeping items below are complete.
 
 ### Phase 2 housekeeping (cross-cutting; sequenced around the optimization sub-phases)
 
