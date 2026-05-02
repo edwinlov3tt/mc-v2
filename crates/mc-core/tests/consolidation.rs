@@ -471,6 +471,21 @@ fn t_max_aggregation_with_nulls() {
 
 #[test]
 fn t_consolidation_caches_value_within_revision() {
+    // Brief §10.3: "Read consolidated Q1 Spend; record duration. Read
+    // again immediately; assert second read is at least 10x faster
+    // (cache hit)."
+    //
+    // Phase 2B rewrite (per ADR-0002 + Phase 2B approval): the "10×
+    // faster" wording was a Phase-1A-era proxy for "the cache hit
+    // happened." Phase 2B's `read_consolidated` fast path collapsed the
+    // cold-read floor from ~14 µs to <3 µs (PERF.md §6.7), which makes
+    // the single-shot debug-mode wall-clock ratio fall below 10× under
+    // workspace-parallel-test timer noise even though the cache hit
+    // demonstrably still happens. Performance evidence now lives in
+    // criterion benches (§6.3 warm reads at ~63 ns vs §6.7 cold reads at
+    // ~2.7 µs — a ~43× speedup statistically established over 100
+    // samples). This test now asserts the *semantic* cache contract via
+    // the public API; the speedup itself is verified in PERF.md §6.7.
     let (mut cube, refs) = build_acme_cube().expect("build ok");
     write_canonical_inputs(&mut cube, &refs).expect("inputs");
     let cube_id = cube.id;
@@ -484,28 +499,103 @@ fn t_consolidation_caches_value_within_revision() {
         refs.tampa,
         refs.spend,
     );
-    // First read populates the consolidation cache.
-    let t0 = std::time::Instant::now();
+
+    // (a) Cold read: Q1 Tampa Paid_Search Spend = 33,000 per brief §4.5.1.
     let v1 = cube.read(&q1, refs.root_principal).expect("read 1");
-    let d1 = t0.elapsed();
-    // Second read at the same revision must hit the cache.
-    let t1 = std::time::Instant::now();
+    let expected_cold = canonical_inputs_for(1, 0, 0).spend
+        + canonical_inputs_for(2, 0, 0).spend
+        + canonical_inputs_for(3, 0, 0).spend;
+    assert_close(
+        v1.value.as_f64().expect("F64"),
+        expected_cold,
+        "cold consolidated read",
+    );
+    assert_close(v1.value.as_f64().expect("F64"), 33_000.0, "golden 33,000");
+
+    // (b) Cache populated: the consolidated coord now lives in the
+    // store with Consolidation provenance at the cube's current revision.
+    let revision_after_cold = cube.revision();
+    {
+        let stored = cube
+            .store()
+            .read(&q1)
+            .expect("consolidated value cached after cold read");
+        assert!(
+            matches!(stored.provenance, Provenance::Consolidation { .. }),
+            "cache entry must carry Consolidation provenance, got {:?}",
+            stored.provenance
+        );
+        assert_eq!(
+            stored.revision, revision_after_cold,
+            "cache entry revision must match the cube's current revision"
+        );
+    }
+
+    // (c) Cache is no longer dirty for that coord — the cold read
+    // cleared the dirty flag the consolidation walk had observed.
+    assert!(
+        !cube.dirty().is_dirty(&q1),
+        "consolidated coord must not be dirty after a successful read"
+    );
+
+    // (d) Re-read at the same revision returns byte-for-byte the same
+    // ScalarValue, and the revision did not advance (reads do not bump
+    // revision per brief §16; only writes do).
     let v2 = cube.read(&q1, refs.root_principal).expect("read 2");
-    let d2 = t1.elapsed();
     assert_eq!(
         v1.value.as_f64(),
         v2.value.as_f64(),
-        "cached value must match"
+        "cache hit must return the byte-for-byte same value"
     );
-    // 10× speedup per brief §10.3. d1 includes the consolidation walk
-    // (3 leaf reads + sum); d2 is a single hashmap lookup. We allow a
-    // 10ns floor so the assertion isn't degenerate when d1 itself is
-    // sub-microsecond on fast hardware.
-    let d1_ns = d1.as_nanos().max(10);
-    let d2_ns = d2.as_nanos().max(1);
+    assert_eq!(
+        cube.revision(),
+        revision_after_cold,
+        "reads do not bump revision; cache hit must not have triggered a write"
+    );
+
+    // (e) Mutate one of the consolidation's child leaves: Mar_2026
+    // Spend goes from canonical 11,500 → 50,000. Per brief §16 every
+    // write bumps revision exactly once.
+    let mar_leaf = coord(
+        cube_id,
+        &refs,
+        refs.scen_baseline,
+        refs.ver_working,
+        refs.mar_2026,
+        refs.paid_search,
+        refs.tampa,
+        refs.spend,
+    );
+    cube.write(WritebackRequest {
+        coord: mar_leaf,
+        new_value: ScalarValue::F64(50_000.0),
+        principal: refs.root_principal,
+        intent: WriteIntent::Set,
+        expected_revision: None,
+        now_unix_seconds: 0,
+    })
+    .expect("write Mar Spend");
+
+    // (f) The consolidated coord is now dirty: hierarchy-ancestor mark
+    // walk per brief §8 propagated the leaf invalidation up to Q1.
     assert!(
-        d2_ns * 10 <= d1_ns,
-        "second read must be at least 10× faster: d1={d1:?}, d2={d2:?}"
+        cube.dirty().is_dirty(&q1),
+        "consolidated coord must be dirty after a child-leaf write"
+    );
+
+    // (g) Re-read recomputes and reflects the new leaf value.
+    // Revision must have advanced from the write in (e).
+    let v3 = cube.read(&q1, refs.root_principal).expect("read 3");
+    let expected_post_write =
+        canonical_inputs_for(1, 0, 0).spend + canonical_inputs_for(2, 0, 0).spend + 50_000.0;
+    assert_close(
+        v3.value.as_f64().expect("F64"),
+        expected_post_write,
+        "post-write recomputation must reflect the new Mar input",
+    );
+    assert!(
+        cube.revision() > revision_after_cold,
+        "write in (e) must have advanced revision"
     );
 }
 

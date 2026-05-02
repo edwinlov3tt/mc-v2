@@ -35,6 +35,12 @@ Phase 1B benchmarks are likely to produce two more research notes:
 - **Criterion compatibility under Rust 1.78.** What we tried (specific version pins), what worked, what didn't, and what the closure conditions are.
 - **Hierarchy clone overhead in consolidated reads.** Whether the per-read clone in `cube.rs::read_consolidated` is meaningful at Acme scale.
 
+## Proposals (not adopted; seeking validation)
+
+These are exploratory shapes — drafted, not decided. Each one names the question it asks a future reader (or another model instance) to pressure-test before commitment. They deliberately sit outside the "Active notes" index so adopting one is an explicit move, not a drift.
+
+- [`dual-fixture-claw-stress-test.md`](./dual-fixture-claw-stress-test.md) — *2026-05-01.* Should we use claw-core's NBA totals dataset as MC's second fixture (parallel to Acme), both as kernel stress-test and as a planning-workflow dogfood? Concrete cube sketch (7 dims, 13 measures, 5 rules) + ingest path + 4 candidate planning use cases + 6 honest red flags. **Status:** awaiting second-instance review.
+
 ## How to write a research note
 
 1. Copy [`../templates/research-note.md`](../templates/research-note.md).

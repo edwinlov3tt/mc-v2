@@ -2,6 +2,8 @@
 //!
 //! Per phase-1-rust-kernel-build-brief.md §3.5.
 
+use std::sync::Arc;
+
 use ahash::AHashMap;
 
 use crate::element::Element;
@@ -17,12 +19,17 @@ pub enum DimensionKind {
     Version,
 }
 
-/// `Clone` is enabled on Phase 1 because `cube.rs::read_consolidated`
-/// needs to clone the dimensions slice during a recursive read to avoid
-/// holding a `&Cube` borrow across child reads (per kickoff Rule 5).
-/// Phase 2 optimization (deferred per §0.A bench gate) can replace this
-/// with a `Cow` or by indexing dimensions positionally; the clone is
-/// cheap on Acme-scale dims (≤ 50 elements / hierarchy entries each).
+/// `Clone` is retained because internal accessors and tests still rely on
+/// it; the previously-hot consolidation read path no longer pays a deep
+/// dimension clone (see `cube.rs::read_consolidated` after Phase 2B).
+///
+/// Per Phase 2B fast path (PERF.md §6.7 / §9.4): each `Hierarchy` is held
+/// behind an `Arc` so cloning a `Dimension` (or constructing a parallel
+/// `Vec<Arc<Hierarchy>>`) is O(elements + Arc-bumps), not
+/// O(hierarchy edges + maps). The `pub` field type changed from
+/// `Vec<Hierarchy>` to `Vec<Arc<Hierarchy>>`; external readability is
+/// preserved through the `hierarchy()` / `default_hierarchy()` accessors
+/// which still return `&Hierarchy`.
 #[derive(Clone, Debug)]
 pub struct Dimension {
     pub id: DimensionId,
@@ -31,7 +38,7 @@ pub struct Dimension {
     pub elements: Vec<Element>,
     pub element_index: AHashMap<ElementId, usize>,
     pub element_by_name: AHashMap<String, ElementId>,
-    pub hierarchies: Vec<Hierarchy>,
+    pub hierarchies: Vec<Arc<Hierarchy>>,
     pub default_hierarchy: HierarchyId,
     is_frozen: bool,
 }
@@ -73,7 +80,10 @@ impl Dimension {
     }
 
     pub fn hierarchy(&self, id: HierarchyId) -> Option<&Hierarchy> {
-        self.hierarchies.iter().find(|h| h.id == id)
+        self.hierarchies
+            .iter()
+            .find(|h| h.id == id)
+            .map(Arc::as_ref)
     }
 
     pub fn default_hierarchy(&self) -> &Hierarchy {
@@ -81,6 +91,26 @@ impl Dimension {
         // hierarchies. Validated at `DimensionBuilder::build` time, so the
         // None branch is unreachable for any well-formed `Dimension`.
         match self.hierarchy(self.default_hierarchy) {
+            Some(h) => h,
+            None => unreachable!(
+                "Internal invariant violated: DimensionBuilder::build \
+                 ensures default_hierarchy references a member of \
+                 self.hierarchies. See spec §2 I-Dim-4."
+            ),
+        }
+    }
+
+    /// Returns a refcounted handle to the default hierarchy. Cloning the
+    /// returned `Arc` is a refcount bump (O(1)), not a deep hierarchy
+    /// clone — used by `cube.rs::read_consolidated` to avoid the per-call
+    /// `Vec<Hierarchy>` clone that dominated PERF.md §6.7.
+    pub fn default_hierarchy_arc(&self) -> &Arc<Hierarchy> {
+        // Same invariant as `default_hierarchy()` above.
+        match self
+            .hierarchies
+            .iter()
+            .find(|h| h.id == self.default_hierarchy)
+        {
             Some(h) => h,
             None => unreachable!(
                 "Internal invariant violated: DimensionBuilder::build \
@@ -119,7 +149,7 @@ pub struct DimensionBuilder {
     elements: Vec<Element>,
     element_index: AHashMap<ElementId, usize>,
     element_by_name: AHashMap<String, ElementId>,
-    hierarchies: Vec<Hierarchy>,
+    hierarchies: Vec<Arc<Hierarchy>>,
     default_hierarchy_name: Option<String>,
 }
 
@@ -173,7 +203,7 @@ impl DimensionBuilder {
                 dim: self.id,
             });
         }
-        self.hierarchies.push(hierarchy);
+        self.hierarchies.push(Arc::new(hierarchy));
         Ok(self)
     }
 
@@ -224,7 +254,7 @@ impl DimensionBuilder {
                 parent_of: AHashMap::new(),
             };
             let id_ = synth.id;
-            (vec![synth], id_)
+            (vec![Arc::new(synth)], id_)
         } else if let Some(default_name) = default_hierarchy_name {
             let resolved = hierarchies
                 .iter()

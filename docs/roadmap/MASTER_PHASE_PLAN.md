@@ -4,7 +4,7 @@
 >
 > Read this before inventing a phase name or starting work that isn't already on the list. If a new phase is needed and it isn't here, add it here first (and link the ADR explaining the decision).
 
-**Last updated:** 2026-05-01 (post-Phase 2A)
+**Last updated:** 2026-05-01 (post-Phase 2B)
 **Maintained by:** project lead. New sub-phases require an ADR in [`../decisions/`](../decisions/).
 
 ---
@@ -37,7 +37,7 @@ Productization beyond the first usable product (multi-tenancy, customer-facing a
 | **1A** | Rust kernel for the Acme demo | **complete** | `4aa674a` (initial) |
 | **1B** | Benchmark baseline + PERF.md | **complete** | bundled into `phase-2a-cold-path-baseline` (`48d52e9`) — they shipped in the same commit; no standalone `phase-1b` tag was cut |
 | **2A** | Cold-path benchmark expansion | **complete** | `phase-2a-cold-path-baseline` (`48d52e9`) |
-| **2B** | Consolidation Fast Path (hierarchy clone) | **proposed** | — |
+| **2B** | Consolidation Fast Path (hierarchy clone) | **complete** | (uncommitted; prospective tag `phase-2b-consolidation-fast-path` — backfill once committed) |
 | **2C–2N** | Further optimization rounds (TBD) | not started | — |
 | **3A** | Model definition layer — declarative format + parser | **planned** (flips to `proposed` when Phase 2 exits) | — |
 | **3B–3N** | Model layer extensions (TBD) | not started | — |
@@ -95,14 +95,14 @@ The "How to use" section below treats `proposed` as the next-to-start row; `plan
 - **Acceptance gates (all met):** all 1A/1B gates still pass; cold-state verification (`assert!(cube.dirty().is_dirty(...))`) runs before every cold timing; goldens verified pre-timing; 209/209 tests pass.
 - **Out of scope (explicit):** any kernel source change; any Phase 2B optimization work.
 
-### 2B — Consolidation Fast Path (proposed)
+### 2B — Consolidation Fast Path (complete)
 
-- **Status:** proposed; handoff doc to land at `docs/handoffs/phase-2b-handoff.md`.
-- **Purpose:** Eliminate the per-call hierarchy clone in [`cube.rs::read_consolidated`](../../crates/mc-core/src/cube.rs#L526) — the ~14 µs fixed-cost floor that today causes the brief §11.2 3-leaf 1B target (3 µs) to miss by ~5×.
-- **What it proves:** Whether the kernel's consolidation algorithm hits the 1B targets once a single localized over-cloning is removed.
-- **Deliverables (planned, high-level):** a kernel change confined to `cube.rs` (and possibly `dimension.rs`) that replaces `self.dimensions.clone()` + `dim.default_hierarchy().clone()` with `&[Dimension]` + `Arc<Hierarchy>` per dim or equivalent; a fresh PERF.md §6.7 re-run; a brief Phase 2B completion report.
-- **Acceptance gates (planned):** all gates from 2A still pass; brief §11.2 3-leaf 1B target met (≤ 3 µs); every higher-fan-out cold consolidation row improves by approximately the same fixed amount; no semantics change.
-- **Out of scope (explicit):** §9.3 hierarchy mark closure changes; any new dependency; any new public API; any work beyond `cube.rs` / `dimension.rs` source files.
+- **Status:** complete (2026-05-01, uncommitted at the time of this update; awaiting project-owner review).
+- **Purpose:** Eliminated the per-call hierarchy/dimension clone in [`cube.rs::read_consolidated`](../../crates/mc-core/src/cube.rs) — the ~14 µs fixed-cost floor that caused the brief §11.2 3-leaf 1B target (3 µs) to miss by ~5×.
+- **What it proves:** The kernel's consolidation algorithm hits every brief §11.2 1B target once the single localized over-cloning is removed. The 3-leaf row drops 14.3 µs → 2.53 µs (clears ≤ 3 µs); every higher-fan-out cold row improves by ~12 µs absolute. Warm rows + every adjacent benched row hold within ±10% noise.
+- **Deliverables (shipped):** kernel change in [`cube.rs`](../../crates/mc-core/src/cube.rs) + [`dimension.rs`](../../crates/mc-core/src/dimension.rs) (Option A — `Arc<Vec<Dimension>>` + `Vec<Arc<Hierarchy>>`); new kernel unit test `consecutive_recompute_reads_match_phase_2b` (handoff §3); rewrite of `t_consolidation_caches_value_within_revision` from a single-shot wall-clock ratio to semantic cache-state assertions per [ADR-0002](../decisions/0002-perf-assertions-in-benchmarks-not-tests.md); [PERF.md §6.7 + §6.11 + §9.4 + §10](../PERF.md); [`reports/phase-2b-completion-report.md`](../reports/phase-2b-completion-report.md).
+- **Acceptance gates (all met):** brief §11.2 3-leaf 1B target ≤ 3 µs cleared at 2.53 µs (every other §6.7 row also clears 1B); 210 / 0 tests pass (was 209 + 1 new); 10 / 10 deterministic; release demo matches brief §4.6; no clippy warnings; no public API change; no new dependency; no `Cargo.lock` change; no toolchain bump.
+- **Out of scope (held):** §9.3 hierarchy mark closure changes; any new dependency; any public API change; any work beyond `cube.rs` / `dimension.rs` source files (`hierarchy.rs` was authorized but no change was needed).
 
 ### 2C, 2D, … (TBD)
 
@@ -121,6 +121,8 @@ Three small but load-bearing tasks that are not optimizations but condition ever
 
 **Q3 — Criterion baseline tracking (≈ 30 min; precedes 2B).**
 Run `cargo bench --workspace -- --save-baseline phase-2a` once at the `phase-2a-cold-path-baseline` tag. Copy `target/criterion/` JSON outputs into `docs/reports/bench-data/phase-2a/` (small, committable). From Phase 2B onward, every optimization sub-phase runs `cargo bench --workspace -- --baseline phase-2a` (or the appropriate prior baseline) to produce a real before/after diff instead of a hand-edited PERF.md table. **Phase 2B's handoff explicitly folds this in as step 0.** No ADR required; document the workflow in PERF.md once.
+
+**Phase 2B status (2026-05-01):** **Q3 SLIPPED.** The implementing instance ran Phase 2B's source change without first capturing the `phase-2a` baseline; before/after numbers were substituted as document-form medians in PERF.md §6.11 instead of being captured via `--save-baseline` / `--baseline`. Documented as a deviation in [`../reports/phase-2b-completion-report.md`](../reports/phase-2b-completion-report.md) §6.A. **Phase 2C MUST close the gap as its actual step 0:** capture `--save-baseline phase-2b` from the post-2B HEAD, commit `target/criterion/` JSON to `docs/reports/bench-data/phase-2b/`, then run `--baseline phase-2b` for the Phase 2C optimization's diff. Don't carry the slip forward — the workflow needs to be proven end-to-end before any Phase 2C source change lands or every subsequent "we got faster" claim stays unverifiable.
 
 **Q1 — Workload sketch ADR (after Phase 2B).**
 Write a short ADR in `docs/decisions/` titled "Workload sketch & perception thresholds" that:

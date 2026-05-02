@@ -27,6 +27,8 @@
 //!
 //! `Expr::Box<Expr>` clones are cheap for Acme's depth-≤-5 rule bodies.
 
+use std::sync::Arc;
+
 use crate::cell::{CellValue, Provenance, StoredCell};
 use crate::consolidation::Consolidator;
 use crate::coordinate::{CellCoordinate, CellCoordinateBuilder};
@@ -50,7 +52,15 @@ use crate::value::{validate_finite_f64, CellDataType, ScalarValue};
 pub struct Cube {
     pub id: CubeId,
     pub name: String,
-    dimensions: Vec<Dimension>,
+    /// Dimensions are frozen at `CubeBuilder::build` time and never
+    /// mutated thereafter. Held behind `Arc` so the consolidation fast
+    /// path (`read_consolidated`) can hand a borrow-independent snapshot
+    /// to `Consolidator::read` for the cost of a single refcount bump,
+    /// instead of deep-cloning every `Dimension`. See PERF.md §6.7 /
+    /// §9.4 (Phase 2B). The accessor surface (`dimensions()`,
+    /// `dimension()`, `measure_dimension()`, etc.) returns plain `&[T]`
+    /// and `&Dimension` shapes — the Arc is an internal storage choice.
+    dimensions: Arc<Vec<Dimension>>,
     measure_dimension_position: usize,
     rules: RuleSet,
     locks: LockTable,
@@ -80,7 +90,7 @@ impl Cube {
     }
 
     pub fn dimensions(&self) -> &[Dimension] {
-        &self.dimensions
+        &self.dimensions[..]
     }
 
     pub fn dimension(&self, id: DimensionId) -> Option<&Dimension> {
@@ -167,7 +177,7 @@ impl Cube {
         // I-Slice-1: every dim must have a binding; missing dims are
         // an Internal error.
         let mut per_dim_elements: Vec<Vec<ElementId>> = Vec::with_capacity(self.dimensions.len());
-        for dim in &self.dimensions {
+        for dim in self.dimensions.iter() {
             let binding = query.bindings.get(&dim.id).ok_or(EngineError::Internal(
                 "Cube::slice: query is missing a binding for one of the cube's dimensions",
             ))?;
@@ -562,24 +572,23 @@ impl Cube {
             });
         }
 
-        // Borrow the hierarchies upfront before we recurse into reads
-        // (we don't mutate Cube structurally during consolidation;
-        // dimensions/hierarchies stay constant). We DO mutate via the
-        // recursive `read_inner` calls in the closure, so we have to be
-        // careful. The trick: clone the hierarchies (they're Vec/HashMap
-        // backed; cloning is O(N) per hierarchy but happens once per
-        // consolidated read, which is acceptable for Phase 1A).
-        //
-        // Phase 2 optimization (deferred per §0.A bench gate): cache the
-        // hierarchy clones at cube-build time, or refactor to pass
-        // dimension positions instead of references.
-        let dims_clone: Vec<Dimension> = self.dimensions.clone();
-        let hierarchies_owned: Vec<Hierarchy> = self
-            .dimensions
+        // Per Phase 2B (PERF.md §6.7 + §9.4): hand `Consolidator::read`
+        // a borrow-independent view of the cube's frozen dim/hierarchy
+        // data without deep-cloning either. `self.dimensions` is
+        // `Arc<Vec<Dimension>>` and each `Dimension::hierarchies` is
+        // `Vec<Arc<Hierarchy>>`, so the per-call cost collapses to one
+        // Arc bump for the dim slice plus N Arc-deref's to assemble the
+        // `&[&Hierarchy]` slice the consolidator expects. The borrow
+        // conflict that justified the Phase 1A clones (read_at_fn
+        // captures `&mut self`, dim/hierarchy data was borrowed from
+        // `self`) is resolved by holding the Arc'd snapshots in locals
+        // — they outlive the consolidator call but borrow nothing from
+        // `self`.
+        let dims_owned: Arc<Vec<Dimension>> = Arc::clone(&self.dimensions);
+        let hierarchies_refs: Vec<&Hierarchy> = dims_owned
             .iter()
-            .map(|d| d.default_hierarchy().clone())
+            .map(|d| d.default_hierarchy_arc().as_ref())
             .collect();
-        let hierarchies_refs: Vec<&Hierarchy> = hierarchies_owned.iter().collect();
 
         let mut child_traces: Vec<TraceNode> = Vec::new();
         // Single closure handles every read inside the Consolidator —
@@ -599,7 +608,7 @@ impl Cube {
 
         let outcome = Consolidator::read(
             coord,
-            &dims_clone,
+            &dims_owned[..],
             &hierarchies_refs,
             measure_position,
             &measure_meta,
@@ -1320,7 +1329,11 @@ impl CubeBuilder {
         Ok(Cube {
             id: self.id,
             name: self.name,
-            dimensions,
+            // Wrap in `Arc` per Phase 2B fast path: the cube struct holds
+            // dimensions immutably from build onward, and `read_consolidated`
+            // uses the Arc to hand a borrow-independent snapshot to
+            // `Consolidator::read` for one refcount bump per call.
+            dimensions: Arc::new(dimensions),
             measure_dimension_position,
             rules,
             locks: LockTable::new(self.id),
@@ -1754,5 +1767,58 @@ mod tests {
         for child in &trace.root.children {
             assert!(matches!(child.operation, TraceOp::InputLookup { .. }));
         }
+    }
+
+    /// Phase 2B item 3 (handoff): two consecutive consolidated reads at
+    /// the same revision must produce structurally identical results
+    /// when the recompute path is exercised on both. The `request_trace`
+    /// flag bypasses the consolidation cache (per the `if cached_fresh
+    /// && !request_trace` guard above), so reading via
+    /// `read_with_trace` twice forces `Consolidator::read` to walk the
+    /// hierarchy twice through the new Arc fast path. Equality of
+    /// value, dtype, provenance, and revision proves the Arc-borrowed
+    /// dim/hierarchy snapshot is consumed identically across calls.
+    #[test]
+    fn consecutive_recompute_reads_match_phase_2b() {
+        let (mut cube, tampa, spend, _clicks, root) = micro_cube();
+        let cube_id = cube.id;
+        let market_dim = cube.dimension_by_name("Market").expect("Market dim");
+        let usa = market_dim.element_by_name("USA").expect("USA").id;
+        cube.write(WritebackRequest {
+            coord: coord(cube_id, tampa, spend),
+            new_value: ScalarValue::F64(11_500.0),
+            principal: root,
+            intent: WriteIntent::Set,
+            expected_revision: None,
+            now_unix_seconds: 0,
+        })
+        .expect("write tampa spend");
+
+        let usa_spend = coord(cube_id, usa, spend);
+        let v1 = cube
+            .read_with_trace(&usa_spend, root)
+            .expect("recompute read 1");
+        let revision_after = cube.revision();
+        let v2 = cube
+            .read_with_trace(&usa_spend, root)
+            .expect("recompute read 2");
+
+        assert_eq!(
+            v1.value.as_f64(),
+            v2.value.as_f64(),
+            "two recompute reads at the same revision must agree on value"
+        );
+        assert_eq!(v1.value.as_f64(), Some(11_500.0));
+        assert!(matches!(v1.provenance, Provenance::Consolidation { .. }));
+        assert!(matches!(v2.provenance, Provenance::Consolidation { .. }));
+        assert_eq!(
+            v1.revision, v2.revision,
+            "neither recompute may bump revision"
+        );
+        assert_eq!(
+            cube.revision(),
+            revision_after,
+            "reads do not bump revision"
+        );
     }
 }
