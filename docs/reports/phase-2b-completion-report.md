@@ -1,5 +1,7 @@
 # Phase 2B Completion Report — Consolidation Fast Path (Arc<Hierarchy>)
 
+> **Acceptance status (added post-commit):** Accepted and committed 2026-05-01 at `6ea58ab` (tag `phase-2b-consolidation-fast-path`). Q3 (criterion baseline tracking) closed retroactively the same day at `9f7420c`; both `phase-2a` and `phase-2b` baselines now live under [`bench-data/`](./bench-data/). The "uncommitted; awaiting project-owner review" phrasing in the body below is preserved as the original audit record.
+
 **Project:** MarketingCubes V2 — Rust kernel
 **Phase:** 2B — Consolidation Fast Path
 **Brief / contract:** [`../specs/phase-1-rust-kernel-build-brief.md`](../specs/phase-1-rust-kernel-build-brief.md) §11.2 + the [Phase 2B handoff](../handoffs/phase-2b-handoff.md)
