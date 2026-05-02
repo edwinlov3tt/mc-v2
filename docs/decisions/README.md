@@ -28,6 +28,8 @@ Use [`../templates/adr.md`](../templates/adr.md) as the starting point.
 | ADR | Title | Status |
 |---|---|---|
 | [0001](./0001-phase-1-scope.md) | Phase 1 scope: smallest kernel that runs the Acme demo | Accepted |
+| 0002 | *(reserved — perf assertions in benchmarks not tests; drafted on macmini2 working tree)* | — |
+| [0003](./0003-lnm-substrate-as-product-vision.md) | LNM substrate — AI-native planning kernel as the product vision | Accepted |
 
 ## When to write an ADR
 
