@@ -19,35 +19,40 @@ The **scope decision** that produced both contracts is recorded in [`decisions/0
 
 ---
 
-## What ships today (Phase 1A + Phase 1B)
+## What ships today (Phase 1A → Phase 2C)
 
 - Rust 1.78 workspace, three crates: `mc-core`, `mc-fixtures`, `mc-cli`.
-- 203 / 203 tests passing across §10.1–§10.8.
+- **216 / 216 tests passing** across §10.1–§10.8 + new fixture tests (was 210; +6 from Phase 2C scaled-Acme builders incl. the mandatory scale-1× equivalence test).
 - 10 / 10 determinism gate runs identical.
 - `cargo fmt --check`, `cargo clippy -D warnings`, `cargo build --release`, `cargo test --workspace` all green.
-- `cargo bench --workspace` (Phase 1B) green: 8 / 14 brief §11 1A ceilings directly comparable and pass; 6 §11.2 consolidation ceilings deferred to a Phase 2 cold-path measurement task (today's numbers are warm-cache hits, not cold consolidation cost); 1 §11.1 row (`write_input_leaf_no_deps`) over the 1A ceiling and accepted by Phase 1B as a benchmark-scope mismatch with the Acme fixture, awaiting a Phase 2 synthetic minimal-hierarchy fixture before treating the ceiling as either met or missed. See [`PERF.md`](./PERF.md) §6, §7.3, §7.4, §9.1, §9.3.
+- `cargo bench --workspace` baselined across four tags: `phase-2a-cold-path-baseline` (`48d52e9`), `phase-2b-consolidation-fast-path` (`6ea58ab`), `phase-2c-workload-baseline` (`789db15`). Per-tag JSON saved under [`reports/bench-data/`](./reports/bench-data/).
 - `target/release/mc demo` matches brief §4.6.
 - Allowed runtime deps: `smallvec`, `ahash`, `thiserror`, `once_cell`. Nothing else.
 - `mc-core` dev deps: `mc-fixtures` + `criterion = "0.5"` (Phase 1B; workspace pin, default-features=false).
-- No `unsafe`, no `async`, no threads, no `serde`. No kernel source modified between 1A and 1B.
+- Kernel source touched only in Phase 2B (consolidation fast path: `cube.rs` + `dimension.rs`). Phase 2A and Phase 2C were source-locked.
+- No `unsafe`, no `async`, no threads, no `serde`. No `cargo update` since Phase 1B's three transitive pins.
 
-Full audits: [`reports/phase-1-completion-report.md`](./reports/phase-1-completion-report.md) (Phase 1A correctness gates + Phase 1B closure note in §6) and [`PERF.md`](./PERF.md) (Phase 1B benchmark baseline).
+Full audits: completion reports for [Phase 1A](./reports/phase-1-completion-report.md), [Phase 2A](./reports/phase-2a-completion-report.md), [Phase 2B](./reports/phase-2b-completion-report.md), [Phase 2C](./reports/phase-2c-completion-report.md). Performance baseline + per-phase verification at [`PERF.md`](./PERF.md). Master plan at [`roadmap/MASTER_PHASE_PLAN.md`](./roadmap/MASTER_PHASE_PLAN.md).
 
 ---
 
 ## What is queued
 
-**Phase 2B — Consolidation Fast Path.** Handoff doc ready at [`handoffs/phase-2b-handoff.md`](./handoffs/phase-2b-handoff.md). Not started, not scheduled. One targeted kernel change: eliminate the per-call `self.dimensions.clone()` + `dim.default_hierarchy().clone()` in [`cube.rs::read_consolidated`](../crates/mc-core/src/cube.rs#L526) so the brief §11.2 3-leaf 1B target (≤ 3 µs cold) is met. Phase 2A measured the miss at 14.3 µs and localized the cause; Phase 2B closes it.
+**Phase 2D — Bitset-Backed Dirty Tracker (§9.3).** Handoff doc ready at [`handoffs/phase-2d-handoff.md`](./handoffs/phase-2d-handoff.md). Branch picked from PERF.md §6.14: **Branch A — §9.3** (Cartesian-product flat bitset). Phase 2C's headline finding is a super-linear cliff in `load_canonical_inputs` between 10× (4.33×/write) and 50× (19.7×/write); §6.14 attributes it to AHashSet rehash + cache-locality cost as the dirty set grows from 0 → 1.5 M entries during bulk ingest. Replacing with a flat bitset keyed by linearized coord-index makes mark/check O(1), independent of set size.
 
-- **Recommended approach (Option A in the handoff):** wrap each dimension's hierarchies in `Arc` so the per-call clone is a refcount bump rather than a deep clone. Source change confined to `cube.rs` + at most `dimension.rs` + `hierarchy.rs`. No new dependency (`Arc` is in `std`). No public API change.
-- **Acceptance gate:** PERF.md §6.7's `consolidation_cold/Q1_PaidSearch_Tampa/Spend (3 leaves)` ≤ 3 µs. Higher-fan-out rows should improve by approximately the same constant.
-- **Out of scope:** §9.3 hierarchy mark closure work (next phase); any non-`cube.rs` / `dimension.rs` / `hierarchy.rs` source change; new dependencies; toolchain bump.
+- **Acceptance gate:** PERF.md §6.12.7 `load_canonical_inputs/50x` drops from 230.84 s → ≤ 50 s.
+- **Source confined to:** `crates/mc-core/src/dirty.rs` + `cube.rs` + (optional) new `cube_shape.rs` + (optional) `coordinate.rs` linearize helper. The rare phase that touches the kernel.
+- **Validation:** kernel unit test `bitset_tracker_observationally_equivalent_to_ahashset` proves the new representation reproduces AHashSet's exact dirty-set membership across an arbitrary mark/clear sequence. The §10.1 `t_acme_dirty_set_size_within_bound_after_one_spend_write` MUST pass byte-for-byte.
+- **Rollback paths if scope explodes:** Roaring Bitmap (Option B; new dep + ADR) or hashed-CellCoordinate (Option C; smaller win). Either is a Phase 2D.1 amendment.
 
-**Read the full Phase 2B handoff:** [`handoffs/phase-2b-handoff.md`](./handoffs/phase-2b-handoff.md). It contains the Phase 2B prompt verbatim plus eight "context-the-prompt-doesn't-spell-out" sections (the exact code to optimize, why the existing clones exist, three implementation options with the recommended path, the bench acceptance gate, the regression guard, the no-Arc-rule analysis, the tests that may need attention, the determinism gate).
+**Read the full Phase 2D handoff:** [`handoffs/phase-2d-handoff.md`](./handoffs/phase-2d-handoff.md). Contains the Phase 2D prompt verbatim plus seven "context-the-prompt-doesn't-spell-out" sections (the exact code being optimized, why a flat bitset is the right shape, the §10.1 invariant proof requirement, iter() ordering semantics, shape vs snapshot lifetime, Phase 2C regression guard, Phase 2E forecast).
 
-**After Phase 2B:** the next sub-phase is TBD per [`roadmap/MASTER_PHASE_PLAN.md`](./roadmap/MASTER_PHASE_PLAN.md) "Phase 2 — Performance & Optimization". Likely candidates anchored in PERF.md §9: `§9.3` hierarchy mark closure (bitset-backed dirty tracker path), `§9.2` leaf-flag cache. **Snapshot COW (§9.5) is NOT data-justified** at Acme scale — defer.
+**After Phase 2D:** Phase 2E may not need to exist. If 2D succeeds and the §6.14 50× / 100× env-gated rows (opt-in via `MC_BENCH_CONSOL_SCALED=1`) don't surface another super-linear curve, **Phase 2 exits** and Phase 3A becomes proposed. Likely-not-needed §9.2 / §9.5 / §9.6 stay opportunistic.
 
-**Phase 2 housekeeping (not gating; not optimization):** toolchain bump revisit — unlocks `proptest` (§10.7 doctrines) and `insta` (snapshot tests). Procedure in [`PERF.md`](./PERF.md) §9.7. CLAUDE.md §1.1 now treats `proptest`/`insta` as Phase-paired-work, not toolchain-blocked.
+**Phase 2 housekeeping:**
+- Q1 (workload sketch ADR): **complete** — [ADR-0003](./decisions/0003-workload-sketch.md) Accepted — Provisional, sunset 2026-11-01.
+- Q2 (toolchain bump): deferred until Phase 3A's parser-dep choice forces it.
+- Q3 (criterion baseline tracking): closed; three baselines on disk per [`reports/bench-data/README.md`](./reports/bench-data/README.md).
 
 ---
 

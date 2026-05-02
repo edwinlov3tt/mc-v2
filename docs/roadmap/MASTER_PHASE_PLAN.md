@@ -39,7 +39,7 @@ Productization beyond the first usable product (multi-tenancy, customer-facing a
 | **2A** | Cold-path benchmark expansion | **complete** | `phase-2a-cold-path-baseline` (`48d52e9`) |
 | **2B** | Consolidation Fast Path (hierarchy clone) | **complete** | `phase-2b-consolidation-fast-path` (`6ea58ab`) |
 | **2C** | Production-Shaped Workload Benchmarks | **complete** | `phase-2c-workload-baseline` (`789db15`) |
-| **2D** | Pick the §9 winner from PERF.md §6.14 | **planned** (flips to `proposed` when Phase 2C is committed + tagged) | — |
+| **2D** | Bitset-Backed Dirty Tracker (§9.3) | **proposed** (handoff at [`../handoffs/phase-2d-handoff.md`](../handoffs/phase-2d-handoff.md); branch picked from §6.14) | — |
 | **2E–2N** | Further optimization rounds (TBD) | not started | — |
 | **3A** | Model definition layer — declarative format + parser | **planned** (flips to `proposed` when Phase 2 exits) | — |
 | **3B–3N** | Model layer extensions (TBD) | not started | — |
@@ -115,14 +115,25 @@ The "How to use" section below treats `proposed` as the next-to-start row; `plan
 - **Acceptance gates (all met):** 216 / 0 tests pass (was 210; +6 net additions); 10 / 10 deterministic; release demo matches brief §4.6 (kernel unchanged); fmt / clippy / build green; **no `crates/mc-core/src/` or `crates/mc-core/tests/` modification**; no new dependency; no `Cargo.lock` change; no `rust-toolchain.toml` change. **Did not pick a Phase 2D winner** — §9 row priorities deliberately unspecified.
 - **Out of scope (held):** any kernel source change; any §9.3 or §9.2 implementation work; any new dependency.
 
-### 2D, 2E, … (TBD)
+### 2D — Bitset-Backed Dirty Tracker (§9.3) (proposed)
 
-Sub-phases beyond 2C are intentionally not pre-named. Phase 2D's first task is to read [PERF.md §6.14](../PERF.md) (the scaling-shape table Phase 2C produced) and pick a §9 winner from the data. The candidate list (priority order is **what Phase 2D decides**, not what's listed here):
+Phase 2D picked **Branch A — §9.3** from PERF.md §6.14, anchored on the `load_canonical_inputs` super-linear cliff between 10× (4.33×/write) and 50× (19.7×/write). The cliff is structural to the AHashSet rehash + cache locality + hash-collision probability as the dirty set grows from 0 → 1.5 M entries during bulk ingest. **Why §9.3 not §9.2:** §9.2 attacks per-write fixed cost which scales O(1) with cube size; it doesn't bend the curve. §9.3 attacks the per-mark hash-and-insert cost on the AHashSet, which IS what grows with set size. **Why combined-workflow flatness doesn't contradict:** within-session per-mark cost is flat at 50× (422 → 419 → 422 ns) because the set was *already* saturated by the bulk-load phase. The cliff lives in the load, not in the edit phase.
 
-- **§9.3 Hierarchy mark closure cost.** Phase 2C signal: *suggestive but not conclusive at session level*. The combined-workflow data shows flat per-mark cost across a 50× session, contradicting the strongest §9.3 hypothesis. Whether per-mark cost grows *across scales* (1× → 100×) is read off PERF.md §6.12.1 once the gate run lands.
-- **§9.2 leaf-flag cache** on `Element` (`is_leaf_in_default_hierarchy: bool`). Phase 2C signal: *opportunistic*. Trivial; payoff is the per-write fixed cost, not session-length growth.
-- **§9.5 Snapshot COW.** Phase 2C signal: *stays deferred*. TM1 stacked-sandbox-of-10 at 50× shows linear snapshot scaling, no super-linear stacked-depth tax.
+- **Status:** proposed. Handoff at [`../handoffs/phase-2d-handoff.md`](../handoffs/phase-2d-handoff.md).
+- **Approach:** Cartesian-product flat bitset. Replace `DirtyTracker { set: AHashSet<CellCoordinate> }` with `DirtyTracker { bits: BitVec, shape: Arc<CubeShape>, len: usize }`. `mark`/`is_dirty`/`clear` linearize the coord then bit-set/test (O(1), set-size-independent). `iter()` walks set bits in deterministic order — strictly stronger than AHashSet's nondeterministic iter. Memory: ~3 MB at 100× Acme; tractable through any current calibration scale.
+- **Acceptance gate:** PERF.md §6.12.7 `load_canonical_inputs/50x` drops from 230.84 s → ≤ 50 s.
+- **Source confined to:** `dirty.rs`, `cube.rs`, optionally a new `cube_shape.rs` and helpers in `coordinate.rs`.
+- **Rollback paths if bitset balloons:** Roaring Bitmap (Option B; new dep + ADR), or hashed-CellCoordinate (Option C; smaller win). Either is a Phase 2D.1 amendment, not a Phase 2D scope rewrite.
+
+### 2E, 2F, … (TBD)
+
+Sub-phases beyond 2D are intentionally not pre-named. Whether 2E exists depends on what Phase 2D's bench data + the Phase 2C 50× / 100× env-gated rows reveal once they're opted in. Likely candidates if needed (priority order is **what 2E decides**, not pre-pinned):
+
+- **§9.2 leaf-flag cache** on `Element` (`is_leaf_in_default_hierarchy: bool`). Trivial; opportunistic; payoff is per-write fixed cost.
+- **§9.5 Snapshot COW.** Phase 2C signal: stays deferred. TM1 stacked-sandbox-of-10 at 50× shows linear snapshot scaling, no super-linear stacked-depth tax.
 - **§9.6 Recursive rule eval.** Leave alone; still well within 1B targets at scale.
+
+If Phase 2D succeeds and §9.2 / §9.5 / §9.6 all stay opportunistic, **Phase 2 exits** and Phase 3A becomes proposed.
 
 **Phase 2 exits** when Phase 2D's source change ships AND no remaining 1B miss in `PERF.md` is unaddressed and unexplained AND the three Phase 2 housekeeping items below are complete.
 
