@@ -37,7 +37,7 @@ Productization beyond the first usable product (multi-tenancy, customer-facing a
 | **1A** | Rust kernel for the Acme demo | **complete** | `4aa674a` (initial) |
 | **1B** | Benchmark baseline + PERF.md | **complete** | bundled into `phase-2a-cold-path-baseline` (`48d52e9`) — they shipped in the same commit; no standalone `phase-1b` tag was cut |
 | **2A** | Cold-path benchmark expansion | **complete** | `phase-2a-cold-path-baseline` (`48d52e9`) |
-| **2B** | Consolidation Fast Path (hierarchy clone) | **complete** | (uncommitted; prospective tag `phase-2b-consolidation-fast-path` — backfill once committed) |
+| **2B** | Consolidation Fast Path (hierarchy clone) | **complete** | `phase-2b-consolidation-fast-path` (`6ea58ab`) |
 | **2C–2N** | Further optimization rounds (TBD) | not started | — |
 | **3A** | Model definition layer — declarative format + parser | **planned** (flips to `proposed` when Phase 2 exits) | — |
 | **3B–3N** | Model layer extensions (TBD) | not started | — |

@@ -5,7 +5,7 @@
 **Last updated:** 2026-05-01 (Phase 2B consolidation fast path complete; uncommitted, awaiting project-owner review)
 **Last Phase 1A commit:** `bee2812` — *mc-core: update lib.rs doc-comment to point at docs/specs/* (Phase 1A kernel at `4aa674a`)
 **Last Phase 1B + Phase 2A commit:** `48d52e9` — *bench: complete Phase 2A cold-path benchmark expansion* (Phase 1B and Phase 2A bundled into one commit; tag `phase-2a-cold-path-baseline` at this hash)
-**Phase 2B commit / tag:** uncommitted at the time of this update. Prospective tag: `phase-2b-consolidation-fast-path`. Backfill the tag column in [`roadmap/MASTER_PHASE_PLAN.md`](./roadmap/MASTER_PHASE_PLAN.md) once the commit lands.
+**Phase 2B commit / tag:** `6ea58ab` — *bench: Phase 2B consolidation fast path (Arc<Hierarchy>)* — tag `phase-2b-consolidation-fast-path`.
 **Branch:** `main` (tracking `origin/main` at github.com/edwinlov3tt/mc-v2)
 
 ---
