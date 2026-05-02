@@ -32,6 +32,7 @@ use std::sync::Arc;
 use crate::cell::{CellValue, Provenance, StoredCell};
 use crate::consolidation::Consolidator;
 use crate::coordinate::{CellCoordinate, CellCoordinateBuilder};
+use crate::cube_shape::CubeShape;
 use crate::dependency::{DependencyEdge, DependencyGraph, DependencySource};
 use crate::dimension::{Dimension, DimensionKind};
 use crate::dirty::DirtyTracker;
@@ -62,6 +63,15 @@ pub struct Cube {
     /// and `&Dimension` shapes — the Arc is an internal storage choice.
     dimensions: Arc<Vec<Dimension>>,
     measure_dimension_position: usize,
+    /// Precomputed Cartesian-product shape for the bitset-backed dirty
+    /// tracker (Phase 2D). `None` when the cube's Cartesian cardinality
+    /// exceeds `cube_shape::CARDINALITY_GUARD` — in that case `dirty`
+    /// falls back to the AHashSet representation. Held behind `Arc` so
+    /// the tracker shares the same shape data without paying a deep
+    /// clone, and so any future caller that needs the shape can borrow
+    /// it for the cube's lifetime.
+    #[allow(dead_code)]
+    cube_shape: Option<Arc<CubeShape>>,
     rules: RuleSet,
     locks: LockTable,
     permissions: PermissionTable,
@@ -883,13 +893,48 @@ impl Cube {
         //   - Mark the closure of dependents in the rule graph.
         //   - Mark hierarchy ancestors at this coord across each
         //     consolidated dimension AND every derived measure.
-        self.dirty.mark_closure(&req.coord, &self.deps);
+        //
+        // Per Phase 2D handoff §A and the brief's
+        // `WritebackResult.invalidated` type doc ("Coordinates marked
+        // dirty by THIS write — both rule dependents and hierarchy
+        // ancestors") + engine-semantics.md I-WB-7 + the worked
+        // example at §13 ("invalidated includes: <THIS write's
+        // freshly-dirtied cells>"), `invalidated` is the *marginal*
+        // set of coords this write transitions from clean to dirty —
+        // NOT the cumulative dirty state across the cube's lifetime.
+        // The earlier Phase 1A `self.dirty.iter().cloned().collect()`
+        // was a misreading of the brief's compact pseudocode (line
+        // 1938's "<full dirty set>") that conflicted with the brief's
+        // own type doc; corrected in Phase 2D per §A.2's spec audit.
+        // Cost impact: per-write `invalidated` cost was
+        // O(|cumulative dirty|) — that's the PERF.md §6.14
+        // super-linear cliff (`load_canonical_inputs/50x` = 230 s,
+        // 23× over the ADR-0003 patience-limit gate). The bitset
+        // makes the `is_dirty` check below O(1), so the marginal
+        // capture is bounded by the per-write fan-out (~216 at Acme,
+        // §10.1) instead of the cumulative dirty size.
+
+        // Capture marks that transition from clean → dirty during
+        // this write. Each `is_dirty` + `mark` pair is O(1) on the
+        // bitset path; on the AHashSet fallback path it remains
+        // bounded by the per-write mark count (~216 at Acme), not
+        // the cumulative dirty size.
+        let dependents = self.deps.closure_of_dependents(&req.coord);
         let ancestors = self.compute_dirty_ancestors(&req.coord, measure_id);
-        for c in ancestors {
+        let mut invalidated: Vec<CellCoordinate> =
+            Vec::with_capacity(dependents.len() + ancestors.len());
+        for c in dependents {
+            if !self.dirty.is_dirty(&c) {
+                invalidated.push(c.clone());
+            }
             self.dirty.mark(c);
         }
-
-        let invalidated: Vec<CellCoordinate> = self.dirty.iter().cloned().collect();
+        for c in ancestors {
+            if !self.dirty.is_dirty(&c) {
+                invalidated.push(c.clone());
+            }
+            self.dirty.mark(c);
+        }
 
         // Soft-lock advisories (§18).
         let soft_lock_notes: Vec<String> = self
@@ -1326,6 +1371,20 @@ impl CubeBuilder {
             d.freeze();
         }
 
+        // Per Phase 2D (PERF.md §6.14 / §9.3 closure): precompute the
+        // Cartesian-product shape so the dirty tracker can mark/check
+        // via O(1) bit math instead of a hash-and-insert into an
+        // AHashSet that rehashes as it saturates. `CubeShape::new`
+        // returns `None` if the Cartesian cardinality overflows the
+        // bitset budget; in that (Phase 2D-uncalibrated) regime the
+        // tracker falls back to the AHashSet representation via
+        // `DirtyTracker::new()`.
+        let cube_shape = CubeShape::new(&dimensions);
+        let dirty = match &cube_shape {
+            Some(shape) => DirtyTracker::with_shape(Arc::clone(shape)),
+            None => DirtyTracker::new(),
+        };
+
         Ok(Cube {
             id: self.id,
             name: self.name,
@@ -1335,13 +1394,14 @@ impl CubeBuilder {
             // `Consolidator::read` for one refcount bump per call.
             dimensions: Arc::new(dimensions),
             measure_dimension_position,
+            cube_shape,
             rules,
             locks: LockTable::new(self.id),
             permissions: PermissionTable::new(self.id, root_principal),
             store: HashMapStore::new(),
             revision: Revision::ZERO,
             deps: DependencyGraph::new(),
-            dirty: DirtyTracker::new(),
+            dirty,
         })
     }
 }

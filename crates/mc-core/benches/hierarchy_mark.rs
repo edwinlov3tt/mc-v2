@@ -69,9 +69,21 @@ fn preflight_for(depth: u8) {
         "hierarchy_mark preflight depth={depth}: \
          dirty-set delta {delta} ≠ expected ancestor count {depth}"
     );
+    // Per Phase 2D handoff §A.7: under the corrected
+    // `WritebackResult.invalidated` semantics (marginal coords this
+    // write transitioned clean → dirty, *not* the cumulative dirty
+    // set), `dirty_set_delta` and `invalidated.len` are the same
+    // quantity and must agree. The phase-2c-era output of this line
+    // showed `invalidated.len = <cumulative>` and was a Phase 1A
+    // misimplementation — see PERF.md §6.15 for the correction.
+    let invalidated_len = result.invalidated.len();
+    debug_assert_eq!(
+        delta, invalidated_len,
+        "hierarchy_mark preflight depth={depth}: dirty_set_delta ({delta}) must equal invalidated.len ({invalidated_len}) under Phase 2D marginal semantics"
+    );
     eprintln!(
-        "[hierarchy_mark preflight] depth={depth}: dirty_set_delta={delta}, invalidated.len={}",
-        result.invalidated.len()
+        "[hierarchy_mark preflight] depth={depth}: cube.dirty delta={delta}, \
+         WritebackResult.invalidated.len={invalidated_len} (must equal delta)"
     );
 }
 

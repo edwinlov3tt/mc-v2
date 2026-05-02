@@ -36,6 +36,7 @@ pub mod cell;
 pub mod consolidation;
 pub mod coordinate;
 pub mod cube;
+mod cube_shape;
 pub mod dependency;
 pub mod dimension;
 pub mod dirty;

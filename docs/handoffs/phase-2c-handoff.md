@@ -71,6 +71,8 @@ For the full Phase 2B audit read [`../reports/phase-2b-completion-report.md`](..
 >
 >    **Report:** total wall-clock for the session; per-edit p50, p95, p99; per-slice-read p50/p99; per-snapshot p50/p99; final dirty-set size; final invalidated.len; cumulative allocations (if measurable; if not, document as not measured).
 >
+>    > **Phase 2D historical-artifact note (2026-05-02).** "final invalidated.len" was measured under the Phase 1A *cumulative* reading of `WritebackResult.invalidated`. Phase 2D corrected the semantics to the marginal per-write reading (see [`PERF.md`](../PERF.md) §6.15 + [`docs/handoffs/phase-2d-handoff.md`](./phase-2d-handoff.md) §A); the field has since been renamed `last_write_invalidated_len` in [`crates/mc-core/benches/combined_workflow.rs`](../../crates/mc-core/benches/combined_workflow.rs) and now reports the marginal per-write transition count (single-digit at Acme scale) rather than the cumulative dirty count (~305 K at 50×).
+>
 >    The bench's value is *temporal*: a 250 ms edit in isolation can become a 3-second edit at iteration 47 when the dirty set has grown, hierarchies have been cloned repeatedly, and consolidated caches have been partially invalidated 30 times. This bench is the one that surfaces nonlinear-in-session-length costs.
 >
 > 4. **§6.10-style attribution during the combined workflow.** Capture per-mark cost (`mark walk time / dirty_set delta`) at iteration 1, iteration 50, and iteration 100. If per-mark cost grows across the session, that's the §9.3 evidence. If it's flat, §9.3 is opportunistic and §9.2 may be the better Phase 2D pick.

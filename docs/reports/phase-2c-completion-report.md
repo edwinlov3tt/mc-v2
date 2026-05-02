@@ -1,10 +1,17 @@
 # Phase 2C Completion Report — Production-Shaped Workload Benchmarks
 
-> **Status:** **READY for project-owner review.** Targeted bench gate
-> complete (1× regression check + 10× scaled rows; 50× / 100× scaled
-> rows env-gated for wall-clock; 100× combined-workflow abandoned after
-> ~20 min). PERF.md §6.12 / §6.13 / §6.14 populated with all available
-> numbers from the gate run; deferrals documented in §6 below.
+> **Post-commit note (2026-05-02):** Phase 2C **accepted** by the project owner and committed at `789db15` (tag `phase-2c-workload-baseline`). PERF.md / completion-report / bench-data backfill commit at `96cca75` (no kernel or baseline-JSON change). Phase 2D handoff promoted from scaffold to active at `bc70ad2` with branch picked from PERF.md §6.14 — Branch A (Cartesian-product flat bitset for the dirty tracker). Subsequent PM/spec-maintainer cleanup pass corrected the §3.1 / PERF.md §6.13.2 unit interpretation (the bench's `eprintln!` labels the `per_mark_ns` divisor unit "ns" but the result magnitude at 50× is µs, not ns) and reconciled the handoff's bitset-cardinality estimate to use the full Cartesian product across all dim elements rather than populated-cell counts. None of the underlying numbers in the baseline JSON changed; only the documentary interpretation. Audit input: [`./phase-2d-readiness-audit.md`](./phase-2d-readiness-audit.md).
+>
+> **Status:** **ACCEPTED.** Targeted bench gate complete (1× regression
+> check + 10× scaled rows; 50× / 100× scaled rows env-gated for
+> wall-clock; 100× combined-workflow abandoned after ~20 min). PERF.md
+> §6.12 / §6.13 / §6.14 populated with all available numbers from the
+> gate run; deferrals documented in §6 below. **Phase 2C was accepted
+> as sufficient for Phase 2D scoping, NOT as exhaustive
+> production-workload coverage** — the env-gated 50× / 100× write-side
+> rows and the abandoned 100× ingest / combined-workflow rows are
+> followups for Phase 2D's verification gate (or a later phase), not
+> Phase 2C deliverables.
 >
 > **Sample-size discipline.** Per §4.1 below, scaled rows run at
 > criterion's *minimum* sample size of 10 (not the handoff's
@@ -21,7 +28,7 @@
 **Brief / contract:** [`../specs/phase-1-rust-kernel-build-brief.md`](../specs/phase-1-rust-kernel-build-brief.md) §11 + the [Phase 2C handoff](../handoffs/phase-2c-handoff.md) + [ADR-0003](../decisions/0003-workload-sketch.md)
 **Operating manual:** [`../../CLAUDE.md`](../../CLAUDE.md)
 **Predecessor:** Phase 2B (`phase-2b-consolidation-fast-path`, `6ea58ab`) + Q3 closure (`9f7420c`) — see [`phase-2b-completion-report.md`](./phase-2b-completion-report.md)
-**HEAD at end of phase:** uncommitted at the time of this report (per Phase 2C handoff hard rule: "**Did not commit, tag, or push** — kept uncommitted for project-owner review per CLAUDE.md §"Executing actions with care""). Prospective tag `phase-2c-workload-baseline` once the project owner reviews + commits.
+**HEAD at end of phase:** committed at `789db15` (tag `phase-2c-workload-baseline`) after project-owner review per CLAUDE.md §"Executing actions with care". Backfill commit at `96cca75`. Phase 2D handoff promoted at `bc70ad2`.
 **Toolchain:** Rust 1.78 (pinned in [`../../rust-toolchain.toml`](../../rust-toolchain.toml)). Unchanged. `cargo update` not run; `Cargo.lock` unchanged.
 
 ---
@@ -111,7 +118,11 @@ The 50× session total of 458 ms is comfortably under ADR-0003's *responsive* ga
 | 50 | 2097 µs | 5 | **419.4 ns** |
 | 100 | 2109 µs | 5 | **421.8 ns** |
 
-**Per-mark cost is FLAT across the 100-iteration session** (≤ 0.7% spread; 422 → 419 → 422 ns). Reproduced across two independent runs (the prior run measured 434 / 430 / 439 ns — same shape, slightly different absolute due to thermal noise). Critically, `dirty_delta = 5` per write means each write only adds 5 *unique* marks to the dirty set — the remaining mark-walk work is querying *existing* entries (which is also flat). The §9.3 hypothesis ("the AHashSet's per-insert cost grows with set size, compounding across a session") is **not strengthened within a session at 50×**. **However, the bulk-load preceding the session is where the cliff lives** — see §3.4 below + PERF.md §6.12.7.
+**Per-edit cost is FLAT across the 100-iteration session at 50×** (≤ 0.7% spread; ≈ 2113 / 2097 / 2109 µs raw edit-time medians, which the bench amortizes over `dirty_delta = 5` to print "≈422 / 419 / 422 µs per mark"). The earlier draft of this section reported the per-mark figure as "ns" — that was wrong by 1000×; the bench's `per_mark = edit_time_ns / dirty_delta` formula labels output with "ns" (the divisor unit), but the magnitude is microseconds. See PERF.md §6.13.2 for the corrected unit caveat. Reproduced across two independent runs.
+
+What the metric actually measures: total per-edit cost (hierarchy ancestor walk + dependency rev-edge walk + per-write fixed checks + store write + revision bump + AHashSet inserts) amortized over the dirty-marks added per edit. The AHashSet insert cost is a *fraction* of this number, not the whole thing. So the within-session flatness shows total per-edit work is stable in the saturated-set regime — consistent with §9.3 (no within-session regression as the dirty set holds steady at ~305 K entries) but not directly proving it (the metric doesn't isolate the AHashSet component).
+
+**However, the bulk-load preceding the session is where the §9.3 cliff lives** — see §3.4 below + PERF.md §6.12.7. That cross-scale ingest cost (4.33×/write at 10× → 19.7×/write at 50×) is the load-bearing §9.3 evidence, independent of the within-session amortized number.
 
 #### 3.2.3 — Final session state (50×)
 
@@ -119,11 +130,13 @@ The 50× session total of 458 ms is comfortably under ADR-0003's *responsive* ga
 |---:|---:|---:|---|
 | 305,039 | 305,039 | 10 | not measured (out of dep allowlist) |
 
+> **Phase 2D historical-artifact note (2026-05-02).** "Final invalidated.len = 305,039" reads as the cumulative dirty count because Phase 1A implemented `WritebackResult.invalidated` as the cumulative dirty set, in disagreement with the brief's type doc + engine-semantics.md §13. Phase 2D corrected the semantics to the marginal per-write reading; under the corrected semantics this column would read **5** (the per-write rule fan-out at the anchor coord). The "Final dirty_set = 305,039" column is unchanged — cumulative cube state is still meaningful, just not what `WritebackResult.invalidated` is supposed to mean. See [`PERF.md`](../PERF.md) §6.15 + [`docs/handoffs/phase-2d-handoff.md`](../handoffs/phase-2d-handoff.md) §A.
+
 ### 3.3 Scaling-shape summary (PERF.md §6.14)
 
 See [PERF.md §6.14](../PERF.md) for the full table. Headline shape per operation:
 
-- **Per-mark cost across a 50× session:** flat (422 / 419 / 422 ns at iters 1 / 50 / 100). *Within-session* §9.3 evidence is **not strengthened** — but see ingest cliff below for where §9.3 evidence *is* strengthened.
+- **Per-mark cost across a 50× session:** flat (≈ 422 / 419 / 422 µs amortized at iters 1 / 50 / 100). *Within-session* §9.3 evidence is **not strengthened** — but see ingest cliff below for where §9.3 evidence *is* strengthened.
 - **Per-edit cost vs scale (single edit, materialized cube):** 1× = 169 µs (this run), 10× = 693 µs = **4.10× the 1× cost** (sub-linear, 10× cells → 4× cost). 50× / 100× rows env-gated off (`MC_BENCH_LEAF_SCALED_HEAVY=1`).
 - **Bulk ingest cost (`load_canonical_inputs`):** 1× = 234 ms (93 µs/write), 10× = 10.13 s (402 µs/write = **4.33× per-write**), 50× = **230.84 s** (1832 µs/write = **19.7× per-write**). 100× was **abandoned mid-run** (criterion estimated > 38 min for 10 samples; partial run already > 20 min). **This is the load-bearing finding**: super-linear cliff between 10× and 50×, total ingest at 50× is **23× over the ADR-0003 patience-limit gate** (231 s vs 10 s).
 - **Snapshot scaling at 10× isolated:** snapshot/10x_loaded = 270 µs vs 29.6 µs at 1× = **9.15×** (linear). Rollback/10x_loaded = 627 µs vs 73.5 µs at 1× = **8.51×** (linear).
@@ -159,7 +172,7 @@ Per handoff §"Phase 2C scope" item 4: capture per-mark cost (`mark walk time / 
 | 50× | 100 | 5 | 2109 µs | **421.8 ns** | End-of-session — flat vs iter 1 (Δ ≈ 0.2%) |
 | 100× | 1–100 | abandoned | — | — | env-gated `MC_BENCH_COMBINED_WORKFLOW_100X=1`; preflight run takes ~30 min wall-clock |
 
-**Verdict (50× confirmed; 100× abandoned):** Per-mark cost at 50× is *flat* across a 100-iteration session (422 → 419 → 422 ns; spread ≤ 0.7% across iters). **Reproduced across two independent runs.** The §9.3 evidence — that the AHashSet's per-insert cost grows with set size — is **not strengthened within a session at 50×**. Critically, `dirty_delta = 5` per write means 100 writes only added 500 *unique* marks to the dirty set; the remaining mark-walk work is querying existing entries (which is also flat).
+**Verdict (50× confirmed; 100× abandoned):** Per-mark cost at 50× is *flat* across a 100-iteration session (≈ 422 → 419 → 422 µs amortized (per-edit ÷ dirty-delta; see PERF.md §6.13.2 unit caveat); spread ≤ 0.7% across iters). **Reproduced across two independent runs.** The §9.3 evidence — that the AHashSet's per-insert cost grows with set size — is **not strengthened within a session at 50×**. Critically, `dirty_delta = 5` per write means 100 writes only added 500 *unique* marks to the dirty set; the remaining mark-walk work is querying existing entries (which is also flat).
 
 **However, the bulk-load preceding the session is exactly where §9.3 evidence is strongest.** PERF.md §6.12.7 shows ingest per-write cost growing 4.3× at 10× and 19.7× at 50× — super-linear. The dirty set during bulk-load grows from 0 → ~150 K (10×) → ~750 K (50×) entries; that's the regime where AHashSet rehash + cache-miss costs compound. Once the dirty set reaches steady state (after bulk-load), per-mark cost stabilizes. **The two measurements reinforce each other: per-mark cost is dominated by set-size growth, and the dominant set-size growth happens during ingest, not within an interactive session.** PERF.md §6.14 has the full Phase 2D pointer.
 
@@ -300,7 +313,7 @@ This reframing — "Phase 2C produced enough workload-shaped data to identify th
 
 ### `mc-core` benches (new)
 
-- [`crates/mc-core/benches/combined_workflow.rs`](../../crates/mc-core/benches/combined_workflow.rs) — **new file.** 100-iteration planner-session simulation at 50× (default) and 100× (stress). Snapshots held live across the session per ADR-0003 Decision 6's TM1 stacked-sandbox pattern. Reports per-edit p50/p95/p99, per-slice-read p50/p99, per-snapshot p50/p99, final dirty-set size, final invalidated.len, and the iteration-1/50/100 per-mark attribution.
+- [`crates/mc-core/benches/combined_workflow.rs`](../../crates/mc-core/benches/combined_workflow.rs) — **new file.** 100-iteration planner-session simulation at 50× (default) and 100× (stress). Snapshots held live across the session per ADR-0003 Decision 6's TM1 stacked-sandbox pattern. Reports per-edit p50/p95/p99, per-slice-read p50/p99, per-snapshot p50/p99, final dirty-set size, final invalidated.len, and the iteration-1/50/100 per-mark attribution. **Phase 2D update (2026-05-02):** the bench's `final_invalidated_len` field was renamed to `last_write_invalidated_len` and its eprintln rewritten to clarify the cumulative cube dirty count vs the marginal per-write `WritebackResult.invalidated.len` (see [`PERF.md`](../PERF.md) §6.15 + [`docs/handoffs/phase-2d-handoff.md`](../handoffs/phase-2d-handoff.md) §A.7).
 
 ### `mc-core` `Cargo.toml`
 

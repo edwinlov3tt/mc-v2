@@ -140,7 +140,7 @@ struct SessionStats {
     /// (iteration, edit_duration, dirty_delta) for iterations 1, 50, 100.
     attribution: Vec<(usize, Duration, usize)>,
     final_dirty_set: usize,
-    final_invalidated_len: usize,
+    last_write_invalidated_len: usize,
     snapshots_held: usize,
     total: Duration,
 }
@@ -151,7 +151,7 @@ fn run_session(cube: &mut Cube, refs: &ScaledAcmeRefs) -> SessionStats {
     let mut slice_times = Vec::with_capacity(SESSION_ITERS / SLICE_EVERY);
     let mut snapshot_times = Vec::with_capacity(SESSION_ITERS / SNAPSHOT_EVERY);
     let mut attribution = Vec::new();
-    let mut final_invalidated_len = 0usize;
+    let mut last_write_invalidated_len = 0usize;
 
     let session_start = Instant::now();
     for i in 1..=SESSION_ITERS {
@@ -170,7 +170,17 @@ fn run_session(cube: &mut Cube, refs: &ScaledAcmeRefs) -> SessionStats {
             .expect("session write");
         let dt = t0.elapsed();
         edit_times.push(dt);
-        final_invalidated_len = result.invalidated.len();
+        // Per Phase 2D handoff §A.7: rename `last_write_invalidated_len`
+        // → `last_write_invalidated_len`. Under the Phase 2D
+        // corrected `WritebackResult.invalidated` semantics this is
+        // the *marginal* per-write transition count (typically a
+        // small two-digit number at Acme scale), not the cumulative
+        // dirty set the phase-2c output reported. The cumulative
+        // dirty count is reported separately as `final_dirty_set
+        // median` below — that one stays accurate (cumulative cube
+        // state is meaningful even if it's not what `invalidated`
+        // means).
+        last_write_invalidated_len = result.invalidated.len();
         let dirty_after = cube.dirty().len();
         let delta = dirty_after.saturating_sub(dirty_before);
         if i == 1 || i == 50 || i == 100 {
@@ -211,7 +221,7 @@ fn run_session(cube: &mut Cube, refs: &ScaledAcmeRefs) -> SessionStats {
         snapshot_times,
         attribution,
         final_dirty_set,
-        final_invalidated_len,
+        last_write_invalidated_len,
         snapshots_held,
         total,
     }
@@ -290,7 +300,7 @@ fn preflight_and_emit_stats_n(scale: u32, n: usize) {
             attribution_at[slot].push((*dt, *delta));
         }
         final_dirty.push(stats.final_dirty_set);
-        final_inv_len.push(stats.final_invalidated_len);
+        final_inv_len.push(stats.last_write_invalidated_len);
         snapshots_held = stats.snapshots_held;
         eprint!(".");
         if run + 1 == n {
@@ -355,10 +365,19 @@ fn preflight_and_emit_stats_n(scale: u32, n: usize) {
             fmt(dt_med)
         );
     }
+    // Per Phase 2D handoff §A.7: rename + clarify the two columns
+    // — `final_dirty_set` is the cumulative cube dirty count (still
+    // ~305K at 50× saturation), `last_write_invalidated_len` is the
+    // marginal per-write `WritebackResult.invalidated.len()` under
+    // the corrected Phase 2D semantics (typically a single-digit
+    // number at Acme scale). The phase-2c-era output reported these
+    // as identical numbers, which was a Phase 1A misimplementation
+    // — see PERF.md §6.15 for the correction record.
     eprintln!(
-        "[combined_workflow x{scale}] final dirty_set median={dirty_median} \
-         final invalidated.len median={inv_median} live_snapshots={snapshots_held} \
-         (allocations: not measured)"
+        "[combined_workflow x{scale}] cumulative cube.dirty.len median={dirty_median}; \
+         last write WritebackResult.invalidated.len median={inv_median} (marginal per-write \
+         transition count under Phase 2D corrected semantics); \
+         live_snapshots={snapshots_held} (allocations: not measured)"
     );
 }
 

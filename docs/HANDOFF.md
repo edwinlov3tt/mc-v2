@@ -25,7 +25,7 @@ The **scope decision** that produced both contracts is recorded in [`decisions/0
 - **216 / 216 tests passing** across §10.1–§10.8 + new fixture tests (was 210; +6 from Phase 2C scaled-Acme builders incl. the mandatory scale-1× equivalence test).
 - 10 / 10 determinism gate runs identical.
 - `cargo fmt --check`, `cargo clippy -D warnings`, `cargo build --release`, `cargo test --workspace` all green.
-- `cargo bench --workspace` baselined across four tags: `phase-2a-cold-path-baseline` (`48d52e9`), `phase-2b-consolidation-fast-path` (`6ea58ab`), `phase-2c-workload-baseline` (`789db15`). Per-tag JSON saved under [`reports/bench-data/`](./reports/bench-data/).
+- `cargo bench --workspace` baselined across **three** tags: `phase-2a-cold-path-baseline` (`48d52e9`), `phase-2b-consolidation-fast-path` (`6ea58ab`), `phase-2c-workload-baseline` (`789db15`). Per-tag JSON saved under [`reports/bench-data/`](./reports/bench-data/).
 - `target/release/mc demo` matches brief §4.6.
 - Allowed runtime deps: `smallvec`, `ahash`, `thiserror`, `once_cell`. Nothing else.
 - `mc-core` dev deps: `mc-fixtures` + `criterion = "0.5"` (Phase 1B; workspace pin, default-features=false).
@@ -38,7 +38,7 @@ Full audits: completion reports for [Phase 1A](./reports/phase-1-completion-repo
 
 ## What is queued
 
-**Phase 2D — Bitset-Backed Dirty Tracker (§9.3).** Handoff doc ready at [`handoffs/phase-2d-handoff.md`](./handoffs/phase-2d-handoff.md). Branch picked from PERF.md §6.14: **Branch A — §9.3** (Cartesian-product flat bitset). Phase 2C's headline finding is a super-linear cliff in `load_canonical_inputs` between 10× (4.33×/write) and 50× (19.7×/write); §6.14 attributes it to AHashSet rehash + cache-locality cost as the dirty set grows from 0 → 1.5 M entries during bulk ingest. Replacing with a flat bitset keyed by linearized coord-index makes mark/check O(1), independent of set size.
+**Phase 2D — Bitset-Backed Dirty Tracker (§9.3) — proposed.** Handoff doc ready at [`handoffs/phase-2d-handoff.md`](./handoffs/phase-2d-handoff.md). Branch picked from PERF.md §6.14: **Branch A — §9.3** (Cartesian-product flat bitset). Phase 2C's headline finding is a super-linear cliff in `load_canonical_inputs` between 10× (4.33×/write) and 50× (19.7×/write); §6.14 attributes it to AHashSet rehash + cache-locality cost as the dirty set grows from 0 → **305,039 entries (measured at 50× steady state)** during bulk ingest. Replacing with a flat bitset keyed by linearized coord-index makes mark/check O(1), independent of set size. Cube-cardinality math (Cartesian product across all dim elements): Acme = 201,960 coords (~25 KB); 10× = 1,050,192 (~128 KB); 50× = 4,820,112 (~588 KB); 100× = 9,532,512 (~1.16 MB) — flat representation is comfortable at every Phase 2C calibration scale.
 
 - **Acceptance gate:** PERF.md §6.12.7 `load_canonical_inputs/50x` drops from 230.84 s → ≤ 50 s.
 - **Source confined to:** `crates/mc-core/src/dirty.rs` + `cube.rs` + (optional) new `cube_shape.rs` + (optional) `coordinate.rs` linearize helper. The rare phase that touches the kernel.
@@ -62,9 +62,9 @@ Full audits: completion reports for [Phase 1A](./reports/phase-1-completion-repo
 |---|---|
 | What's live right now? | [`CURRENT_STATE.md`](./CURRENT_STATE.md) |
 | What's the master phase plan (Phase 1 → 7)? | [`roadmap/MASTER_PHASE_PLAN.md`](./roadmap/MASTER_PHASE_PLAN.md) |
-| What was the last phase's audit? | [`reports/phase-1-completion-report.md`](./reports/phase-1-completion-report.md), [`reports/phase-2a-completion-report.md`](./reports/phase-2a-completion-report.md) |
-| What did Phase 1B/2A's benchmarks show? | [`PERF.md`](./PERF.md) |
-| What was the previous handoff? | [`handoffs/phase-1b-handoff.md`](./handoffs/phase-1b-handoff.md), [`handoffs/phase-2a-handoff.md`](./handoffs/phase-2a-handoff.md) (both delivered) |
+| What was the last phase's audit? | [`reports/phase-1-completion-report.md`](./reports/phase-1-completion-report.md), [`reports/phase-2a-completion-report.md`](./reports/phase-2a-completion-report.md), [`reports/phase-2b-completion-report.md`](./reports/phase-2b-completion-report.md), [`reports/phase-2c-completion-report.md`](./reports/phase-2c-completion-report.md) |
+| What did the benchmarks show? | [`PERF.md`](./PERF.md) — Phase 1B baseline §6, Phase 2A cold-path §6.7–§6.10, Phase 2B before/after §6.11, Phase 2C 10× / 50× / 100× rows §6.12 + combined-workflow §6.13 + scaling-shape summary §6.14 |
+| What was the previous handoff? | [`handoffs/phase-1b-handoff.md`](./handoffs/phase-1b-handoff.md), [`handoffs/phase-2a-handoff.md`](./handoffs/phase-2a-handoff.md), [`handoffs/phase-2b-handoff.md`](./handoffs/phase-2b-handoff.md), [`handoffs/phase-2c-handoff.md`](./handoffs/phase-2c-handoff.md) (all delivered). The active Phase 2D handoff is at [`handoffs/phase-2d-handoff.md`](./handoffs/phase-2d-handoff.md). |
 | What is the contract? | [`specs/engine-semantics.md`](./specs/engine-semantics.md) and [`specs/phase-1-rust-kernel-build-brief.md`](./specs/phase-1-rust-kernel-build-brief.md) |
 | Why was this scope chosen? | [`decisions/0001-phase-1-scope.md`](./decisions/0001-phase-1-scope.md) |
 | What rules govern how I work? | [`../CLAUDE.md`](../CLAUDE.md) |

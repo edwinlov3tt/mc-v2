@@ -101,10 +101,23 @@ fn preflight() {
         "preflight: distant leaf Spend must remain clean after anchor Spend write"
     );
 
+    // Per Phase 2D handoff §A.7: under the corrected
+    // `WritebackResult.invalidated` semantics (marginal coords this
+    // write transitioned clean → dirty, *not* the cumulative dirty
+    // set), `dirty_set delta` and `invalidated.len` are the same
+    // quantity and must agree. The phase-2c-era output of this same
+    // line read `invalidated.len = <cumulative>` (e.g. 17825) and was
+    // a Phase 1A misimplementation rationalized by PERF.md §6.4 —
+    // see PERF.md §6.15 for the correction record.
+    let delta = dirty_after as i64 - dirty_before as i64;
+    let invalidated_len = result.invalidated.len() as i64;
+    debug_assert_eq!(
+        delta, invalidated_len,
+        "dirty_propagation preflight: dirty_set delta ({delta}) must equal invalidated.len ({invalidated_len}) under the Phase 2D marginal semantics"
+    );
     eprintln!(
-        "[dirty_propagation preflight] dirty_set: {dirty_before} -> {dirty_after} (delta {}); invalidated.len={}",
-        dirty_after as i64 - dirty_before as i64,
-        result.invalidated.len()
+        "[dirty_propagation preflight] cube.dirty.len: {dirty_before} -> {dirty_after} \
+         (delta {delta}); WritebackResult.invalidated.len={invalidated_len} (must equal delta)"
     );
 }
 

@@ -296,6 +296,21 @@ dirty_set: 17820 -> 17825 (delta 5); invalidated.len=17825
   hierarchy ancestors. Same shape as the demo CLI's 19919 figure
   (which also includes effects of `write_canonical_inputs`).
 
+> **Phase 2D historical-artifact note (2026-05-02).** The
+> `invalidated.len = 17825` figure above is the **Phase 1A
+> cumulative reading** of `WritebackResult.invalidated`, which
+> Phase 2D corrected per §6.15. Under the corrected (and brief
+> type-doc + engine-semantics-doc-canonical) marginal semantics,
+> `invalidated.len` equals the per-write delta (5 in this case),
+> not the cumulative dirty count. The phase-2c-era output above
+> rationalized the bug ("`invalidated.len` is the full transitive
+> closure including hierarchy ancestors") instead of catching it.
+> The Phase 2D-corrected output of this same line reads
+> `dirty_set: 17820 -> 17825 (delta 5);
+> WritebackResult.invalidated.len=5 (must equal delta)` —
+> reproduced verbatim by [`dirty_propagation.rs`](../crates/mc-core/benches/dirty_propagation.rs)'s
+> `debug_assert_eq!` per Phase 2D handoff §A.7.
+
 ### 6.5 `demo_path` — full pipeline + brief §11.3
 
 | Bench | Median | Range | Mapped 1A ceiling | 1B target | Status |
@@ -748,28 +763,58 @@ manifest and the completion report's deviation entry.
 
 #### §6.13.2 — §6.10-style attribution at iter 1 / 50 / 100
 
-> The attribution row asks: does per-mark cost (`edit_time / dirty_delta`)
-> grow super-linearly across a session? If yes, the dirty-tracker data
-> structure is on the critical path → §9.3 evidence. If flat, per-write
-> fixed cost dominates → §9.2 may be the better Phase 2D pick.
+> The attribution row asks: does per-edit cost (timed body of one
+> rotating-coord write inside the session loop) grow super-linearly
+> across a session? If yes, *something* in the per-edit path is
+> super-linear in session length and the dirty-tracker data structure
+> is a candidate (→ §9.3 evidence). If flat, the per-edit cost is
+> stable in the saturated-set regime (→ neither §9.3 nor §9.2 is
+> directly strengthened or refuted by within-session shape; the
+> deciding signal lives in §6.12.7's cross-scale ingest curve).
+>
+> **Unit caveat — what the per-mark column actually measures.** The
+> `combined_workflow.rs` bench computes
+> `per_mark = edit_time_ns / dirty_set_delta` and prints it labeled
+> "ns". The label is the unit of the **divisor**, not the unit of the
+> result. With `edit_time ≈ 2113 µs` and `dirty_set_delta = 5`, the
+> raw computation yields ≈ **422,600 ns ≈ 422 µs per mark** —
+> three orders of magnitude larger than a "per-mark" reading might
+> suggest. Earlier drafts of this section reported the value as
+> "≈422 ns," which mis-stated the magnitude by 1000×. The corrected
+> column below is "Per-edit ÷ dirty-delta (amortized)," which is
+> what the metric actually computes.
+>
+> **What the metric does and doesn't measure.** It is the
+> *total-edit cost amortized over the dirty-marks added per edit*.
+> That total includes hierarchy ancestor walk, dependency-graph
+> rev-edge walk, permission/lock/type/version/NaN checks, store
+> write, revision bump, soft-lock walk, and CellCoordinate
+> construction inside `compute_dirty_ancestors` — in addition to the
+> AHashSet insert cost the §9.3 candidate would attack. **The
+> AHashSet insert cost is a fraction of this number, not the whole
+> thing.** The flatness conclusion still holds, but it's a flatness
+> of *total edit cost*, not of *AHashSet insert cost in isolation*.
 
-| Scale | Iter | Edit time (median) | Dirty delta (median) | Per-mark (ns) |
+| Scale | Iter | Edit time (median) | Dirty delta (median) | Per-edit ÷ dirty-delta (amortized) |
 |---:|---:|---:|---:|---:|
-| 50× | 1 | 2113 µs | 5 | **422.5 ns** |
-| 50× | 50 | 2097 µs | 5 | **419.4 ns** |
-| 50× | 100 | 2109 µs | 5 | **421.8 ns** |
+| 50× | 1 | 2113 µs | 5 | **≈ 422.6 µs** |
+| 50× | 50 | 2097 µs | 5 | **≈ 419.4 µs** |
+| 50× | 100 | 2109 µs | 5 | **≈ 421.8 µs** |
 | 100× | 1–100 | abandoned | — | — |
 
-**At 50× the per-mark cost is FLAT across the session** (422 → 419 → 422 ns
-across iters 1 / 50 / 100; ≤ 0.7% spread). **Reproduced across two
-independent runs** (the prior run measured 434 / 430 / 439 ns — same
-shape, slightly different absolute due to thermal noise). This is the
-single most important data point for the Phase 2D priority call:
-per-mark insert cost on the `AHashSet<CellCoordinate>` dirty tracker
-does not grow with session length at this scale, even as the dirty
-set itself grows from 0 → 305 K entries. §6.14 distinguishes between
-scaling-shape hypotheses; §9 captures the data without picking a
-winner.
+**At 50× the amortized per-mark cost is FLAT across the session**
+(≈ 422 → 419 → 422 µs across iters 1 / 50 / 100; ≤ 0.7% spread).
+**Reproduced across two independent runs.** What the data supports:
+*total per-edit work* does not grow as the session progresses, even
+as the dirty set itself grows from 0 → 305 K entries. The §9.3
+hypothesis ("AHashSet insert cost grows with set size") is
+consistent with this finding (the AHashSet stays in its post-rehash
+steady-state across the session) but not directly proven by it.
+**The §9.3 evidence is the cross-scale ingest cliff in §6.12.7
+(4.33× per-write at 10× → 19.7× per-write at 50×), not the
+within-session amortized number above.** §6.14 captures the
+load-bearing cross-scale signal; §9 lists candidates without
+picking a winner.
 
 #### §6.13.3 — Final session state
 
@@ -777,6 +822,19 @@ winner.
 |---:|---:|---:|---:|---|
 | 50× | 305,039 | 305,039 | 10 | not measured |
 | 100× | abandoned | — | — | not measured |
+
+> **Phase 2D historical-artifact note (2026-05-02).** "Final
+> invalidated.len (last-iter write)" reads `305,039` above because
+> Phase 1A implemented `WritebackResult.invalidated` as the
+> *cumulative* dirty set (see §6.15 for the spec audit + correction).
+> Under Phase 2D's corrected marginal semantics this column would
+> read **5** (the per-write transition count, equal to the rule
+> fan-out at the anchor coord); the bench preflight rename
+> `final_invalidated_len → last_write_invalidated_len` per Phase 2D
+> handoff §A.7 makes the distinction explicit going forward. The
+> "Final dirty_set" column (305,039) is unchanged — cumulative cube
+> dirty IS meaningful for cube state, just not for what
+> `WritebackResult.invalidated` is supposed to mean.
 
 Cumulative allocations are *not measured* — Phase 2C did not adopt a
 custom global allocator for instrumentation (would have required a new
@@ -805,7 +863,7 @@ pressure data can revisit via `dhat`-shaped instrumentation.
 | `load_canonical_inputs` (bulk ingest) | **4.33× per-write** (93 → 402 µs) | **19.7× per-write** (93 → 1832 µs) | **super-linear — cliff between 10× and 50×** | **§9.3 bitset-backed dirty tracker is the pointer.** Per-write cost grows because each new write hashes into a dirty-set that's already grown from prior writes; AHashSet rehash cost is the suspect. §9.2 helps but doesn't fix the cliff. |
 | `snapshot/loaded` | **9.15×** (29.6 → 270 µs) | deferred (env-gated) | linear at 10× | n/a — §9.5 stays deferred |
 | `rollback/loaded` | **8.51×** (74 → 627 µs) | deferred (env-gated) | linear at 10× | n/a |
-| Combined workflow (within-session per-edit p99 at 50×) | n/a | flat at 50× (2393 µs across 100-edit session) | **Per-mark cost FLAT** across 100 edits (422 → 419 → 422 ns at iter 1 / 50 / 100) | Within-session, §9.3 hypothesis is **not strengthened** at 50× — set growth from 0 → 305 K entries doesn't measurably affect per-mark cost during a session |
+| Combined workflow (within-session per-edit p99 at 50×) | n/a | flat at 50× (2393 µs across 100-edit session) | **Per-edit total cost FLAT** across 100 edits (≈ 422 → 419 → 422 µs amortized over 5 marks/edit at iter 1 / 50 / 100; see §6.13.2 unit caveat) | Within-session, §9.3 hypothesis is **consistent with** the data but not directly proven by it — total per-edit work doesn't grow as the dirty set grows from 0 → 305 K entries within the session, but the AHashSet insert cost is only a fraction of the amortized number; §9.3's load-bearing evidence is the cross-scale cliff in §6.12.7, not this row |
 
 > **Phase 2D priority pointer — do not act on without re-reading.**
 >
@@ -822,24 +880,36 @@ pressure data can revisit via `dhat`-shaped instrumentation.
 > drops every per-write cost by a constant amount but doesn't bend the
 > curve. §9.3 attacks the per-mark hash-and-insert cost on the
 > `AHashSet<CellCoordinate>` dirty tracker. As the dirty set grows
-> (during bulk ingest, dirty grows from 0 to ~150 K entries at 10×,
-> ~750 K at 50×, ~1.5 M at 100×), each subsequent insert costs more —
-> AHashSet rehashes, cache locality drops, hash-collision probability
-> climbs. This compounds nonlinearly. **A bitset-backed dirty tracker
-> keyed by per-dim element index would make every insert O(1) and
-> independent of set size, exactly the thing the cliff data names.**
+> (the actual measured 50× steady-state is ~305 K entries per the
+> combined-workflow §6.13.3 final dirty-set median; earlier drafts
+> of this section quoted 750 K / 1.5 M for 50× / 100× from a
+> projection that was never directly captured at 100×), each
+> subsequent insert costs more — AHashSet rehashes, cache locality
+> drops, hash-collision probability climbs. This compounds
+> nonlinearly. **A bitset-backed dirty tracker keyed by linearized
+> coordinate index (per-dim strides over per-dim element-index maps)
+> would make every insert O(1) and independent of set size, exactly
+> the thing the cliff data names.**
 >
-> **Why combined-workflow flatness doesn't contradict.** The
-> combined-workflow per-mark cost is flat **within a session** at 50×
-> (422 → 419 → 422 ns across 100 edits). That's because the dirty set
-> was *already* fully populated from the bulk-load that preceded the
-> session — `final dirty_set = 305,039` at session start (after
-> bulk-load), and stays in the same range across the session. The
-> *cliff* is in the bulk-load itself, where the dirty set grows from
-> 0; once it's saturated, per-mark cost stabilizes. So the two
-> measurements reinforce each other: per-mark cost is dominated by
-> set-size growth, and the dominant set-size growth happens during
-> ingest, not within an interactive session.
+> **Why combined-workflow flatness doesn't contradict — and what it
+> doesn't prove.** The combined-workflow per-edit cost is flat
+> **within a session** at 50× (≈ 422 → 419 → 422 µs amortized over
+> 5 dirty marks per edit; see §6.13.2 for the unit caveat — the
+> "ns" label in the bench output is the divisor unit, not the
+> result unit). That's because the dirty set was *already* fully
+> populated from the bulk-load that preceded the session —
+> `final dirty_set = 305,039` at session start (after bulk-load),
+> and stays in the same range across the session. The *cliff* is
+> in the bulk-load itself, where the dirty set grows from 0;
+> once it's saturated, total per-edit cost stabilizes.
+>
+> Caveat: the within-session amortized per-mark figure is dominated
+> by hierarchy ancestor walk + dependency rev-edge walk + per-write
+> fixed costs, not by AHashSet insert cost in isolation. So the
+> within-session flatness is *consistent* with §9.3 (no within-session
+> regression) but does not isolate the AHashSet component. The
+> load-bearing §9.3 evidence is the cross-scale cliff in §6.12.7,
+> not this within-session number.
 >
 > **§9.5 stays deferred.** Snapshot scales linearly at 10× (9.15×
 > for 10× cells); the TM1 stacked-sandbox-of-10 pattern at 50×
@@ -861,6 +931,210 @@ pressure data can revisit via `dhat`-shaped instrumentation.
 > [`reports/phase-2d-handoff-scaffold.md`](./reports/phase-2d-handoff-scaffold.md)
 > includes branch templates for §9.3, §9.2, and the "more
 > measurement first" path.
+
+> **Phase 2D closure (2026-05-02) — read this BEFORE acting on
+> the §9.3 framing above.** Phase 2D measured the bitset-only
+> hypothesis on the actual hot path and found it moves
+> `load_canonical_inputs/50x` by **+4 % (within criterion noise)**.
+> The §9.3 attribution above ("AHashSet rehash + cache locality +
+> hash-collision probability") was wrong. The real cause of the
+> §6.12.7 super-linear cliff is at
+> [`cube.rs::write`](../crates/mc-core/src/cube.rs)'s construction
+> of `WritebackResult.invalidated`, which Phase 1A implemented as
+> the *cumulative* dirty set (`self.dirty.iter().cloned().collect()`)
+> in disagreement with the brief's own type doc + engine-semantics.md
+> §13. Per-write cost was O(|cumulative dirty|) — N-write bulk loads
+> ran in O(N²). Phase 2D corrected the semantics to the marginal
+> reading ("coordinates marked dirty by **this write**") and shipped
+> the bitset as the foundation that makes the corrected
+> per-write `is_dirty` check O(1). The combined change drops 50×
+> ingest from 230.80 s to **1.06 s (−99.5 %)** — beats the 50 s
+> acceptance gate by ~47×. **Read §6.15 for the full A/B isolation,
+> diff table, and the spec audit that authorized the writeback
+> change.**
+
+### 6.15 Phase 2D — Bitset-Backed Dirty Tracker + WritebackResult.invalidated semantic correction
+
+> **Acceptance gate cleared by 47×.** `load_canonical_inputs/50x`:
+> 230.80 s → **1.06 s (−99.5 %)**, against the ≤ 50 s gate. 100×
+> ingest (abandoned at >38 min in phase-2c) now runs in **2.13 s**.
+> The combined-workflow per-edit ÷ dirty-delta secondary metric
+> stays flat *and* improves by ~200× (from ≈ 422 µs to ≈ 2.05 µs
+> at 50× iter-100). All 222 + 5 (new writeback_invalidated) tests
+> pass deterministically across 10 consecutive runs.
+
+#### §6.15.1 Source change manifest
+
+| File | Change | Lines |
+|---|---|---:|
+| [`crates/mc-core/src/cube_shape.rs`](../crates/mc-core/src/cube_shape.rs) | **NEW.** `CubeShape` struct (per-dim element-id → local-index `Vec<u32>` + per-dim strides + Cartesian cardinality). Built once at `CubeBuilder::build`. Cardinality guard at `1 << 30`; per-dim id-range guard at `1 << 24`. | ~165 |
+| [`crates/mc-core/src/dirty.rs`](../crates/mc-core/src/dirty.rs) | Internal repr enum `DirtyImpl::{Hash, Bitset}`. Public method signatures preserved byte-for-byte; new `pub(crate) fn with_shape(Arc<CubeShape>)`. Bitset path: `bits` + sticky `ever_marked` + insertion-order `tracked: Vec<TrackedEntry>` (with cached bit index). Custom `DirtyIter` exposes exact `size_hint` so `.collect::<Vec<_>>()` preallocates. | ~530 |
+| [`crates/mc-core/src/cube.rs`](../crates/mc-core/src/cube.rs) | `Cube` gains `cube_shape: Option<Arc<CubeShape>>`; `CubeBuilder::build` constructs it and routes the dirty tracker through `with_shape()` (or `new()` if cardinality overflows the guard). **`Cube::write` semantic correction:** `WritebackResult.invalidated` is now the *marginal* set (coords this write transitioned clean → dirty) rather than the cumulative dirty set; capture is via `is_dirty(&c)` before each `mark`, O(1) on the bitset path. | +75 / −15 |
+| [`crates/mc-core/src/lib.rs`](../crates/mc-core/src/lib.rs) | `mod cube_shape;` (private — no public re-export). | +1 |
+
+**Public API surface unchanged.** `DirtyTracker`, `CellCoordinate`,
+`Cube`, `Snapshot` re-exports stay byte-for-byte. `WritebackResult`
+field types unchanged; only the *contents* of `invalidated` change
+per the spec interpretation in §6.15.4 below.
+
+#### §6.15.2 Bench impact — full table at every measured scale
+
+| Bench | phase-2c median | phase-2d median | Δ | criterion verdict |
+|---|---:|---:|---:|---|
+| `demo_path/load_canonical_inputs` (1×, 2520 writes) | 233.83 ms | 20.88 ms | **−91.1 %** | improved |
+| `demo_path/load_canonical_inputs/10x` (25,200 writes) | 10.12 s | 208.90 ms | **−97.9 %** | improved |
+| `demo_path/load_canonical_inputs/50x` (126,000 writes) — **gate row** | 230.80 s | **1.06 s** | **−99.5 %** | improved (≤ 50 s gate beat by 47×) |
+| `demo_path/load_canonical_inputs/100x` (252,000 writes) | abandoned (>38 min) | **2.13 s** | new | (no phase-2c baseline) |
+| `leaf_read_write/write_input_leaf` | 167.19 µs | 10.77 µs | **−93.8 %** | improved |
+| `leaf_read_write/write_input_leaf/10x` | 691.50 µs | 15.69 µs | **−97.7 %** | improved |
+| `dirty_propagation/spend_at_anchor` | 153 µs | 10.90 µs | **−93.0 %** | improved |
+| `leaf_read_write/read_input_leaf_warm` | ~50 ns | 47.93 ns | −3.6 % | within noise |
+| `leaf_read_write/read_input_leaf_cold` | 875 ns | 389.87 ns | −57.0 % | improved (free side-effect; less dirty bookkeeping per setup) |
+| `combined_workflow/50x_marker` (criterion noop) | 425 ps | 384 ps | −9.3 % | within noise |
+| Combined workflow per-edit p50 / p95 / p99 (50×) | (preflight only) | 11.1 / 19.9 / 24.0 µs | (preflight) | order-of-magnitude under phase-2c |
+| Combined workflow per-mark amortized @ iter 1 / 50 / 100 (50×) | ≈ 422 / 419 / 422 µs | **3.7 / 2.06 / 2.05 µs** | **−99 %** | within-session shape stays flat (handoff secondary expectation met & exceeded) |
+| `combined_workflow` final `last_write_invalidated_len` median (50×) | 305,039 (cumulative bug) | **5** | — | matches new marginal semantics; equals dirty-set delta |
+
+#### §6.15.3 A/B isolation — which change carried which improvement
+
+Per Phase 2D handoff §A.5, the bitset and the writeback semantic
+correction were measured in isolation against the phase-2c
+baseline. **All three configurations use the same machine, same
+toolchain, same `--sample-size 10`, and the same Acme fixture.**
+
+| Configuration | 10× ingest | 50× ingest | What it isolates |
+|---|---:|---:|---|
+| **(1) phase-2c baseline** — `AHashSet` tracker + cumulative `invalidated` | 10.12 s | 230.80 s | The two Phase 1A misimplementations bundled |
+| **(2) Bitset only** — `Bitset` tracker + cumulative `invalidated` (revert just the writeback fix) | 10.12 s (−0.17 %, p > 0.05) | 238.64 s (+3.4 %, p = 0.00 — within typical run-to-run bench noise; the bitset moves the cliff row by < 5 % in either direction) | The bitset's contribution alone |
+| **(3) Bitset + writeback fix** — what Phase 2D ships | 208.90 ms (−97.9 %) | **1.06 s (−99.5 %)** | The combined Phase 2D |
+
+**Headline:** the bitset alone moves the gate row by **< 5 %** at
+both 10× (within noise) and 50× (slightly slower; the bitset
+incurs a small per-`is_dirty` linearize cost that's dwarfed by the
+dominant cumulative-collection cost). The **writeback semantic
+correction is the load-bearing change** for the §6.14 cliff. The
+bitset is **enabling**, not load-bearing, on the bench gate: it
+makes the per-write `is_dirty` O(1) so the marginal-set capture
+in cube.rs:892–943 stays bounded by the per-write fan-out (~216 at
+Acme) rather than degrading as the cumulative dirty set grows.
+Without the bitset, the AHashSet's `is_dirty` would grow with set
+size, partially eroding the writeback fix's win at large scales —
+so the bitset still ships as the structural foundation for any
+future dirty-tracker optimization, even though it isn't what
+closed the §6.14 cliff on its own.
+
+> **Why the bitset is +3.4 % slower at 50× under config 2 (cumulative invalidated).**
+> Under config 2, the bench is dominated by `iter().cloned().collect()` of the
+> cumulative dirty set (~150 K entries average across the bulk-load), which is the
+> same cost in both AHashSet and bitset paths. The bitset adds a small per-`mark`
+> linearize cost (~50 ns × 6 dim lookups + bit math) that the AHashSet path
+> doesn't pay, but saves nothing on the dominant iter+collect path. Net: ~+3.4 %
+> at 50×, within typical run-to-run bench noise. Once the writeback fix removes
+> the cumulative-iter cost (config 3), the bitset's O(1) `is_dirty` becomes
+> load-bearing for the marginal-set capture, and the combined change drops the
+> row 217×.
+
+#### §6.15.4 The spec audit — `WritebackResult.invalidated` semantic correction
+
+`WritebackResult.invalidated` has six authoritative spec sites
+across the brief and the engine-semantics doc. **Five name the
+*marginal* reading; one (a compact-pseudocode shorthand) is
+ambiguous and was misread by Phase 1A.**
+
+| Source | Says | Reading |
+|---|---|---|
+| Brief [`docs/specs/phase-1-rust-kernel-build-brief.md`](specs/phase-1-rust-kernel-build-brief.md) §3.18, type doc on `WritebackResult.invalidated` (line 1214–1216) | "Coordinates marked dirty by **this write** — both rule dependents and hierarchy ancestors. Order is unspecified; equality is by set content." | **Marginal** |
+| Brief writeback algorithm step 12 (line 1259) | "Return `WritebackResult` with the invalidated set." | Marginal-leaning (the just-computed set) |
+| Brief compact pseudocode (line 1938) | `Return WritebackResult { invalidated: <full dirty set> }.` | **Ambiguous** — Phase 1A read it as `cube.dirty` (cumulative); reads equally as "the full set computed in steps 3–6 above" (marginal) |
+| Semantics doc [`docs/specs/engine-semantics.md`](specs/engine-semantics.md) §13.2 inline comment (line 1011) | "cells dirtied **by this write**" | **Marginal** |
+| Semantics doc §13.4 worked example (line 1052–1054) | Enumerates 5 derived measures + same 5 at consolidated ancestors of the single Spend coord (~10 coords, NOT the prior 17,820 cumulative dirty) | **Marginal** |
+| I-WB-7 (semantics doc line 1034) | "returns the list of invalidated coordinates so callers can pre-warm caches if they care" | **Marginal** (cumulative-set pre-warming on every write is incoherent) |
+
+Per [`CLAUDE.md`](../CLAUDE.md) §0 hierarchy of authority:
+- "Brief wins for what to implement (types, signatures)" → the
+  brief's own *type doc* wins over its own *pseudocode shorthand*
+  within the brief.
+- "Semantics wins for what a concept means" → `invalidated` means
+  "by this write."
+
+**Verdict:** five of six sources are unambiguous on the marginal
+reading; one (the compact pseudocode) is genuinely ambiguous and
+Phase 1A picked the wrong gloss. The cumulative reading was a
+Phase 1A misimplementation. Phase 2D corrects the implementation
+to the marginal reading per the [Phase 2D handoff §A
+amendment](handoffs/phase-2d-handoff.md) approved 2026-05-02.
+
+**Behavior impact:**
+
+- `WritebackResult.invalidated: Vec<CellCoordinate>` — same field
+  type, same field name, same struct, same re-export. Only the
+  *contents* change.
+- `cube.dirty()` (the cumulative tracker) is **unchanged**; it
+  still tracks every coord ever marked dirty since the last
+  `clear_all`.
+- `mc-cli demo`'s "N dependent cells dirtied" line now reports
+  the marginal count (single-digit at Acme — 9 in the demo
+  flow), matching the brief §4.6 "exact N depends on impl;
+  bounded — see §8" wording. Phase 1A's value was ~17,820+
+  (cumulative dirty after canonical-input loading), which
+  technically satisfied "depends on impl" but contradicted the
+  "bounded — see §8" intent.
+- Bench preflight diagnostics now report `dirty_set delta ==
+  invalidated.len()` (validation that the two quantities agree
+  under the corrected semantics); see §A.7 of the handoff.
+
+#### §6.15.5 Tests A–E (per handoff §A.6)
+
+[`crates/mc-core/tests/writeback_invalidated.rs`](../crates/mc-core/tests/writeback_invalidated.rs)
+adds five tests pinning the marginal semantics:
+
+- **A** — `t_phase_2d_write_a_clean_cube_invalidated_is_marginal_closure`
+  — fresh write on clean cube; `invalidated` ≤ §10.1 bound; equals
+  `cube.dirty().len()`; contains the 5 derived measures + at least
+  one hierarchy ancestor.
+- **B** — `t_phase_2d_write_b_repeated_write_skips_already_dirty`
+  — second identical write returns empty `invalidated`; cumulative
+  `cube.dirty()` does not shrink.
+- **C** — `t_phase_2d_write_c_recompute_then_redirty_reports_again`
+  — read forces recompute → write at upstream re-reports the
+  recomputed coord. The load-bearing assertion: `invalidated` is a
+  *transition* set, not a *cumulative-state* set.
+- **D** — `t_phase_2d_write_d_bulk_ingest_preserves_per_write_bound`
+  — every individual write in the 2,520-write canonical-input bulk
+  ingest reports `invalidated.len() ≤ 215` while
+  `cube.dirty().len()` grows monotonically. **The test that, had it
+  existed, would have caught the Phase 1A bug.**
+- **E** — `t_phase_2d_write_e_demo_dirty_count_is_marginal` — smoke
+  test asserting the demo-flow `invalidated.len()` is < 100, not
+  the cumulative ~17 K.
+
+The kernel `bitset_tracker_observationally_equivalent_to_ahashset`
++ `bitset_tracker_mark_closure_matches_hash` tests in
+[`dirty.rs`](../crates/mc-core/src/dirty.rs) tests module pin the
+bitset's behavioral equivalence with the AHashSet fallback.
+
+#### §6.15.6 Memory footprint (sanity check)
+
+`CubeShape` allocations at the calibration scales — comfortable at
+every scale Phase 2D is calibrated for.
+
+| Scale | Cube cardinality | bitset bytes (`bits` + `ever_marked`) | per-dim id maps |
+|---|---:|---:|---|
+| 1× | 201,960 | 2 × 25 KB = 50 KB | 6 × ~232 B = 1.4 KB |
+| 10× | 1,050,192 | 2 × 128 KB = 256 KB | 6 × ~1 KB = 6 KB |
+| 50× | 4,820,112 | 2 × 588 KB = 1.16 MB | 6 × ~5 KB = 30 KB |
+| 100× | 9,532,512 | 2 × 1.16 MB = 2.32 MB | 6 × ~10 KB = 60 KB |
+
+Plus `tracked: Vec<TrackedEntry>` grows with the *unique* coords
+ever marked since the last `clear_all` (≤ cube cardinality).
+At 50× steady state with `tracked` saturated at 305 K entries,
+each entry is `(usize, CellCoordinate)` ≈ 96 B = ~29 MB. Trivial
+for any host that runs MarketingCubes at all.
+
+The cardinality guard at `1 << 30` (≈ 128 MB bitset) is a
+forward-compat bound for hypothetical 1 G-coord cubes; if a future
+cube exceeds it, `CubeShape::new` returns `None` and the tracker
+falls back to the AHashSet path.
 
 ---
 
@@ -1250,29 +1524,41 @@ within a 50× session (434 → 430 → 439 ns at iters 1 / 50 / 100), so
 fixed cost reduction. Whether that fixed cost grows across scales is
 read off §6.12.1 (the scaled `write_input_leaf` rows).
 
-### 9.3 Reduce hierarchy mark closure cost
+### 9.3 ~~Reduce hierarchy mark closure cost~~ — closed in Phase 2D (§6.15)
 
-§8.1. Two paths:
-- (a) **Lazy ancestor marks** — only mark hierarchy ancestors lazily
-  when a consolidated read asks for them. Today every write
-  preemptively marks them.
-- (b) **Bitset-backed dirty tracker** for hot ranges, instead of a
-  general `HashSet<CellCoordinate>`.
+§8.1. **Closed 2026-05-02 in Phase 2D.** Phase 2D measured the
+bitset hypothesis on the actual hot path and found it moves
+`load_canonical_inputs/50x` by **+4 % (within criterion noise)** —
+the §9.3 attribution to "AHashSet rehash + cache locality + hash
+collisions" was wrong. The real cause of the §6.12.7 super-linear
+cliff was at [`cube.rs::write`](../crates/mc-core/src/cube.rs)'s
+construction of `WritebackResult.invalidated`, which Phase 1A
+implemented as the *cumulative* dirty set
+(`self.dirty.iter().cloned().collect()`) — see §6.15 for the
+spec audit that resolved the brief / engine-semantics-doc
+ambiguity in favor of the marginal reading and the A/B isolation
+that pinpointed the actual contributor. The bitset still ships as
+the foundation: it makes the corrected per-write `is_dirty` check
+O(1), so the marginal-set capture is bounded by the per-write
+fan-out (~216 at Acme, §10.1) rather than by the cumulative
+dirty size. Combined change drops 50× ingest from 230.80 s to
+**1.06 s (−99.5 %)** — beats the 50 s acceptance gate by ~47×
+with measured 100× ingest at 2.13 s (was abandoned at >38 min in
+phase-2c). The historical Phase 2C signal text below is
+preserved for the audit trail.
 
-(a) is a behavior shift that needs a careful invariant audit (the §10.1
-delta-bounded test is sensitive to mark-set size). (b) is a pure
-performance change.
-
-**Phase 2C signal:** *strengthened by the ingest super-linear cliff
-(§6.12.7).* `load_canonical_inputs` per-write cost is **4.33×** at
-10× cells and **19.7×** at 50× cells — super-linear scaling
-between 10× and 50×. The mechanism the data names: as the dirty
-set grows from 0 to ~150 K (10×) / ~750 K (50×) / ~1.5 M (100×)
-entries during bulk-load, each `AHashSet<CellCoordinate>` insert
-pays growing rehash + cache-miss costs. A bitset-backed dirty
-tracker keyed by per-dim element index would make every insert
-O(1) and independent of set size — exactly the cliff the data
-names. The combined-workflow data (§6.13.2) is **not contradictory**:
+**Phase 2C signal (preserved as historical context):**
+*strengthened by the ingest super-linear cliff (§6.12.7).*
+`load_canonical_inputs` per-write cost is **4.33×** at 10× cells
+and **19.7×** at 50× cells — super-linear scaling between 10×
+and 50×. The mechanism the data ~~names~~ (Phase 2C
+*hypothesized*, Phase 2D *refuted*): as the dirty set grows from
+0 to ~150 K (10×) / ~750 K (50×) / ~1.5 M (100×) entries during
+bulk-load, each `AHashSet<CellCoordinate>` insert pays growing
+rehash + cache-miss costs. A bitset-backed dirty tracker keyed by
+per-dim element index would make every insert O(1) and
+independent of set size — exactly the cliff the data ~~names~~.
+The combined-workflow data (§6.13.2) is **not contradictory**:
 per-mark cost is flat *within* a session because the dirty set
 already reached steady state during the preceding bulk-load
 (`final dirty_set = 305,039` from the bulk-load alone). Bulk-load
@@ -1434,3 +1720,34 @@ unchanged. No `cargo update` was run. No new external dependency
 was added (`std::sync::Arc` is `std`, not a dependency). No public
 symbol from [`crates/mc-core/src/lib.rs`](../crates/mc-core/src/lib.rs)
 was added, removed, or renamed.
+
+Files changed in Phase 2D:
+
+```
+crates/mc-core/src/cube_shape.rs                # NEW. CubeShape (per-dim element-id → local-index Vec<u32> + per-dim strides + Cartesian cardinality)
+crates/mc-core/src/dirty.rs                     # DirtyImpl::{Hash, Bitset} enum; pub(crate) with_shape(Arc<CubeShape>); custom DirtyIter with exact size_hint; preserves all public method signatures
+crates/mc-core/src/cube.rs                      # Cube.cube_shape: Option<Arc<CubeShape>>; CubeBuilder::build constructs shape; Cube::write semantic correction (WritebackResult.invalidated = marginal-only set per brief type doc + engine-semantics.md §13)
+crates/mc-core/src/lib.rs                       # mod cube_shape (private); no public re-export
+crates/mc-core/tests/writeback_invalidated.rs   # NEW. Tests A–E pinning the marginal semantics (per Phase 2D handoff §A.6)
+crates/mc-core/benches/dirty_propagation.rs     # preflight wording fix (Phase 2D handoff §A.7); no behavior change
+crates/mc-core/benches/hierarchy_mark.rs        # preflight wording fix (Phase 2D handoff §A.7); no behavior change
+crates/mc-core/benches/combined_workflow.rs     # rename final_invalidated_len → last_write_invalidated_len; preflight wording fix (Phase 2D handoff §A.7); no behavior change
+docs/PERF.md                                    # this file (annotations on §6.4 / §6.13 / §6.14 historical-bug artifacts; §6.15 new section; §9.3 closure-noted; §10 manifest)
+docs/handoffs/phase-2d-handoff.md               # NEW (queued under Phase 2C handoff §"completion next"). Amendment §A added 2026-05-02 after the SPEC QUESTION on WritebackResult.invalidated semantics.
+docs/handoffs/phase-2c-handoff.md               # historical-artifact footnote at line 72 (per Phase 2D handoff §A.8)
+docs/reports/phase-2c-completion-report.md      # historical-artifact footnotes at lines 129 + 314 (per Phase 2D handoff §A.8)
+docs/reports/phase-2d-completion-report.md      # NEW
+docs/CURRENT_STATE.md                           # close Phase 2D; flip status
+docs/roadmap/MASTER_PHASE_PLAN.md               # 2D row → complete + tag
+docs/reports/bench-data/phase-2d/               # NEW. Phase 2D criterion baseline (per docs/reports/bench-data/README.md workflow)
+```
+
+No file outside this manifest was modified. `Cargo.lock` is
+unchanged. No `cargo update` was run. No new external dependency
+was added (`std::sync::Arc` is `std`; `Vec<u64>` + manual
+bit-twiddling, no `bit-vec` or `bitvec` crate). No public symbol
+from [`crates/mc-core/src/lib.rs`](../crates/mc-core/src/lib.rs)
+was added, removed, or renamed; `WritebackResult.invalidated`
+remains `Vec<CellCoordinate>` with the same field name and
+re-export. The semantic change is on field *contents* per the
+spec audit in §6.15.4.
