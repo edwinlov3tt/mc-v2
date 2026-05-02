@@ -7,7 +7,7 @@
 **Last Phase 1B + Phase 2A commit:** `48d52e9` — *bench: complete Phase 2A cold-path benchmark expansion* (Phase 1B and Phase 2A bundled into one commit; tag `phase-2a-cold-path-baseline` at this hash)
 **Phase 2B commit / tag:** `6ea58ab` (tag `phase-2b-consolidation-fast-path`)
 **Phase 2 housekeeping Q3 closure commit:** `9f7420c`
-**Phase 2C HEAD:** uncommitted; prospective tag `phase-2c-workload-baseline`
+**Phase 2C commit / tag:** `789db15` (tag `phase-2c-workload-baseline`)
 **Branch:** `main` (tracking `origin/main` at github.com/edwinlov3tt/mc-v2)
 
 ---

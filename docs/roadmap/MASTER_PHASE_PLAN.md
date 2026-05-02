@@ -38,7 +38,7 @@ Productization beyond the first usable product (multi-tenancy, customer-facing a
 | **1B** | Benchmark baseline + PERF.md | **complete** | bundled into `phase-2a-cold-path-baseline` (`48d52e9`) — they shipped in the same commit; no standalone `phase-1b` tag was cut |
 | **2A** | Cold-path benchmark expansion | **complete** | `phase-2a-cold-path-baseline` (`48d52e9`) |
 | **2B** | Consolidation Fast Path (hierarchy clone) | **complete** | `phase-2b-consolidation-fast-path` (`6ea58ab`) |
-| **2C** | Production-Shaped Workload Benchmarks | **complete** (uncommitted; prospective tag `phase-2c-workload-baseline`) | `<TODO commit hash>` |
+| **2C** | Production-Shaped Workload Benchmarks | **complete** | `phase-2c-workload-baseline` (`789db15`) |
 | **2D** | Pick the §9 winner from PERF.md §6.14 | **planned** (flips to `proposed` when Phase 2C is committed + tagged) | — |
 | **2E–2N** | Further optimization rounds (TBD) | not started | — |
 | **3A** | Model definition layer — declarative format + parser | **planned** (flips to `proposed` when Phase 2 exits) | — |
@@ -108,7 +108,7 @@ The "How to use" section below treats `proposed` as the next-to-start row; `plan
 
 ### 2C — Production-Shaped Workload Benchmarks (complete)
 
-- **Status:** complete (2026-05-02), uncommitted at the time of this update; prospective tag `phase-2c-workload-baseline`.
+- **Status:** complete (2026-05-02). Tag `phase-2c-workload-baseline` at `789db15`.
 - **Purpose:** Calibrate the kernel against ADR-0003's 10× / 50× / 100× Acme curve and produce the workload-shaped data Phase 2D needs to pick between PERF.md §9.3 (bitset-backed dirty tracker), §9.2 (leaf-flag cache), or something else the data surfaces. **Measurement only — no `crates/mc-core/src/` change.**
 - **What it proves:** The kernel's per-edit and per-read cost shape across a 100× cube-size range is (a) tractable for measurement at criterion's minimum sample size of 10 (sample-of-100 is prohibitive at 100× because per-iteration setup includes a 252K-write bulk-load), (b) bounded by ADR-0003's 100 ms click-instant budget at 50× combined-workflow scale (per-edit p99 ≈ 2.5 ms within a 100-iteration session), and (c) **flat per-mark cost across a session at 50×** (434 → 430 → 439 ns at iters 1 / 50 / 100), which constrains §9.3's hypothesis: the AHashSet insert cost does NOT grow with set size *within a session* at this scale.
 - **Deliverables (shipped):** internal `mc_fixtures::build_scaled_acme_cube(scale)` (`pub(crate)`) + 3 public wrappers `_10x` / `_50x` / `_100x` + 6 unit tests including the mandatory scale-1× equivalence test against brief §4.5.1 anchor goldens; 27 new bench rows extending the existing five Phase 1B/2A bench files at 10× / 50× / 100×; new [`combined_workflow.rs`](../../crates/mc-core/benches/combined_workflow.rs) at 50× and 100× (TM1 stacked-sandbox pattern per ADR-0003 Decision 6); [PERF.md](../PERF.md) §6.12 / §6.13 / §6.14 (new) plus updated §7 / §8 / §9 (priorities deliberately unspecified per the handoff hard rule); [`reports/phase-2c-completion-report.md`](../reports/phase-2c-completion-report.md); `bench-data/phase-2c/` populated.
