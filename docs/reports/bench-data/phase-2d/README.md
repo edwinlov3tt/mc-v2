@@ -4,8 +4,8 @@
 
 ## Captured at
 
-- **Tag:** pending review (will tag `phase-2d-bitset-and-invalidated-fix` after PM/spec-maintainer signoff)
-- **Commit:** pending review
+- **Tag:** `phase-2d-bitset-and-invalidated-fix`
+- **Commit:** `0678a98` — *phase-2d: bitset DirtyTracker + WritebackResult.invalidated semantic fix*
 - **Date:** 2026-05-02
 - **Machine:** Apple M4, macOS 26.3 (matches phase-2a / 2b / 2c machine; comparable medians)
 - **Toolchain:** Rust 1.78 (unchanged from prior baselines)

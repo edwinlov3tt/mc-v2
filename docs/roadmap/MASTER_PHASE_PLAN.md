@@ -39,7 +39,7 @@ Productization beyond the first usable product (multi-tenancy, customer-facing a
 | **2A** | Cold-path benchmark expansion | **complete** | `phase-2a-cold-path-baseline` (`48d52e9`) |
 | **2B** | Consolidation Fast Path (hierarchy clone) | **complete** | `phase-2b-consolidation-fast-path` (`6ea58ab`) |
 | **2C** | Production-Shaped Workload Benchmarks | **complete** | `phase-2c-workload-baseline` (`789db15`) |
-| **2D** | Bitset-Backed Dirty Tracker + WritebackResult.invalidated semantic correction (§9.3 closure) | **complete** (pending review + commit/tag) | — (tag pending review) |
+| **2D** | Bitset-Backed Dirty Tracker + WritebackResult.invalidated semantic correction (§9.3 closure) | **complete** | `phase-2d-bitset-and-invalidated-fix` (`0678a98`) |
 | **2E–2N** | Further optimization rounds (TBD) | not started | — |
 | **3A** | Model definition layer — declarative format + parser | **planned** (flips to `proposed` when Phase 2 exits) | — |
 | **3B–3N** | Model layer extensions (TBD) | not started | — |
@@ -119,7 +119,7 @@ The "How to use" section below treats `proposed` as the next-to-start row; `plan
 
 Phase 2D opened on **Branch A — §9.3** (bitset-backed dirty tracker) per PERF.md §6.14's `load_canonical_inputs` super-linear cliff hypothesis. **The handoff diagnosis was wrong:** measurement showed the bitset alone moves 50× ingest by **+4 % (within criterion noise)** — see PERF.md §6.15.3 A/B isolation. The actual cause of the §6.14 cliff was at [`cube.rs::write`](../../crates/mc-core/src/cube.rs)'s construction of `WritebackResult.invalidated`, which Phase 1A implemented as the *cumulative* dirty set (`self.dirty.iter().cloned().collect()`) in disagreement with the brief's own type doc + engine-semantics.md §13. Per the [Phase 2D handoff §A](../handoffs/phase-2d-handoff.md) amendment approved 2026-05-02 (SPEC QUESTION round-trip), Phase 2D scope expanded to include the writeback semantic correction. Result: 50× ingest **230.80 s → 1.06 s (−99.5 %)**, beats the ≤ 50 s gate by ~47×.
 
-- **Status:** complete (pending review + commit/tag). Completion report at [`../reports/phase-2d-completion-report.md`](../reports/phase-2d-completion-report.md).
+- **Status:** complete (2026-05-02). Tag `phase-2d-bitset-and-invalidated-fix` at `0678a98`. Completion report at [`../reports/phase-2d-completion-report.md`](../reports/phase-2d-completion-report.md).
 - **Approach (shipped):** (1) Cartesian-product flat bitset (`Vec<u64>` + sticky `ever_marked` bitset + insertion-order `tracked` Vec with cached bit indices) behind `Arc<CubeShape>`; `DirtyTracker` public method signatures preserved byte-for-byte; new `pub(crate) fn with_shape(Arc<CubeShape>)` constructor used by `CubeBuilder::build`. (2) `WritebackResult.invalidated` semantic correction in `Cube::write`: the field's *contents* are now the marginal per-write transition set (coords this write transitioned clean → dirty), not the cumulative dirty state — same field name + type + re-export, no public API surface change. The bitset is the foundation that makes the corrected per-write `is_dirty` check O(1) so the marginal capture is bounded by per-write fan-out (~216 at Acme, §10.1) rather than the cumulative set size.
 - **Acceptance gate:** PERF.md §6.12.7 `load_canonical_inputs/50x` ≤ 50 s — **met by 47×** (1.06 s). Secondary expectation (combined-workflow per-edit-amortized stays within ±10 % of ≈ 422 µs) **met and exceeded** — new median ≈ 2.05 µs at iter-100 (~200× improvement, side-effect of the writeback correction); within-session shape stays flat (3.7 → 2.06 → 2.05 µs at iter 1 / 50 / 100).
 - **Source touched:** `crates/mc-core/src/cube_shape.rs` (NEW), `crates/mc-core/src/dirty.rs`, `crates/mc-core/src/cube.rs`, `crates/mc-core/src/lib.rs` (one `mod` line). Tests: `crates/mc-core/tests/writeback_invalidated.rs` (NEW; 5 tests A–E pinning the marginal semantics). Bench preflight wording fixes per handoff §A.7 in `dirty_propagation.rs` + `hierarchy_mark.rs` + `combined_workflow.rs` (no behavior change).
@@ -135,7 +135,7 @@ Sub-phases beyond 2D are intentionally not pre-named. Whether 2E exists depends 
 
 If Phase 2D succeeds and §9.2 / §9.5 / §9.6 all stay opportunistic, **Phase 2 exits** and Phase 3A becomes proposed.
 
-**Phase 2D shipped** (pending review + commit/tag); §9.3 closed. **§9.2 / §9.5 / §9.6 all remain opportunistic** per the post-2D §6.15 numbers (the writeback semantic correction made the combined-workflow per-edit cost ~200× faster as a side-effect — §9.2's payoff window narrowed substantially). **Pending review approval, Phase 2 exits and Phase 3A flips to `proposed`.**
+**Phase 2D shipped** at `0678a98` (tag `phase-2d-bitset-and-invalidated-fix`); §9.3 closed. **§9.2 / §9.5 / §9.6 all remain opportunistic** per the post-2D §6.15 numbers (the writeback semantic correction made the combined-workflow per-edit cost ~200× faster as a side-effect — §9.2's payoff window narrowed substantially). **Pending the format/parser ADR landing for Phase 3A, Phase 2 exits and Phase 3A flips to `proposed`.**
 
 **Phase 2 exits** when Phase 2D's source change ships AND no remaining 1B miss in `PERF.md` is unaddressed and unexplained AND the three Phase 2 housekeeping items below are complete.
 

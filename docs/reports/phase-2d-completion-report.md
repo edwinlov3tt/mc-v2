@@ -4,7 +4,7 @@
 **Brief:** [`phase-1-rust-kernel-build-brief.md`](../specs/phase-1-rust-kernel-build-brief.md) (inherited; Phase 2D ships against the brief's `WritebackResult.invalidated` type doc + engine-semantics.md §13)
 **Handoff:** [`phase-2d-handoff.md`](../handoffs/phase-2d-handoff.md) (with amendment §A approved 2026-05-02)
 **Operating manual:** [`CLAUDE.md`](../../CLAUDE.md)
-**Initial commit:** pending review (will commit + tag after PM/spec-maintainer signoff)
+**Initial commit:** `0678a98` (tag `phase-2d-bitset-and-invalidated-fix`) — committed 2026-05-02 after PM/spec-maintainer signoff
 **Toolchain:** Rust 1.78 (pinned in [`../../rust-toolchain.toml`](../../rust-toolchain.toml))
 
 ---
@@ -181,7 +181,7 @@ The §10.7 proptest stubs remain deferred per CLAUDE.md §1.1 (Phase 2 work; not
 - [`docs/reports/phase-2c-completion-report.md`](./phase-2c-completion-report.md) — historical-artifact footnotes at §3.2.3 + §10.2 (combined_workflow new-file description) per handoff §A.8.
 - [`docs/reports/phase-2d-completion-report.md`](./phase-2d-completion-report.md) — **NEW.** This file.
 - [`docs/CURRENT_STATE.md`](../CURRENT_STATE.md) — Phase 2D row added to "What's shipping"; §9.3 closure logged; test count updated 216 → 227; demo line updated.
-- [`docs/roadmap/MASTER_PHASE_PLAN.md`](../roadmap/MASTER_PHASE_PLAN.md) — Phase 2D row flipped `proposed` → `complete` (pending tag); Phase 2D narrative section rewritten to reflect the writeback semantic correction + A/B isolation findings; "Phase 2 exits" condition rewritten to note Phase 2D shipped pending review.
+- [`docs/roadmap/MASTER_PHASE_PLAN.md`](../roadmap/MASTER_PHASE_PLAN.md) — Phase 2D row flipped `proposed` → `complete` with tag `phase-2d-bitset-and-invalidated-fix` at `0678a98`; Phase 2D narrative section rewritten to reflect the writeback semantic correction + A/B isolation findings; "Phase 2 exits" condition gated on the format/parser ADR for Phase 3A.
 - [`docs/reports/bench-data/phase-2d/`](./bench-data/) — **NEW directory.** Phase 2D criterion baseline saved per [`bench-data/README.md`](./bench-data/README.md) workflow. Diff of `phase-2d` vs `phase-2c` reproduces the §6.15.2 table.
 
 ---
@@ -195,7 +195,7 @@ Per Phase 2D handoff item E + PERF.md §9 post-2D state:
 3. **§9.6 Recursive rule eval** — leave it; well within 1B targets at every measured scale.
 4. **Phase 2 housekeeping Q2 (toolchain bump)** — still queued; no Phase 2D blocker.
 5. **`proptest` / `insta`** — still queued for a future Phase 2 sub-phase or Phase 3 work per CLAUDE.md §1.1.
-6. **Phase 3A** flips from `planned` → `proposed` once Phase 2D commits + tags + this report's review approval lands. The format/parser ADR is the gating Phase 3A artifact.
+6. **Phase 3A** flips from `planned` → `proposed` once the format/parser ADR lands. Phase 2D's commit + tag + report review are complete (`0678a98` / `phase-2d-bitset-and-invalidated-fix`); the format/parser ADR is the only remaining Phase 3A precondition.
 
 The previous phase's follow-ups that this phase did not address are still open at [`./phase-2c-completion-report.md`](./phase-2c-completion-report.md) §8.
 
@@ -308,4 +308,4 @@ Plus the kernel equivalence tests in `dirty.rs::tests`:
 
 ---
 
-*Phase 2D ships pending project owner review of this report + commit + tag. **Do not commit or tag from this branch.** The handoff's "Final checklist" line item "**You did NOT commit, tag, or push.** The user does that after reading the review." is honored.*
+*Phase 2D shipped 2026-05-02 at `0678a98` (tag `phase-2d-bitset-and-invalidated-fix`) after project owner review. The implementing Claude Code instance honored the handoff's "Final checklist" line item "**You did NOT commit, tag, or push.** The user does that after reading the review." — the user did the commit + tag step after PM/spec-maintainer signoff.*
