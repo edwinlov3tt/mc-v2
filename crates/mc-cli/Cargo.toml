@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Smoke-test CLI for the MarketingCubes Acme demo"
+description = "CLI for Mosaic — runs the Acme demo and the model {validate, inspect, lint, test} verbs"
 
 [dependencies]
 mc-core = { path = "../mc-core" }

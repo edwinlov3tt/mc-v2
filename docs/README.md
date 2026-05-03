@@ -1,6 +1,8 @@
-# MarketingCubes V2 — Documentation
+# Mosaic — Documentation
 
-Spec-driven Rust systems project. This folder is the project's written record: contracts, decisions, reports, handoffs, and curated research.
+Spec-driven Rust systems project. Mosaic is an AI-powered Large Numbers Model (LNM) platform — see [`strategy/POSITIONING.md`](./strategy/POSITIONING.md) for the framing. This folder is the project's written record: contracts, decisions, reports, handoffs, and curated research.
+
+> **Naming note:** the project was renamed from "MarketingCubes V2" → "Mosaic" on 2026-05-03. The `mc-` crate prefix and `MC` diagnostic-code prefix stay (they're now backronyms — "Mosaic Core" / "Mosaic Code"). Historical docs (`specs/`, `decisions/`, past `reports/`, past `handoffs/`, `product/`, `archive/`) keep their original "MarketingCubes" naming for audit-trail integrity. See [`../CLAUDE.md`](../CLAUDE.md) for the binding naming-convention rule.
 
 For the **operating manual** (rules of engagement, hierarchy of authority, gates) see [`../CLAUDE.md`](../CLAUDE.md). That file wins every conflict with anything in this folder.
 

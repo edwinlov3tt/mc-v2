@@ -1,16 +1,33 @@
-# CLAUDE.md — MarketingCubes Phase 1 Rust Kernel
+# CLAUDE.md — Mosaic Rust Kernel & Model Layer
 
-> **You are Claude Code, implementing the Phase 1 Rust kernel for MarketingCubes.**
+> **You are Claude Code, implementing the Rust kernel + model layer for Mosaic.**
 >
-> Two documents in `docs/` are the contract you implement:
+> Two documents in `docs/` are the kernel contract:
 > - `docs/specs/engine-semantics.md` — what the kernel *means* (invariants, semantics).
-> - `docs/specs/phase-1-rust-kernel-build-brief.md` — what to *build* in Phase 1 (exact types, tests, fixtures).
+> - `docs/specs/phase-1-rust-kernel-build-brief.md` — what was built in Phase 1 (exact types, tests, fixtures).
 >
 > This file is your **operating manual**. It does not override the brief or
 > the semantics spec — those win every conflict — but it tells you how to
 > keep yourself honest while implementing them.
 >
 > **Read this entire file at the start of every session before touching code.**
+
+---
+
+## Project name + naming convention (rename note)
+
+**The project was renamed from "MarketingCubes V2" → "Mosaic" on 2026-05-03.** Mosaic is positioned as an AI-powered Large Numbers Model (LNM) platform — see [`docs/strategy/POSITIONING.md`](docs/strategy/POSITIONING.md) for the strategic framing.
+
+**Naming convention rule (binding):**
+
+- **Product name in prose:** Mosaic (replaces "MarketingCubes" / "MarketingCubes V2").
+- **Crate names + code identifiers:** **the `mc-` prefix STAYS UNCHANGED.** `mc-core`, `mc-model`, `mc-fixtures`, `mc-cli` keep their names. The `mc` prefix is now a backronym for "Mosaic Core" rather than "MarketingCubes," but the file paths, crate names, and module names do not change.
+- **Diagnostic codes:** `MC1xxx` / `MC2xxx` / `MC3xxx` / `MC4xxx` namespace stays. The `MC` prefix is now "Mosaic Code." Codes are forever (CVE-style retirement per ADR-0005 amendment #11); renaming the prefix would break Phase 4 LLM consumers and Phase 6 UI consumers pinned to the existing codes.
+- **Historical docs (ADRs, completion reports, past handoffs, specs, original PRD, research notes, archived material) keep their original "MarketingCubes" naming.** Those are snapshots of past states; rewriting them would corrupt the audit trail. Future readers of historical docs understand "this doc predates the 2026-05-03 rename."
+- **Active / forward-looking docs use "Mosaic":** README, CLAUDE.md (this file), HANDOFF.md, CURRENT_STATE.md, MASTER_PHASE_PLAN.md, strategy docs, process-notes, and any new for-dummies / handoff / completion-report / ADR going forward.
+- **Cargo.toml descriptions and lib.rs/main.rs lead doc-comments:** updated to use "Mosaic" so `cargo doc` and `cargo metadata` reflect the current name.
+
+When reading any historical doc that mentions "MarketingCubes" or "MarketingCubes V2," mentally substitute "Mosaic." When writing any new doc, use "Mosaic." When writing code identifiers (`mc-foo`, `MC1234`), use the existing convention. **No file renames.**
 
 ---
 

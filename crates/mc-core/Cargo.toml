@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "MarketingCubes core engine — sparse multidimensional planning kernel"
+description = "Mosaic core engine — sparse multidimensional planning kernel (LNM kernel)"
 
 [dependencies]
 smallvec.workspace = true

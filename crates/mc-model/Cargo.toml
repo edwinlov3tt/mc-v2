@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "MarketingCubes Phase 3A model definition layer (YAML → mc_core::Cube)."
+description = "Mosaic model layer — YAML → mc_core::Cube via parse / validate / lint / inspect / test (Phases 3A–3D)."
 
 # Per ADR-0004 Decision 3: parser dependencies live ONLY in this crate.
 # `mc-core` keeps its 4-runtime-deps surface (smallvec, ahash, thiserror, once_cell)

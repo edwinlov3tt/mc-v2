@@ -1,4 +1,10 @@
-//! `mc-core` — the MarketingCubes engine kernel.
+//! `mc-core` — the Mosaic engine kernel (the LNM kernel).
+//!
+//! Project renamed from "MarketingCubes V2" → "Mosaic" on 2026-05-03; the
+//! `mc-` crate prefix stays as a backronym for "Mosaic Core". See the
+//! repo `CLAUDE.md` for the binding naming-convention rule. Historical
+//! docs (specs, ADRs, past completion reports) retain the original
+//! "MarketingCubes" naming for audit-trail integrity.
 //!
 //! This crate is the Phase 1 deliverable. The semantics it implements are
 //! defined in `docs/specs/engine-semantics.md`; the build contract is in

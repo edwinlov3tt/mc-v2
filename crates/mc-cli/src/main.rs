@@ -1,4 +1,5 @@
-//! `mc` — MarketingCubes CLI.
+//! `mc` — Mosaic CLI (renamed from "MarketingCubes" on 2026-05-03;
+//! the `mc` binary name stays as a backronym for "Mosaic CLI").
 //!
 //! Phase 1A: `mc demo` ran the Acme cube end-to-end (brief §4.6).
 //! Phase 3A: added `--model <path>` so the demo could route through
@@ -51,7 +52,7 @@ fn fatal(msg: &str) -> ! {
 }
 
 fn print_help() {
-    println!("mc — MarketingCubes CLI");
+    println!("mc — Mosaic CLI");
     println!();
     println!("USAGE:");
     println!("    mc demo [--model <path>]               # Run the Acme demo");

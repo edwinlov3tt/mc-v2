@@ -2,6 +2,8 @@
 
 > **Plain-English explanations of what the hell is going on in this project.** Same content as the technical docs — just translated into normal-human.
 
+> **Naming note:** the project was renamed from "MarketingCubes" → "Mosaic" on 2026-05-03. Older for-dummies notes and research notes in this folder use the original "MarketingCubes" name in their prose — they were written when that was the project's name, and rewriting them would corrupt the audit trail. Future notes use "Mosaic." The product is the same; only the name changed. See [`../../CLAUDE.md`](../../CLAUDE.md) for the binding naming-convention rule (the `mc-` crate prefix and `MC` diagnostic-code prefix stay).
+
 If you find yourself reading something in `docs/specs/`, `docs/research-notes/`, or `CLAUDE.md` and your eyes are glazing over, come here first.
 
 ---
