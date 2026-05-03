@@ -191,59 +191,45 @@ measures:
   - { name: "Revenue", description: "Derived top-line revenue (USD); computed as Customers * AOV at the leaf level.", role: "Derived", data_type: "F64", aggregation: "Sum" }
   - { name: "Gross_Profit", description: "Derived gross profit (USD); Revenue * (1 - COGS_Rate) at the leaf level.", role: "Derived", data_type: "F64", aggregation: "Sum" }
 
-# Rules — structured expression trees per ADR-0004 Decision 4.
-# Friendly formula strings (`Revenue = Customers * AOV`) are Phase 3C.
+# Rules — friendly formula strings per Phase 3D (ADR-0007).
+# Formulas compile to the same `ParsedRuleBody` AST a structured tree
+# would produce; both authoring forms are accepted indefinitely. The
+# structured s-expression form is still used by Phase 3B/3C lint and
+# fixture-validator fixtures for backwards-compat regression coverage.
 rules:
   - name: "rule_clicks"
     description: "Clicks = Spend / CPC — translate marketing dollars into click volume."
     target_measure: "Clicks"
     scope: "AllLeaves"
-    body:
-      div:
-        - { ref: "Spend" }
-        - { ref: "CPC" }
+    body: "Spend / CPC"
     declared_dependencies: ["Spend", "CPC"]
 
   - name: "rule_leads"
     description: "Leads = Clicks * CVR — apply the click-to-lead conversion rate."
     target_measure: "Leads"
     scope: "AllLeaves"
-    body:
-      mul:
-        - { ref: "Clicks" }
-        - { ref: "CVR" }
+    body: "Clicks * CVR"
     declared_dependencies: ["Clicks", "CVR"]
 
   - name: "rule_customers"
     description: "Customers = Leads * Close_Rate — apply the lead-to-customer close rate."
     target_measure: "Customers"
     scope: "AllLeaves"
-    body:
-      mul:
-        - { ref: "Leads" }
-        - { ref: "Close_Rate" }
+    body: "Leads * Close_Rate"
     declared_dependencies: ["Leads", "Close_Rate"]
 
   - name: "rule_revenue"
     description: "Revenue = Customers * AOV — top-line revenue from new customers."
     target_measure: "Revenue"
     scope: "AllLeaves"
-    body:
-      mul:
-        - { ref: "Customers" }
-        - { ref: "AOV" }
+    body: "Customers * AOV"
     declared_dependencies: ["Customers", "AOV"]
 
   - name: "rule_gross_profit"
     description: "Gross_Profit = Revenue * (1 - COGS_Rate) — revenue net of cost of goods sold."
     target_measure: "Gross_Profit"
     scope: "AllLeaves"
-    body:
-      mul:
-        - { ref: "Revenue" }
-        - sub:
-            - { const: 1.0 }
-            - { ref: "COGS_Rate" }
+    body: "Revenue * (1 - COGS_Rate)"
     declared_dependencies: ["Revenue", "COGS_Rate"]
 
 # Inline goldens — brief §4.5.1 anchor values byte-for-byte (epsilon

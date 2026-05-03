@@ -240,7 +240,11 @@ pub fn compile(validated: ValidatedModel) -> Result<CompiledCube, EngineError> {
         .root_principal(root_principal);
 
     // ---- Build the rules ----
-    for rule in &validated.parsed.rules {
+    // Phase 3D: walk validated.rules (flat ParsedRuleBody) instead of
+    // validated.parsed.rules (which carries the ParsedRuleBodyForm
+    // wrapper). The rules vec is built in validate() and matches
+    // parsed.rules order 1:1.
+    for rule in &validated.rules {
         let rule_id = g.rule();
         refs.rules.insert(rule.name.clone(), rule_id);
         let target = lookup_measure_id(&refs, &validated, &rule.target_measure)?;

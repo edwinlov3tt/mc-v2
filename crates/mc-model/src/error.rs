@@ -34,14 +34,24 @@ impl std::fmt::Display for Span {
     }
 }
 
-/// Stage 1 errors: YAML syntax + safe-subset rejections.
+/// Stage 1 errors: YAML syntax + safe-subset rejections + (Phase 3D)
+/// formula-string parse errors.
 ///
-/// Stable diagnostic codes (Phase 3B contract):
+/// Stable diagnostic codes:
 ///
-/// | Code   | Variant      |
-/// |--------|--------------|
-/// | MC1001 | `Syntax`     |
-/// | MC1002 | `SafeSubset` |
+/// | Code   | Variant                       | Phase  |
+/// |--------|-------------------------------|--------|
+/// | MC1001 | `Syntax`                      | 3B     |
+/// | MC1002 | `SafeSubset`                  | 3B     |
+/// | MC1003 | `FormulaUnbalancedParen`      | 3D     |
+/// | MC1004 | `FormulaUnexpectedToken`      | 3D     |
+/// | MC1005 | `FormulaExpectedExpression`   | 3D     |
+/// | MC1006 | `FormulaInvalidNumber`        | 3D     |
+///
+/// Per Phase 3D acceptance amendment #25, **MC1004 covers both
+/// "unexpected token" and "unknown function call"** (e.g.,
+/// `body: "min(a, b)"`). MC1007 is intentionally NOT introduced; if
+/// Phase 3E+ adds more functions, MC1007 may be carved out then.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ParseError {
@@ -56,6 +66,49 @@ pub enum ParseError {
     /// YAML is valid but uses a feature we banned."
     #[error("yaml safe-subset violation at {span}: {kind}")]
     SafeSubset { span: Span, kind: ParseErrorKind },
+
+    /// **MC1003** — A formula string has an unbalanced or unexpected
+    /// parenthesis (missing close, stray close, etc.). `rule_name` is
+    /// the rule whose body fired; `offset` is the byte offset within
+    /// the formula text.
+    #[error("rule {rule_name:?} formula at offset {offset}: {message}")]
+    FormulaUnbalancedParen {
+        span: Span,
+        rule_name: String,
+        offset: usize,
+        message: String,
+    },
+
+    /// **MC1004** — A formula string has an unexpected token, including
+    /// unknown function calls (per amendment #25, MC1004 is the catch-all
+    /// for both shapes in Phase 3D).
+    #[error("rule {rule_name:?} formula at offset {offset}: {message}")]
+    FormulaUnexpectedToken {
+        span: Span,
+        rule_name: String,
+        offset: usize,
+        message: String,
+    },
+
+    /// **MC1005** — A formula string ends or breaks where an expression
+    /// was expected (e.g., trailing operator: `Spend +`).
+    #[error("rule {rule_name:?} formula at offset {offset}: {message}")]
+    FormulaExpectedExpression {
+        span: Span,
+        rule_name: String,
+        offset: usize,
+        message: String,
+    },
+
+    /// **MC1006** — A formula string contains a malformed numeric
+    /// literal (e.g., `1..5`, `1e`, `1.2.3`).
+    #[error("rule {rule_name:?} formula at offset {offset}: {message}")]
+    FormulaInvalidNumber {
+        span: Span,
+        rule_name: String,
+        offset: usize,
+        message: String,
+    },
 }
 
 impl ParseError {
@@ -64,6 +117,10 @@ impl ParseError {
         match self {
             ParseError::Syntax { .. } => "MC1001",
             ParseError::SafeSubset { .. } => "MC1002",
+            ParseError::FormulaUnbalancedParen { .. } => "MC1003",
+            ParseError::FormulaUnexpectedToken { .. } => "MC1004",
+            ParseError::FormulaExpectedExpression { .. } => "MC1005",
+            ParseError::FormulaInvalidNumber { .. } => "MC1006",
         }
     }
 
@@ -74,6 +131,10 @@ impl ParseError {
         match self {
             ParseError::Syntax { span, .. } => span,
             ParseError::SafeSubset { span, .. } => span,
+            ParseError::FormulaUnbalancedParen { span, .. } => span,
+            ParseError::FormulaUnexpectedToken { span, .. } => span,
+            ParseError::FormulaExpectedExpression { span, .. } => span,
+            ParseError::FormulaInvalidNumber { span, .. } => span,
         }
     }
 }
@@ -398,9 +459,10 @@ impl ValidationError {
     }
 }
 
-/// Top-level error wrapper. `load` and `load_str` return `Vec<Error>` so
-/// the caller can still see all of stage-2's accumulated errors when
-/// validation fails partway through the pipeline.
+/// Top-level error wrapper. `load`, `load_str`, and (Phase 3D onwards)
+/// `validate` return `Vec<Error>` so the caller can still see all of
+/// stage-2's accumulated errors when validation fails partway through
+/// the pipeline.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum Error {
@@ -418,4 +480,37 @@ pub enum Error {
     /// buildable); when it does, the kernel error propagates here.
     #[error("compile error (kernel): {0}")]
     Compile(String),
+}
+
+impl Error {
+    /// Stable diagnostic code (`MC1xxx` for parse, `MC2xxx` for
+    /// validation, internal labels for IO / compile). Phase 3D
+    /// convenience: callers iterating mixed `Vec<Error>` no longer have
+    /// to match on each variant to recover the code.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Error::Io { .. } => "MC0001",
+            Error::Parse(p) => p.code(),
+            Error::Validation(v) => v.code(),
+            Error::Compile(_) => "MC9001",
+        }
+    }
+
+    /// If this error wraps a [`ValidationError`], return a reference to
+    /// it. Phase 3D helper for tests that iterate `Vec<Error>` looking
+    /// for specific MC2xxx variants.
+    pub fn as_validation(&self) -> Option<&ValidationError> {
+        match self {
+            Error::Validation(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// If this error wraps a [`ParseError`], return a reference to it.
+    pub fn as_parse(&self) -> Option<&ParseError> {
+        match self {
+            Error::Parse(p) => Some(p),
+            _ => None,
+        }
+    }
 }

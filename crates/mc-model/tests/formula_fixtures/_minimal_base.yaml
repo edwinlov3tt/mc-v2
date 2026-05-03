@@ -1,0 +1,51 @@
+# Minimal Acme-shape model used as the base for the MC1003-MC1006
+# negative fixtures. Only the pieces needed to make `parse → validate`
+# reach the rule-body stage: 6 dims with the canonical order, two
+# measures (Spend input + Clicks derived), and one rule whose body the
+# fixtures override per-test.
+#
+# This file is NOT loaded directly — each negative fixture is a copy
+# with its rule body replaced by the malformed formula under test. The
+# expected behavior is `validate(parsed)` returns Err with the named
+# MC1003/MC1004/MC1005/MC1006 code in the Vec<Error>.
+model_format_version: 1
+
+metadata:
+  name: "FormulaFixtureBase"
+
+dimensions:
+  - name: "Scenario"
+    kind: "Scenario"
+    elements:
+      - { name: "Baseline", scenario_meta: "Default" }
+  - name: "Version"
+    kind: "Version"
+    elements:
+      - { name: "Working", version_state: "Draft" }
+  - name: "Time"
+    kind: "Standard"
+    elements:
+      - { name: "Jan_2026" }
+  - name: "Channel"
+    kind: "Standard"
+    elements:
+      - { name: "Paid_Search" }
+  - name: "Market"
+    kind: "Standard"
+    elements:
+      - { name: "Tampa" }
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+
+measures:
+  - { name: "Spend", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "CPC", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "Clicks", role: "Derived", data_type: "F64", aggregation: "Sum" }
+
+rules:
+  - name: "rule_clicks"
+    target_measure: "Clicks"
+    scope: "AllLeaves"
+    body: "Spend / CPC"
+    declared_dependencies: ["Spend", "CPC"]

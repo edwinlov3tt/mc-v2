@@ -15,9 +15,18 @@ const ACME: &str = include_str!("../examples/acme.yaml");
 
 fn must_validate_with_error(yaml: &str) -> Vec<ValidationError> {
     let parsed = parse(yaml, None).unwrap_or_else(|e| panic!("parse must succeed: {e}"));
-    validate(parsed)
+    // Phase 3D: validate now returns Vec<Error>. These tests target
+    // semantic-validation failure modes (MC2xxx); filter to
+    // ValidationError so the per-test pattern stays readable.
+    let errs = validate(parsed)
         .err()
-        .unwrap_or_else(|| panic!("validation must fail; expected at least one error but got Ok"))
+        .unwrap_or_else(|| panic!("validation must fail; expected at least one error but got Ok"));
+    errs.into_iter()
+        .filter_map(|e| match e {
+            mc_model::Error::Validation(v) => Some(v),
+            _ => None,
+        })
+        .collect()
 }
 
 fn assert_any<F: Fn(&ValidationError) -> bool>(errs: &[ValidationError], pred: F, label: &str) {
@@ -159,10 +168,14 @@ fn hierarchy_cycle_fires() {
 
 #[test]
 fn rule_referencing_unknown_measure_fires() {
-    // Mutate `rule_clicks` to reference a measure that doesn't exist.
+    // Mutate `rule_clicks` body to reference a measure that doesn't
+    // exist. Phase 3D acme.yaml uses formula-form bodies, so we
+    // substitute a token in the formula string. `NotARealMeasure` is a
+    // valid identifier — parse succeeds; the unknown-measure check
+    // fires at validate time (MC2005 RuleReferencesUnknownMeasure).
     let mutated = ACME.replacen(
-        "        - { ref: \"Spend\" }\n        - { ref: \"CPC\" }",
-        "        - { ref: \"NotARealMeasure\" }\n        - { ref: \"CPC\" }",
+        "    body: \"Spend / CPC\"",
+        "    body: \"NotARealMeasure / CPC\"",
         1,
     );
     let errs = must_validate_with_error(&mutated);

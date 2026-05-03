@@ -37,6 +37,7 @@ pub mod compile;
 pub mod csv;
 pub mod diagnostic;
 pub mod error;
+pub mod formula;
 pub mod inputs;
 pub mod inspect;
 pub mod lint;
@@ -62,7 +63,8 @@ pub use parse::parse;
 pub use schema::{
     ParsedDimension, ParsedElement, ParsedFixture, ParsedGoldenTest, ParsedHierarchy,
     ParsedHierarchyEdge, ParsedInlineRows, ParsedInputSet, ParsedMeasure, ParsedMetadata,
-    ParsedModel, ParsedRowCell, ParsedRule, ParsedRuleBody, ParsedScalar, ValidatedModel,
+    ParsedModel, ParsedRowCell, ParsedRule, ParsedRuleBody, ParsedRuleBodyForm, ParsedScalar,
+    ValidatedModel, ValidatedRule,
 };
 pub use validate::validate;
 
@@ -99,8 +101,9 @@ pub fn load(path: impl AsRef<Path>) -> Result<CompiledCube, Vec<Error>> {
     };
     let parsed =
         parse(&bytes, Some(path_ref.display().to_string())).map_err(|e| vec![Error::Parse(e)])?;
-    let validated = validate(parsed)
-        .map_err(|errs| errs.into_iter().map(Error::Validation).collect::<Vec<_>>())?;
+    // Phase 3D: validate now returns Vec<Error> (mixing ParseError from
+    // formula bodies with ValidationError from semantic checks).
+    let validated = validate(parsed)?;
     // Phase 3C resolve-inputs stage. We discard the resolved data here
     // (load() doesn't apply inputs to the cube); only the validation
     // side-effects matter at this layer.
@@ -120,8 +123,8 @@ pub fn load(path: impl AsRef<Path>) -> Result<CompiledCube, Vec<Error>> {
 /// resolve cleanly.
 pub fn load_str(yaml: &str, source_label: Option<String>) -> Result<CompiledCube, Vec<Error>> {
     let parsed = parse(yaml, source_label).map_err(|e| vec![Error::Parse(e)])?;
-    let validated = validate(parsed)
-        .map_err(|errs| errs.into_iter().map(Error::Validation).collect::<Vec<_>>())?;
+    // Phase 3D: validate returns Vec<Error> directly.
+    let validated = validate(parsed)?;
     if let Err(errs) = resolve_inputs(&validated, None) {
         return Err(errs.into_iter().map(Error::Validation).collect());
     }

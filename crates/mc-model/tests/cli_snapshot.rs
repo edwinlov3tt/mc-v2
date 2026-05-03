@@ -124,6 +124,35 @@ fn inspect_acme_text_matches_snapshot() {
     assert_snapshot(&stdout, fixture_expected("inspect_acme.txt"));
 }
 
+/// Phase 3D acceptance amendment #24 — inspect renders ALL rules in
+/// formula form regardless of authoring form. This test pins the
+/// uniformity using `_acme_with_bad_golden.yaml` (structured-authored)
+/// as the canary: its inspect output renders rules via
+/// `formula::serialize`, identical to the formula-authored Acme.
+#[test]
+fn inspect_structured_authored_fixture_renders_rules_as_formulas() {
+    let (stdout, stderr, code) = run_mc(&[
+        "model",
+        "inspect",
+        "crates/mc-model/tests/lint_fixtures/_acme_with_bad_golden.yaml",
+    ]);
+    assert_eq!(code, 0, "expected exit 0; stderr: {stderr}");
+    assert_snapshot(
+        &stdout,
+        fixture_expected("inspect_acme_with_bad_golden.txt"),
+    );
+    // Sanity: the snapshot must NOT contain the old structured rendering
+    // shape (parens around binary ops, `Const(Float(...))` debug form).
+    assert!(
+        !stdout.contains("Const(Float"),
+        "structured-authored fixture must render via formula::serialize, not Debug-format Consts: {stdout}"
+    );
+    assert!(
+        stdout.contains("Revenue * (1 - COGS_Rate)"),
+        "expected formula-form rendering of Gross_Profit; got: {stdout}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // lint — per-fixture text + Acme JSON
 // ---------------------------------------------------------------------------

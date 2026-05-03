@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use crate::diagnostic::{
     diagnostics_to_json, write_json_string, Diagnostic, Severity, SCHEMA_VERSION,
 };
+use crate::formula;
 use crate::inputs::ResolvedInputs;
 use crate::schema::{ParsedHierarchy, ParsedRuleBody, ValidatedModel};
 
@@ -182,14 +183,18 @@ pub fn summarize(
 
     let depths = compute_chain_depths(model);
     let longest_chain_depth = depths.values().copied().max().unwrap_or(0);
+    // Phase 3D acceptance amendment #24: rule bodies render as friendly
+    // formulas regardless of authoring form. The structured-vs-formula
+    // distinction lives in `ParsedModel`; by the time `summarize` runs
+    // we have a flat `ParsedRuleBody`, and `formula::serialize` is the
+    // uniform renderer.
     let rule_items: Vec<RuleSummary> = model
-        .parsed
         .rules
         .iter()
         .map(|r| RuleSummary {
             name: r.name.clone(),
             target_measure: r.target_measure.clone(),
-            body_shape: rule_body_shape(&r.body),
+            body_shape: formula::serialize(&r.body),
         })
         .collect();
     let rules_total = rule_items.len();
@@ -791,37 +796,6 @@ fn count_leaves(
     (leaves, cons)
 }
 
-fn rule_body_shape(body: &ParsedRuleBody) -> String {
-    match body {
-        ParsedRuleBody::Const(c) => format!("Const({:?})", c.value),
-        ParsedRuleBody::Ref(r) => r.measure.clone(),
-        ParsedRuleBody::Add(b) => fmt_binop("+", &b.add),
-        ParsedRuleBody::Sub(b) => fmt_binop("-", &b.sub),
-        ParsedRuleBody::Mul(b) => fmt_binop("*", &b.mul),
-        ParsedRuleBody::Div(b) => fmt_binop("/", &b.div),
-        ParsedRuleBody::IfNull(b) => {
-            format!(
-                "if_null({}, {})",
-                b.if_null
-                    .first()
-                    .map(rule_body_shape)
-                    .unwrap_or_else(|| "?".into()),
-                b.if_null
-                    .get(1)
-                    .map(rule_body_shape)
-                    .unwrap_or_else(|| "?".into())
-            )
-        }
-    }
-}
-
-fn fmt_binop(op: &str, args: &[ParsedRuleBody]) -> String {
-    match args {
-        [a, b] => format!("({} {} {})", rule_body_shape(a), op, rule_body_shape(b)),
-        _ => format!("?{}?", op),
-    }
-}
-
 fn compute_chain_depths(model: &ValidatedModel) -> BTreeMap<String, usize> {
     use std::collections::BTreeSet;
     let mut depths: BTreeMap<String, usize> = BTreeMap::new();
@@ -830,10 +804,10 @@ fn compute_chain_depths(model: &ValidatedModel) -> BTreeMap<String, usize> {
             depths.insert(m.name.clone(), 0);
         }
     }
-    let n = model.parsed.rules.len();
+    let n = model.rules.len();
     for _ in 0..=n {
         let mut changed = false;
-        for r in &model.parsed.rules {
+        for r in &model.rules {
             let mut refs = BTreeSet::new();
             collect_refs(&r.body, &mut refs);
             let mut max_dep = 0usize;

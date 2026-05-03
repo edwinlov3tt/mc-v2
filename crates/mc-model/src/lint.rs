@@ -148,7 +148,7 @@ fn mc3003_missing_rule_descriptions(
     file: &std::path::Path,
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
-    for (i, r) in model.parsed.rules.iter().enumerate() {
+    for (i, r) in model.rules.iter().enumerate() {
         if !has_text(&r.description) {
             out.push(Diagnostic {
                 code: "MC3003",
@@ -245,7 +245,7 @@ fn mc3006_long_rule_chain(model: &ValidatedModel, file: &std::path::Path) -> Vec
     // → Clicks → Spend) stays clean. ADR-0005 Decision 5 says "≥ 5";
     // handoff §C documents the strict-> 5 interpretation.
     const THRESHOLD: usize = 5;
-    for (rule_idx, rule) in model.parsed.rules.iter().enumerate() {
+    for (rule_idx, rule) in model.rules.iter().enumerate() {
         let depth = depths
             .get(rule.target_measure.as_str())
             .copied()
@@ -287,10 +287,10 @@ fn compute_chain_depths(model: &ValidatedModel) -> BTreeMap<String, usize> {
     }
     // Iterate to fixed point — Phase 3A enforces an acyclic rule graph,
     // so this terminates in at most rules.len() passes.
-    let n = model.parsed.rules.len();
+    let n = model.rules.len();
     for _ in 0..=n {
         let mut changed = false;
-        for r in &model.parsed.rules {
+        for r in &model.rules {
             let mut refs = BTreeSet::new();
             collect_body_refs(&r.body, &mut refs);
             let mut max_dep = 0usize;
@@ -473,7 +473,7 @@ fn unused_measures(
 /// So target_measure is deliberately excluded.
 fn collect_referenced_measures(model: &ValidatedModel) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
-    for r in &model.parsed.rules {
+    for r in &model.rules {
         let mut refs = BTreeSet::new();
         collect_body_refs(&r.body, &mut refs);
         out.extend(refs);

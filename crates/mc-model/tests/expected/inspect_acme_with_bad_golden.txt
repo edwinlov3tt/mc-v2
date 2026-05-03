@@ -1,7 +1,7 @@
 Model: Acme_MarketingFinance (format v1)
-  Description: Brief §4 reference cube — 6 dims × 11 measures × 5 rules × 2520 input cells
-  Author: MarketingCubes V2
-  Created: 2026-05-02
+  Description: Acme variant with one bad golden — used to prove demo doesn't run goldens.
+  Author: Phase 3B test
+  Created: 2026-05-03
 
 Dimensions: 6
   - Scenario (Scenario) — 3 elements (3 leaves, 0 consolidated)
@@ -25,7 +25,7 @@ Rules: 5
   Longest rule chain depth: 5
 
 Cardinality (Cartesian product across all dim elements): 201960
-Golden tests: 9
-Canonical inputs: 2520 cells from acme.inputs.csv
+Golden tests: 1
+Canonical inputs: 1 cells from (inline)
 Test fixtures: (none declared)
-Diagnostics: 0 errors, 0 warnings, 0 info
+Diagnostics: 0 errors, 0 warnings, 1 info

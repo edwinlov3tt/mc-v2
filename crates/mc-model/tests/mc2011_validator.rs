@@ -41,8 +41,13 @@ fn validation_error_codes_are_mc2001_to_mc2011() {
     let bad = "model_format_version: 99\nmetadata:\n  name: \"X\"\ndimensions:\n  - { name: \"M\", kind: \"Measure\", elements: [] }\nmeasures: []\nrules: []\n";
     let parsed = parse(bad, None).expect("parses");
     let errs = validate(parsed).expect_err("must fail");
+    // Phase 3D: validate returns Vec<Error>. The synthetic fixture has
+    // no formula bodies, so every error is a ValidationError → MC2xxx.
     for e in errs {
-        let code = e.code();
+        let v = e.as_validation().unwrap_or_else(|| {
+            panic!("expected only ValidationError variants for this synthetic; got {e:?}")
+        });
+        let code = v.code();
         assert!(
             code.starts_with("MC2") && code.len() == 6,
             "every ValidationError code must be MC2xxx; got {code:?}"

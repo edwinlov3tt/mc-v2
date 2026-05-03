@@ -1,0 +1,25 @@
+# MC1005 — formula ends with a trailing operator.
+model_format_version: 1
+
+metadata:
+  name: "MC1005TrailingOperator"
+
+dimensions:
+  - { name: "Scenario", kind: "Scenario", elements: [{ name: "Baseline", scenario_meta: "Default" }] }
+  - { name: "Version", kind: "Version", elements: [{ name: "Working", version_state: "Draft" }] }
+  - { name: "Time", kind: "Standard", elements: [{ name: "Jan_2026" }] }
+  - { name: "Channel", kind: "Standard", elements: [{ name: "Paid_Search" }] }
+  - { name: "Market", kind: "Standard", elements: [{ name: "Tampa" }] }
+  - { name: "Measure", kind: "Measure", elements: [] }
+
+measures:
+  - { name: "Spend", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "CPC", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "Clicks", role: "Derived", data_type: "F64", aggregation: "Sum" }
+
+rules:
+  - name: "rule_clicks"
+    target_measure: "Clicks"
+    scope: "AllLeaves"
+    body: "Spend +"
+    declared_dependencies: ["Spend", "CPC"]

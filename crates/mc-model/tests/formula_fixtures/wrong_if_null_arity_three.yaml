@@ -1,0 +1,25 @@
+# MC1004 — `if_null` called with 3 args.
+model_format_version: 1
+
+metadata:
+  name: "MC1004IfNullThreeArgs"
+
+dimensions:
+  - { name: "Scenario", kind: "Scenario", elements: [{ name: "Baseline", scenario_meta: "Default" }] }
+  - { name: "Version", kind: "Version", elements: [{ name: "Working", version_state: "Draft" }] }
+  - { name: "Time", kind: "Standard", elements: [{ name: "Jan_2026" }] }
+  - { name: "Channel", kind: "Standard", elements: [{ name: "Paid_Search" }] }
+  - { name: "Market", kind: "Standard", elements: [{ name: "Tampa" }] }
+  - { name: "Measure", kind: "Measure", elements: [] }
+
+measures:
+  - { name: "Spend", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "CPC", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "Clicks", role: "Derived", data_type: "F64", aggregation: "Sum" }
+
+rules:
+  - name: "rule_clicks"
+    target_measure: "Clicks"
+    scope: "AllLeaves"
+    body: "if_null(Spend, CPC, Spend)"
+    declared_dependencies: ["Spend", "CPC"]

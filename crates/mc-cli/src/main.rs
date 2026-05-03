@@ -215,7 +215,9 @@ fn load_validated(path: &str, format: OutputFormat) -> ValidatedModel {
     let validated = match mc_model::validate(parsed) {
         Ok(v) => v,
         Err(errs) => {
-            print_validation_errors(path, &errs, format);
+            // Phase 3D: validate now returns Vec<Error> mixing
+            // ParseError (MC1003-MC1006) with ValidationError (MC2xxx).
+            print_mixed_errors(path, &errs, format);
             std::process::exit(1);
         }
     };
@@ -656,6 +658,43 @@ fn print_validation_errors(path: &str, errs: &[ValidationError], format: OutputF
             suggestion: None,
         })
         .collect();
+    sort_diagnostics(&mut diags);
+    emit_error_diags(&diags, format);
+}
+
+/// Phase 3D: render the mixed `Vec<Error>` returned by `validate()`.
+/// Splits the vec by variant — formula parse errors (MC1003–MC1006) flow
+/// through `print_parse_error`'s diagnostic shape, semantic-validation
+/// errors stay on the `print_validation_errors` path. The diagnostic
+/// envelope shape (Phase 3B) is unchanged: same five fields, same
+/// `schema_version: "1.0"`.
+fn print_mixed_errors(path: &str, errs: &[mc_model::Error], format: OutputFormat) {
+    let mut diags: Vec<Diagnostic> = Vec::with_capacity(errs.len());
+    for e in errs {
+        match e {
+            mc_model::Error::Validation(v) => diags.push(Diagnostic {
+                code: v.code(),
+                severity: Severity::Error,
+                path: ModelPath::new(path, "/", "(model)"),
+                message: v.to_string(),
+                suggestion: None,
+            }),
+            mc_model::Error::Parse(p) => diags.push(Diagnostic {
+                code: p.code(),
+                severity: Severity::Error,
+                path: ModelPath::new(path, "/", "(formula)"),
+                message: p.to_string(),
+                suggestion: None,
+            }),
+            other => diags.push(Diagnostic {
+                code: other.code(),
+                severity: Severity::Error,
+                path: ModelPath::new(path, "/", "(model)"),
+                message: other.to_string(),
+                suggestion: None,
+            }),
+        }
+    }
     sort_diagnostics(&mut diags);
     emit_error_diags(&diags, format);
 }

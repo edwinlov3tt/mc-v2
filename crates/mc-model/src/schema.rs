@@ -138,8 +138,12 @@ pub struct ParsedMeasure {
     pub weight_measure: Option<String>,
 }
 
-/// A deterministic rule declaration. The body is a structured expression
-/// tree per ADR-0004 Decision 4 — friendly formula strings are Phase 3C.
+/// A deterministic rule declaration. Phase 3D introduced the
+/// [`ParsedRuleBodyForm`] wrapper so `body:` may be authored either as a
+/// structured expression tree (`{ mul: [...] }`) or as a friendly formula
+/// string (`"Customers * AOV"`). Both forms produce identical
+/// [`ValidatedModel`]s — the validate stage parses the formula form into
+/// the structured tree before any downstream processing sees it.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedRule {
@@ -151,8 +155,32 @@ pub struct ParsedRule {
     /// when this is missing. Additive over ADR-0004's schema.
     #[serde(default)]
     pub description: Option<String>,
-    pub body: ParsedRuleBody,
+    pub body: ParsedRuleBodyForm,
     pub declared_dependencies: Vec<String>,
+}
+
+/// Phase 3D: the YAML-faithful authoring form for a rule body. `Formula`
+/// holds the source text (`"Customers * AOV"`); `Structured` holds the
+/// existing s-expression-shaped tree.
+///
+/// `serde(untagged)` dispatches by YAML node kind: a scalar string maps to
+/// `Formula(_)`; a mapping maps to `Structured(_)`. Order matters — string
+/// must come first so a YAML scalar never accidentally tries the
+/// `Structured` mapping branch first. (Acceptance amendment per the
+/// Phase 3D handoff §"Phase 3D scope" item 2.)
+///
+/// The wrapper lives in [`ParsedModel`] only; [`ValidatedModel`] flattens
+/// to bare [`ParsedRuleBody`] so downstream stages (`compile`, `lint`,
+/// `inspect`) have no awareness of formula authoring form.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
+pub enum ParsedRuleBodyForm {
+    /// `body: "Customers * AOV"`. Parsed by the formula parser at
+    /// validate time; emits MC1003–MC1006 on syntax failure.
+    Formula(String),
+    /// `body: { mul: [{ ref: "Customers" }, { ref: "AOV" }] }`. The
+    /// structured form predates Phase 3D and continues to load unchanged.
+    Structured(ParsedRuleBody),
 }
 
 /// Structured expression-tree node. Each variant carries a distinguishing
@@ -333,6 +361,25 @@ pub struct ParsedFixture {
 // ValidatedModel — every Decision 6 check passed, name resolution baked in.
 // ---------------------------------------------------------------------------
 
+/// One rule, post-validate. Mirrors [`ParsedRule`] field-for-field with
+/// one normalization: `body` is the flat [`ParsedRuleBody`] expression
+/// tree, regardless of whether the rule was authored as a formula string
+/// or a structured tree in YAML.
+///
+/// Per Phase 3D acceptance amendment #23: downstream stages
+/// (`resolve_inputs`, `compile`, `inspect`, `lint`) consume
+/// `ValidatedModel.rules[i].body` and have ZERO awareness of the
+/// `ParsedRuleBodyForm` wrapper that lives upstream in `ParsedModel`.
+#[derive(Clone, Debug)]
+pub struct ValidatedRule {
+    pub name: String,
+    pub target_measure: String,
+    pub scope: String,
+    pub description: Option<String>,
+    pub body: ParsedRuleBody,
+    pub declared_dependencies: Vec<String>,
+}
+
 /// `ValidatedModel` is the contract Phase 4 (LLM authoring) and Phase 6
 /// (UI editor) compile against. By construction:
 ///
@@ -343,11 +390,17 @@ pub struct ParsedFixture {
 /// - Hierarchies are acyclic.
 /// - Rule dependency graph is acyclic.
 /// - Every derived measure has exactly one rule; no input measure has a rule.
+/// - Every rule body is a flat [`ParsedRuleBody`] (formula bodies have
+///   been parsed; the [`ParsedRuleBodyForm`] wrapper is gone).
 ///
 /// The compile stage walks this in dim order and allocates `mc_core` IDs.
 #[derive(Clone, Debug)]
 pub struct ValidatedModel {
     pub parsed: ParsedModel,
+    /// Phase 3D: the rules with bodies normalized to flat
+    /// [`ParsedRuleBody`]. Length and order match `parsed.rules`.
+    /// Downstream stages read from here, not `parsed.rules`.
+    pub rules: Vec<ValidatedRule>,
     /// Indices into `parsed.dimensions`, in the canonical dim order. For
     /// the Acme schema this is `[Scenario, Version, Time, Channel, Market,
     /// Measure]`; the validator enforces that order matches `mc_core`'s

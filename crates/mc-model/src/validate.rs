@@ -1,11 +1,18 @@
 //! Stage 2: `ParsedModel` → `ValidatedModel`.
 //!
-//! Implements the nine validators in ADR-0004 Decision 6's table. Every
-//! validator runs in a single pass; errors accumulate into a `Vec` so the
-//! caller sees every problem at once rather than first-error-then-stop.
+//! Implements the nine validators in ADR-0004 Decision 6's table plus the
+//! Phase 3D formula-parse step. Every validator runs in a single pass;
+//! errors accumulate into a `Vec` so the caller sees every problem at
+//! once rather than first-error-then-stop.
 //!
-//! Validators (in order):
+//! Stages (in order):
 //!
+//!  0. **Phase 3D formula parse.** For every rule whose `body:` was
+//!     authored as `ParsedRuleBodyForm::Formula(s)`, parse the formula
+//!     string into a [`ParsedRuleBody`] tree via [`crate::formula::parse`].
+//!     Failures emit `ParseError::Formula*` with codes MC1003–MC1006.
+//!     Success populates `ValidatedModel.rules[i].body` with the flat
+//!     tree; downstream stages see no `ParsedRuleBodyForm` wrapper.
 //!  1. `check_model_format_version` — must be `1` (Decision 6).
 //!  2. `check_duplicate_names` — dim names, element names per dim, measure
 //!     names, rule names.
@@ -28,30 +35,58 @@
 //! validator, since it requires a fully-built `Cube` to evaluate. The
 //! validator surfaces *structural* problems with golden tests (unknown
 //! coord names, both `expect` and `expect_within_epsilon` set, etc.).
+//!
+//! # Phase 3D return-type change
+//!
+//! Phase 3D extends the error mix: formula parse errors (MC1003–MC1006)
+//! come back as [`ParseError`], semantic-validation errors (MC2xxx)
+//! come back as [`ValidationError`]. Both are wrapped in the unified
+//! [`Error`] enum. Callers that previously matched on
+//! `Vec<ValidationError>` now `filter_map` for `Error::Validation(_)`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
-use crate::error::ValidationError;
-use crate::schema::{ParsedModel, ParsedRuleBody, ValidatedModel};
+use crate::error::{Error, ParseError, Span, ValidationError};
+use crate::formula;
+use crate::schema::{
+    ParsedModel, ParsedRule, ParsedRuleBody, ParsedRuleBodyForm, ValidatedModel, ValidatedRule,
+};
 
-/// Run every Decision 6 validator and either return a `ValidatedModel`
-/// (every check passed) or the full list of errors that fired.
-pub fn validate(parsed: ParsedModel) -> Result<ValidatedModel, Vec<ValidationError>> {
-    let mut errors = Vec::new();
+/// Run every Decision 6 validator + the Phase 3D formula-parse step, and
+/// either return a [`ValidatedModel`] (every check passed) or the full
+/// list of errors that fired.
+///
+/// Phase 3D return change: errors are now `Vec<Error>` (mixing
+/// `Error::Parse(ParseError)` from formula syntax errors with
+/// `Error::Validation(ValidationError)` from semantic checks). Callers
+/// that previously took `Vec<ValidationError>` should `filter_map` for
+/// `Error::Validation(v) => v` to recover the prior shape.
+pub fn validate(parsed: ParsedModel) -> Result<ValidatedModel, Vec<Error>> {
+    let mut errors: Vec<Error> = Vec::new();
 
-    check_model_format_version(&parsed, &mut errors);
-    check_metadata(&parsed, &mut errors);
-    check_duplicate_names(&parsed, &mut errors);
-    check_dimension_kinds(&parsed, &mut errors);
-    check_missing_dimensions(&parsed, &mut errors);
-    check_invalid_hierarchy_edges(&parsed, &mut errors);
-    check_hierarchy_cycles(&parsed, &mut errors);
-    check_aggregation_methods_supported(&parsed, &mut errors);
-    check_rules_reference_known_measures(&parsed, &mut errors);
-    check_derived_measures_have_rules(&parsed, &mut errors);
-    check_input_measures_have_no_rules(&parsed, &mut errors);
-    check_rule_cycles(&parsed, &mut errors);
-    check_golden_test_shape(&parsed, &mut errors);
+    // Phase 3D step 0: parse every Formula(s) body into a flat
+    // ParsedRuleBody, building the ValidatedRule list. On parse failure,
+    // record an Error::Parse with MC1003–MC1006 and emit a placeholder
+    // body so subsequent validators don't dereference a half-state.
+    let validated_rules = parse_rule_formulas(&parsed.rules, &mut errors);
+
+    let mut val_errors: Vec<ValidationError> = Vec::new();
+    check_model_format_version(&parsed, &mut val_errors);
+    check_metadata(&parsed, &mut val_errors);
+    check_duplicate_names(&parsed, &mut val_errors);
+    check_dimension_kinds(&parsed, &mut val_errors);
+    check_missing_dimensions(&parsed, &mut val_errors);
+    check_invalid_hierarchy_edges(&parsed, &mut val_errors);
+    check_hierarchy_cycles(&parsed, &mut val_errors);
+    check_aggregation_methods_supported(&parsed, &mut val_errors);
+    check_rules_reference_known_measures(&parsed, &validated_rules, &mut val_errors);
+    check_derived_measures_have_rules(&parsed, &mut val_errors);
+    check_input_measures_have_no_rules(&parsed, &mut val_errors);
+    check_rule_cycles(&parsed, &mut val_errors);
+    check_golden_test_shape(&parsed, &mut val_errors);
+
+    errors.extend(val_errors.into_iter().map(Error::Validation));
 
     if !errors.is_empty() {
         return Err(errors);
@@ -97,12 +132,103 @@ pub fn validate(parsed: ParsedModel) -> Result<ValidatedModel, Vec<ValidationErr
 
     Ok(ValidatedModel {
         parsed,
+        rules: validated_rules,
         dimension_order,
         measure_dim_index,
         dim_index_by_name,
         element_index_by_name,
         measure_index_by_name,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3D step 0: formula-parse pre-step.
+// ---------------------------------------------------------------------------
+
+/// Walk every parsed rule and normalize its body to a flat
+/// [`ParsedRuleBody`]. For `ParsedRuleBodyForm::Formula(s)`, call
+/// [`formula::parse`]; on failure, push a `ParseError::Formula*` and
+/// substitute a placeholder body so semantic validators that walk the
+/// rule body still have a structurally valid tree to recurse over.
+///
+/// Per acceptance amendment #23, the returned [`ValidatedRule`] list is
+/// the canonical representation downstream consumers see — no
+/// `ParsedRuleBodyForm` reaches `compile` / `lint` / `inspect`.
+fn parse_rule_formulas(rules: &[ParsedRule], errors: &mut Vec<Error>) -> Vec<ValidatedRule> {
+    rules
+        .iter()
+        .map(|r| {
+            let body = match &r.body {
+                ParsedRuleBodyForm::Structured(b) => b.clone(),
+                ParsedRuleBodyForm::Formula(text) => match formula::parse(text) {
+                    Ok(b) => b,
+                    Err(fe) => {
+                        errors.push(Error::Parse(formula_error_to_parse_error(&r.name, fe)));
+                        // Placeholder body so subsequent semantic
+                        // validators don't have to special-case this
+                        // rule. Const(0.0) is shape-valid and contains
+                        // no Refs, so no spurious "unknown measure"
+                        // errors fire.
+                        crate::schema::ParsedRuleBody::Const(crate::schema::ParsedConstBody {
+                            value: crate::schema::ParsedScalar::Float(0.0),
+                        })
+                    }
+                },
+            };
+            ValidatedRule {
+                name: r.name.clone(),
+                target_measure: r.target_measure.clone(),
+                scope: r.scope.clone(),
+                description: r.description.clone(),
+                body,
+                declared_dependencies: r.declared_dependencies.clone(),
+            }
+        })
+        .collect()
+}
+
+/// Convert an internal [`formula::FormulaError`] to a [`ParseError`]
+/// variant. The YAML-line span is left as a zero placeholder — Phase 3D
+/// does not implement YAML-side line tracking for embedded formula
+/// strings; the rule name + offset within the formula text carries
+/// enough context for the diagnostic message.
+fn formula_error_to_parse_error(rule_name: &str, fe: formula::FormulaError) -> ParseError {
+    let span = Span {
+        file: None::<PathBuf>,
+        line: 0,
+        column: 0,
+    };
+    let rule_name = rule_name.to_string();
+    match fe.code {
+        "MC1003" => ParseError::FormulaUnbalancedParen {
+            span,
+            rule_name,
+            offset: fe.offset,
+            message: fe.message,
+        },
+        "MC1005" => ParseError::FormulaExpectedExpression {
+            span,
+            rule_name,
+            offset: fe.offset,
+            message: fe.message,
+        },
+        "MC1006" => ParseError::FormulaInvalidNumber {
+            span,
+            rule_name,
+            offset: fe.offset,
+            message: fe.message,
+        },
+        // MC1004 is the catch-all (incl. unknown function calls per
+        // acceptance amendment #25). Any unrecognized code is treated
+        // as MC1004 for safety; in practice formula::parse only emits
+        // MC1003-MC1006.
+        _ => ParseError::FormulaUnexpectedToken {
+            span,
+            rule_name,
+            offset: fe.offset,
+            message: fe.message,
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -341,9 +467,16 @@ fn dfs_cycle<'a>(
 // 6. Rules referencing unknown measures
 // ---------------------------------------------------------------------------
 
-fn check_rules_reference_known_measures(parsed: &ParsedModel, errors: &mut Vec<ValidationError>) {
+fn check_rules_reference_known_measures(
+    parsed: &ParsedModel,
+    validated_rules: &[ValidatedRule],
+    errors: &mut Vec<ValidationError>,
+) {
     let known_measures: BTreeSet<&str> = parsed.measures.iter().map(|m| m.name.as_str()).collect();
-    for r in &parsed.rules {
+    // Walk the validated rules (post-formula-parse) so the body refs we
+    // collect represent the actual semantic shape — not the
+    // `ParsedRuleBodyForm` wrapper. Length matches `parsed.rules`.
+    for r in validated_rules {
         // Binary-op arity check — every Add/Sub/Mul/Div/IfNull body needs
         // exactly 2 args. Surfaced as `Schema` rather than as its own
         // Decision-6 row because it's a structural malformation that the
