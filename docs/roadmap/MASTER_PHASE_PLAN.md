@@ -43,7 +43,9 @@ Productization beyond the first usable product (multi-tenancy, customer-facing a
 | **2E–2N** | Further optimization rounds (TBD) | not started | — |
 | **3A** | Model definition layer — YAML + `mc-model` crate (per ADR-0004) | **complete** (report at [`../reports/phase-3a-completion-report.md`](../reports/phase-3a-completion-report.md)) | `phase-3a-model-definition-layer` (`603c537`) |
 | **3B** | Model QA, Linter, and Diagnostics — `mc model {validate,inspect,lint,test}` + 10 lint rules + JSON diagnostics envelope (per ADR-0005) | **complete** (report at [`../reports/phase-3b-completion-report.md`](../reports/phase-3b-completion-report.md)) | `phase-3b-lint-and-diagnostics` (`f4f7fa8`) |
-| **3C–3N** | Friendly formula syntax + further model layer extensions (TBD) | not started | — |
+| **3C** | Model Test Fixtures and Input Sets — `canonical_inputs` + `test_fixtures`, sibling CSV + tabular inline YAML, 14 new validators (MC2012–MC2025), `mc model test --fixture <name>` (per ADR-0006) | **proposed** (handoff at [`../handoffs/phase-3c-handoff.md`](../handoffs/phase-3c-handoff.md)) | — |
+| **3D** | Friendly formula syntax — `Revenue = Customers * AOV` strings compile to `ParsedRuleBody`'s structured tree (originally ADR-0004's Phase 3C; renamed to 3D per ADR-0006 roadmap impact) | not started | — |
+| **3E–3N** | Further model layer extensions (TBD) | not started | — |
 | **4** | LLM-assisted model authoring | not started | — |
 | **5** | Data integration & actuals | not started | — |
 | **6** | UI & internal app proofs (incl. internal Media Partner model proof) | not started | — |
@@ -189,11 +191,25 @@ Rule: bump `rust-toolchain.toml` past 1.78 **before any new runtime dep lands th
 - **Acceptance gates (planned):** see ADR-0005 Decision 8 (15 items). Headline: Acme lints clean with zero warnings; ≥ 252 tests still pass; `mc-core` and `mc-fixtures` untouched; deterministic 10/10; JSON envelope schema_version assertion; demo-without-goldens integration test passes.
 - **Out of scope (explicit):** see ADR-0005 Decision 6 — no formula strings (Phase 3C), no LLM authoring (Phase 4), no UI (Phase 6), no actuals (Phase 5), no DuckDB, no multi-cube, no `mc-core` changes, no auto-fix, no snapshot diff. **Dep-discipline rule:** parser/serde deps stay in `mc-model` only (per ADR-0004 Decision 3, inherited).
 
-### 3C, 3D, … (TBD)
+### 3C — Model Test Fixtures and Input Sets (proposed)
+
+- **Status:** **proposed.** Handoff at [`../handoffs/phase-3c-handoff.md`](../handoffs/phase-3c-handoff.md). [ADR-0006](../decisions/0006-phase-3c-model-test-fixtures.md) Accepted 2026-05-03 with 13 project-owner acceptance amendments (9 from GPT + 4 from Claude Desktop, including a wording-tightening note on `--fixture` semantics).
+- **Purpose:** Close the visible scaffolding hack `mc model test` left in `mc-cli/src/main.rs:253` (the `metadata.name == "Acme_MarketingFinance"` branch). Add model-owned `canonical_inputs:` and `test_fixtures:` schema, sibling CSV + tabular inline YAML data forms, and 14 new validators (MC2012–MC2025) so generic models work with `mc model test` without Acme-specific CLI logic.
+- **What it proves:** A YAML+CSV-authored model produces byte-identical store state to the Rust-fixture path on Acme across all 2,520 canonical input coordinates and all 9 inline goldens. The equivalence test uses ONLY existing public APIs from `mc-core` + `mc-fixtures` — no new APIs added to either crate (per ADR-0006 acceptance amendments #15 + (c)).
+- **Deliverables (planned, high-level):** schema additions to `ParsedModel`/`ValidatedModel` (additive, backwards-compatible); strict CSV parser (hand-rolled, no `csv` crate dep); 14 new validators with negative-test fixtures; `mc model test --fixture <name>` filter flag; `acme.yaml` + `acme.inputs.csv` cleanup; removal of the `metadata.name` Acme special case from `mc-cli`; `Cube::snapshot` + `Cube::rollback_to` used for between-goldens reset (perf gate `mc model test acme.yaml < 500 ms`).
+- **Acceptance gates (planned):** see ADR-0006 Decision 9 (17 items). Headline: byte-identical equivalence between Rust and YAML+CSV paths on Acme; `grep -c "Acme_MarketingFinance" crates/mc-cli/src/main.rs` returns 0; ≥ 293 tests still pass; `mc-core` and `mc-fixtures` untouched.
+- **Out of scope (explicit):** see ADR-0006 Decision 8 — no actuals import (Phase 5), no DuckDB, no API loading, no formula strings (Phase 3D), no LLM authoring (Phase 4), no UI (Phase 6), no `mc-core`/`mc-fixtures` changes, no multi-cube, no auto-fix, no Cube → YAML round-trip.
+
+### 3D — Friendly formula syntax (planned)
+
+- **Status:** planned. Originally named "Phase 3C" in [ADR-0004 Decision 4](../decisions/0004-phase-3a-model-definition-format.md); **renamed to Phase 3D per ADR-0006 roadmap impact** (the swap puts model-test fixtures ahead of formula-string ergonomics because the fixture work unblocks Phase 4 / 5 / 6 directly).
+- **Purpose:** Compile `Revenue = Customers * AOV`-style formula strings down to `ParsedRuleBody`'s structured tree. No kernel change; new parser sits in `mc-model` alongside the structured-tree path.
+- **Why deferred behind 3C:** the structured-tree representation already works for rule authoring; formula syntax is a quality-of-life add. Phase 3C closes a visible scaffolding hack that affects every YAML author with input-dependent goldens.
+
+### 3E, 3F, … (TBD)
 
 Likely follow-ons (placeholders, do not pre-name without an ADR):
 
-- **Phase 3C — Friendly formula syntax.** `Revenue = Customers * AOV` strings compile down to ParsedRuleBody's structured tree per ADR-0004 Decision 4. Sequenced after Phase 3B per ADR-0005's "What this unlocks" rationale.
 - Round-trip *write* (cube → declarative file). Needed for Phase 6 UI editors.
 - Multi-cube / cube-of-cubes composition. Needed once the first model file outgrows a single document.
 - Schema versioning + migration semantics. Needed once a real user has authored a cube the format authors can't reflexively rewrite.
