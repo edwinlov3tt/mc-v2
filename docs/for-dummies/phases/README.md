@@ -15,6 +15,7 @@ The phases section walks through the *optimization phases* (Phase 2 and onward).
 | **2C** | **Stretch the test cube to 100× the toy size and see what falls over.** | **complete** | **[phase-2c.md](./phase-2c.md)** |
 | **2D** | **Fix the thing that fell over: replace the dirty-list with a hotel-room-light-board (and find a Phase 1A bug along the way).** | **complete** | **[phase-2d.md](./phase-2d.md)** |
 | **3A** | **Let humans author cubes by writing a YAML file instead of Rust. New `mc-model` crate; kernel doesn't change.** | **complete** | **[phase-3a.md](./phase-3a.md)** |
+| **3B** | **Add the four-verb mental model for YAML authors: validate / inspect / lint / test. 10 lint rules + structured diagnostics for future LLM + UI consumption.** | **complete** | **[phase-3b.md](./phase-3b.md)** |
 
 ## How to read these
 
