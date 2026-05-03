@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "mosaic": {
+      "command": "mc",
+      "args": ["mcp"],
+      "env": {}
+    }
+  }
+}

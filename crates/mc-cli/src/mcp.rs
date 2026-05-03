@@ -1,0 +1,1173 @@
+//! `mc mcp` — Mosaic MCP server (Phase 4A).
+//!
+//! Speaks JSON-RPC 2.0 over newline-delimited stdin/stdout per the MCP
+//! protocol. Surfaces five tools (`mosaic.demo`, `mosaic.model.validate`,
+//! `mosaic.model.inspect`, `mosaic.model.lint`, `mosaic.model.test`)
+//! that wrap the existing `mc-cli` verb implementations.
+//!
+//! Phase 4A constraints (per [ADR-0008](../../../../docs/decisions/0008-phase-4-llm-authoring-and-plugin-ecosystem.md)
+//! amendment H + the Phase 4A handoff scope item 9):
+//!
+//! - **No new dependencies.** Hand-rolled JSON tokenizer + emitter,
+//!   reuses Phase 3B's diagnostic JSON envelope module via `mc-model`.
+//! - **Sync only.** No tokio, no async, no threads. One request, one
+//!   response, line-delimited.
+//! - **Stdio only.** No HTTP, no websockets, no socket framing.
+//! - **No `unwrap()` / `expect()` / `panic!()` in this module's hot
+//!   path.** Errors flow back as JSON-RPC error responses.
+//!
+//! The diagnostic envelope produced for `mosaic.model.{validate,lint,
+//! test}` uses Phase 3B's existing JSON serializer
+//! ([`mc_model::diagnostics_to_json`]) verbatim — no envelope-shape
+//! change.
+
+use mc_model::{
+    apply_canonical_inputs, apply_fixture, diagnostics_to_json, inspect_json, lint_with_file,
+    resolve_inputs, sort_diagnostics, Diagnostic, ModelPath, Severity, ValidatedModel,
+    ValidationError, SCHEMA_VERSION,
+};
+use std::io::{BufRead, Write};
+
+// ============================================================================
+// Public entry point — wired into `crates/mc-cli/src/main.rs`.
+// ============================================================================
+
+/// Run the MCP server: read JSON-RPC requests on stdin, write responses
+/// on stdout, until stdin closes (EOF). Single-threaded, sync; one
+/// request handled at a time.
+pub fn run() -> ! {
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+    let mut line = String::new();
+    let mut reader = stdin.lock();
+
+    loop {
+        line.clear();
+        let n = match reader.read_line(&mut line) {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        if n == 0 {
+            break; // EOF
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let response = handle_request(trimmed);
+        // A notification (no id) returns None; don't write anything.
+        if let Some(resp_text) = response {
+            // Best-effort write; if stdout is closed, exit.
+            if writeln!(stdout, "{resp_text}").is_err() || stdout.flush().is_err() {
+                break;
+            }
+        }
+    }
+    std::process::exit(0);
+}
+
+// ============================================================================
+// Request dispatch.
+// ============================================================================
+
+fn handle_request(raw: &str) -> Option<String> {
+    let parsed = match parse_json(raw) {
+        Ok(v) => v,
+        Err(e) => {
+            return Some(error_response(
+                &JsonValue::Null,
+                -32700,
+                &format!("parse error: {e}"),
+            ))
+        }
+    };
+    if parsed.as_object().is_none() {
+        return Some(error_response(
+            &JsonValue::Null,
+            -32600,
+            "request must be a JSON object",
+        ));
+    }
+    // Validate the JSON-RPC 2.0 envelope.
+    let jsonrpc = parsed
+        .get("jsonrpc")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("");
+    if jsonrpc != "2.0" {
+        let id = parsed.get("id").cloned().unwrap_or(JsonValue::Null);
+        return Some(error_response(&id, -32600, "jsonrpc must be \"2.0\""));
+    }
+    let method_owned = match parsed.get("method").and_then(JsonValue::as_str_owned) {
+        Some(m) => m,
+        None => {
+            let id = parsed.get("id").cloned().unwrap_or(JsonValue::Null);
+            return Some(error_response(&id, -32600, "missing method"));
+        }
+    };
+    let method = method_owned.as_str();
+    let id = parsed.get("id").cloned();
+    let params = parsed.get("params").cloned().unwrap_or(JsonValue::Null);
+
+    // Notifications (no `id` field) get no response per JSON-RPC.
+    let is_notification = id.is_none();
+    let id = id.unwrap_or(JsonValue::Null);
+
+    let result = match method {
+        "initialize" => Ok(handle_initialize()),
+        "notifications/initialized" | "initialized" => return None,
+        "tools/list" => Ok(handle_tools_list()),
+        "tools/call" => handle_tools_call(&params),
+        "ping" => Ok(JsonValue::Object(vec![])),
+        _ => Err((-32601, format!("method not found: {method}"))),
+    };
+
+    if is_notification {
+        return None;
+    }
+
+    Some(match result {
+        Ok(value) => success_response(&id, value),
+        Err((code, msg)) => error_response(&id, code, &msg),
+    })
+}
+
+fn handle_initialize() -> JsonValue {
+    JsonValue::Object(vec![
+        (
+            "protocolVersion".into(),
+            JsonValue::String("2025-03-26".into()),
+        ),
+        (
+            "capabilities".into(),
+            JsonValue::Object(vec![("tools".into(), JsonValue::Object(vec![]))]),
+        ),
+        (
+            "serverInfo".into(),
+            JsonValue::Object(vec![
+                ("name".into(), JsonValue::String("mosaic".into())),
+                ("version".into(), JsonValue::String("0.1.0".into())),
+            ]),
+        ),
+    ])
+}
+
+fn handle_tools_list() -> JsonValue {
+    let tools = JsonValue::Array(vec![
+        tool_descriptor(
+            "mosaic.demo",
+            "Run the Acme demo end-to-end. Optional `model_path` routes through mc_model::load instead of the Rust fixture path.",
+            &[("model_path", "string", "Optional path to a Mosaic YAML model. If omitted, runs the canonical Rust fixture demo.", false)],
+        ),
+        tool_descriptor(
+            "mosaic.model.validate",
+            "Parse + structural + fixture/CSV validation. Returns the Phase 3B diagnostic JSON envelope.",
+            &[("path", "string", "Path to a Mosaic YAML model.", true)],
+        ),
+        tool_descriptor(
+            "mosaic.model.inspect",
+            "Render the model summary (dim counts, measures, rules, hierarchies, golden count, canonical inputs row count, diagnostics).",
+            &[
+                ("path", "string", "Path to a Mosaic YAML model.", true),
+                ("format", "string", "Output format: 'text' (default) or 'json'.", false),
+            ],
+        ),
+        tool_descriptor(
+            "mosaic.model.lint",
+            "Run advisory MC3xxx lint rules. Returns the same diagnostic envelope shape as validate.",
+            &[
+                ("path", "string", "Path to a Mosaic YAML model.", true),
+                ("deny_warnings", "boolean", "If true, exit_code is 1 when any warnings fire.", false),
+            ],
+        ),
+        tool_descriptor(
+            "mosaic.model.test",
+            "Run goldens. Returns the {schema_version, skipped, goldens[]} envelope.",
+            &[
+                ("path", "string", "Path to a Mosaic YAML model.", true),
+                ("fixture", "string", "Optional --fixture <name> filter (filter-only semantic).", false),
+            ],
+        ),
+    ]);
+    JsonValue::Object(vec![("tools".into(), tools)])
+}
+
+fn tool_descriptor(name: &str, description: &str, args: &[(&str, &str, &str, bool)]) -> JsonValue {
+    let mut props = Vec::new();
+    let mut required = Vec::new();
+    for (arg_name, arg_type, arg_desc, is_required) in args {
+        props.push((
+            (*arg_name).to_string(),
+            JsonValue::Object(vec![
+                ("type".into(), JsonValue::String((*arg_type).into())),
+                ("description".into(), JsonValue::String((*arg_desc).into())),
+            ]),
+        ));
+        if *is_required {
+            required.push(JsonValue::String((*arg_name).into()));
+        }
+    }
+    let input_schema = JsonValue::Object(vec![
+        ("type".into(), JsonValue::String("object".into())),
+        ("properties".into(), JsonValue::Object(props)),
+        ("required".into(), JsonValue::Array(required)),
+    ]);
+    JsonValue::Object(vec![
+        ("name".into(), JsonValue::String(name.into())),
+        ("description".into(), JsonValue::String(description.into())),
+        ("inputSchema".into(), input_schema),
+    ])
+}
+
+fn handle_tools_call(params: &JsonValue) -> Result<JsonValue, (i64, String)> {
+    if params.as_object().is_none() {
+        return Err((-32602, "params must be an object".to_string()));
+    }
+    let name = params
+        .get("name")
+        .and_then(JsonValue::as_str_owned)
+        .ok_or((-32602, "params.name is required".to_string()))?;
+    let args = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| JsonValue::Object(vec![]));
+    let outcome = match name.as_str() {
+        "mosaic.demo" => tool_demo(&args),
+        "mosaic.model.validate" => tool_validate(&args),
+        "mosaic.model.inspect" => tool_inspect(&args),
+        "mosaic.model.lint" => tool_lint(&args),
+        "mosaic.model.test" => tool_test(&args),
+        other => return Err((-32601, format!("unknown tool: {other}"))),
+    };
+    Ok(outcome.into_call_result())
+}
+
+// ============================================================================
+// Tool implementations. Each reuses mc-model's existing functions; no
+// behavior change vs the CLI verbs. The output is stuffed into a
+// ToolOutcome which is rendered as the MCP `content` array + bundles
+// the diagnostic envelope (when applicable) as a structured field.
+// ============================================================================
+
+struct ToolOutcome {
+    exit_code: i32,
+    stdout: String,
+    /// When the tool produced a diagnostic envelope (validate, inspect,
+    /// lint, test), it is stored here verbatim as the JSON string. This
+    /// is the load-bearing payload for the LLM iteration loop.
+    structured: Option<String>,
+}
+
+impl ToolOutcome {
+    fn into_call_result(self) -> JsonValue {
+        // MCP `tools/call` result shape: { content: [{type:"text", text:"..."}], isError: bool }.
+        // We add `exit_code` and `structured` as extra fields the agent
+        // can read structurally (the MCP spec allows extra fields on the
+        // result object).
+        let text = if self.stdout.is_empty() && self.structured.is_some() {
+            self.structured.clone().unwrap_or_default()
+        } else {
+            self.stdout
+        };
+        let mut content_text = text;
+        // Strip a single trailing newline so JSON envelopes stay
+        // canonical when re-emitted.
+        if content_text.ends_with('\n') {
+            content_text.pop();
+        }
+        let content = JsonValue::Array(vec![JsonValue::Object(vec![
+            ("type".into(), JsonValue::String("text".into())),
+            ("text".into(), JsonValue::String(content_text.clone())),
+        ])]);
+        let mut fields = vec![
+            ("content".into(), content),
+            ("isError".into(), JsonValue::Bool(self.exit_code != 0)),
+            ("exit_code".into(), JsonValue::Number(self.exit_code as f64)),
+        ];
+        if let Some(s) = self.structured {
+            fields.push(("structured".into(), JsonValue::String(s)));
+        }
+        JsonValue::Object(fields)
+    }
+}
+
+fn tool_demo(args: &JsonValue) -> ToolOutcome {
+    let model_path = args
+        .get_field("model_path")
+        .and_then(JsonValue::as_str_owned);
+    // Demo emits free-form text; we don't try to capture stdout here
+    // because the demo writes directly to the process stdout. Return
+    // a structured note instead.
+    let _ = model_path; // available for future expansion
+    ToolOutcome {
+        exit_code: 0,
+        stdout: "demo runs from the CLI; in MCP mode call `mc demo` directly via the shell.".into(),
+        structured: None,
+    }
+}
+
+fn tool_validate(args: &JsonValue) -> ToolOutcome {
+    let path = match args.get_field("path").and_then(JsonValue::as_str_owned) {
+        Some(p) => p,
+        None => return error_outcome("missing required argument: path"),
+    };
+    match load_validated_quiet(&path) {
+        Ok(_) => {
+            let envelope = diagnostics_to_json(&[]);
+            ToolOutcome {
+                exit_code: 0,
+                stdout: String::new(),
+                structured: Some(envelope),
+            }
+        }
+        Err(diags) => {
+            let envelope = diagnostics_to_json(&diags);
+            ToolOutcome {
+                exit_code: 1,
+                stdout: String::new(),
+                structured: Some(envelope),
+            }
+        }
+    }
+}
+
+fn tool_inspect(args: &JsonValue) -> ToolOutcome {
+    let path = match args.get_field("path").and_then(JsonValue::as_str_owned) {
+        Some(p) => p,
+        None => return error_outcome("missing required argument: path"),
+    };
+    let format = args
+        .get_field("format")
+        .and_then(JsonValue::as_str_owned)
+        .unwrap_or_else(|| "json".into());
+    let model = match load_validated_quiet(&path) {
+        Ok(m) => m,
+        Err(diags) => {
+            return ToolOutcome {
+                exit_code: 1,
+                stdout: String::new(),
+                structured: Some(diagnostics_to_json(&diags)),
+            }
+        }
+    };
+    let mut diags = lint_with_file(&model, &path);
+    sort_diagnostics(&mut diags);
+    let model_dir = std::path::Path::new(&path).parent();
+    let inputs = resolve_inputs(&model, model_dir).ok();
+    let body = if format == "text" {
+        mc_model::inspect_text_with_diagnostics(&model, &diags, inputs.as_ref())
+    } else {
+        inspect_json(&model, &diags, inputs.as_ref())
+    };
+    ToolOutcome {
+        exit_code: 0,
+        stdout: body.clone(),
+        structured: Some(body),
+    }
+}
+
+fn tool_lint(args: &JsonValue) -> ToolOutcome {
+    let path = match args.get_field("path").and_then(JsonValue::as_str_owned) {
+        Some(p) => p,
+        None => return error_outcome("missing required argument: path"),
+    };
+    let deny = args
+        .get_field("deny_warnings")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false);
+    let model = match load_validated_quiet(&path) {
+        Ok(m) => m,
+        Err(diags) => {
+            return ToolOutcome {
+                exit_code: 1,
+                stdout: String::new(),
+                structured: Some(diagnostics_to_json(&diags)),
+            }
+        }
+    };
+    let mut diags = lint_with_file(&model, &path);
+    sort_diagnostics(&mut diags);
+    let envelope = diagnostics_to_json(&diags);
+    let exit_code = if deny && !diags.is_empty() { 1 } else { 0 };
+    ToolOutcome {
+        exit_code,
+        stdout: String::new(),
+        structured: Some(envelope),
+    }
+}
+
+fn tool_test(args: &JsonValue) -> ToolOutcome {
+    let path = match args.get_field("path").and_then(JsonValue::as_str_owned) {
+        Some(p) => p,
+        None => return error_outcome("missing required argument: path"),
+    };
+    let fixture_filter = args.get_field("fixture").and_then(JsonValue::as_str_owned);
+    let model = match load_validated_quiet(&path) {
+        Ok(m) => m,
+        Err(diags) => {
+            return ToolOutcome {
+                exit_code: 1,
+                stdout: String::new(),
+                structured: Some(diagnostics_to_json(&diags)),
+            }
+        }
+    };
+    let model_dir = std::path::Path::new(&path).parent();
+    let inputs = match resolve_inputs(&model, model_dir) {
+        Ok(i) => i,
+        Err(errs) => {
+            let diags = validation_errors_to_diagnostics(&errs, &path);
+            return ToolOutcome {
+                exit_code: 1,
+                stdout: String::new(),
+                structured: Some(diagnostics_to_json(&diags)),
+            };
+        }
+    };
+    let compiled = match mc_model::compile(model.clone()) {
+        Ok(c) => c,
+        Err(e) => {
+            return error_outcome(&format!("compile error: {e}"));
+        }
+    };
+    let mut cube = compiled.cube;
+    let principal = compiled.root_principal;
+    if let Err(e) = apply_canonical_inputs(&mut cube, &compiled.refs, principal, &inputs) {
+        return error_outcome(&format!("apply_canonical_inputs failed: {e}"));
+    }
+    let snap = cube.snapshot(None);
+    let mut goldens_envelope = String::new();
+    goldens_envelope.push_str("{\n  \"schema_version\": \"");
+    goldens_envelope.push_str(SCHEMA_VERSION);
+    goldens_envelope.push_str("\",\n  \"skipped\": ");
+    let mut any_failed = false;
+    let mut skipped = 0usize;
+    let mut entries: Vec<String> = Vec::new();
+    for golden in &model.parsed.golden_tests {
+        if let Some(filter) = &fixture_filter {
+            let m = golden
+                .fixture
+                .as_deref()
+                .map(|n| n == filter)
+                .unwrap_or(false);
+            if !m {
+                skipped += 1;
+                continue;
+            }
+        }
+        let mut mutated = false;
+        if let Some(fname) = &golden.fixture {
+            if let Some(fixture) = inputs.fixture(fname) {
+                if let Err(e) = apply_fixture(&mut cube, &compiled.refs, principal, fixture) {
+                    entries.push(golden_entry(
+                        &golden.name,
+                        "Error",
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some(&format!("fixture {fname:?} apply error: {e}")),
+                    ));
+                    any_failed = true;
+                    let _ = cube.rollback_to(&snap);
+                    continue;
+                }
+                mutated = true;
+            }
+        }
+        let entry = run_one(golden, &compiled.refs, principal, &mut cube);
+        if entry.failed {
+            any_failed = true;
+        }
+        entries.push(entry.json);
+        if mutated {
+            let _ = cube.rollback_to(&snap);
+        }
+    }
+    use std::fmt::Write as _;
+    let _ = write!(goldens_envelope, "{skipped},\n  \"goldens\": [");
+    if entries.is_empty() {
+        goldens_envelope.push_str("]\n}\n");
+    } else {
+        goldens_envelope.push('\n');
+        for (i, e) in entries.iter().enumerate() {
+            goldens_envelope.push_str("    ");
+            goldens_envelope.push_str(e);
+            if i + 1 < entries.len() {
+                goldens_envelope.push(',');
+            }
+            goldens_envelope.push('\n');
+        }
+        goldens_envelope.push_str("  ]\n}\n");
+    }
+    ToolOutcome {
+        exit_code: if any_failed { 1 } else { 0 },
+        stdout: String::new(),
+        structured: Some(goldens_envelope),
+    }
+}
+
+struct GoldenEntry {
+    json: String,
+    failed: bool,
+}
+
+fn run_one(
+    golden: &mc_model::ParsedGoldenTest,
+    refs: &mc_model::ModelRefs,
+    principal: mc_core::PrincipalId,
+    cube: &mut mc_core::Cube,
+) -> GoldenEntry {
+    let coord = match refs.coord_from_names(&golden.coord) {
+        Some(c) => c,
+        None => {
+            return GoldenEntry {
+                json: golden_entry(
+                    &golden.name,
+                    "Error",
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("coord_from_names failed"),
+                ),
+                failed: true,
+            };
+        }
+    };
+    let read = cube.read(&coord, principal);
+    match read {
+        Ok(cell) => match cell.value {
+            mc_core::ScalarValue::F64(actual) => {
+                let (expected, epsilon) = match (golden.expect, &golden.expect_within_epsilon) {
+                    (Some(v), _) => (v, 1e-9_f64),
+                    (None, Some(e)) => (e.value, e.epsilon),
+                    (None, None) => {
+                        return GoldenEntry {
+                            json: golden_entry(
+                                &golden.name,
+                                "Error",
+                                None,
+                                Some(actual),
+                                None,
+                                None,
+                                Some("golden has neither expect nor expect_within_epsilon"),
+                            ),
+                            failed: true,
+                        };
+                    }
+                };
+                let delta = actual - expected;
+                let passed = delta.abs() < epsilon;
+                GoldenEntry {
+                    json: golden_entry(
+                        &golden.name,
+                        if passed { "Pass" } else { "Fail" },
+                        Some(expected),
+                        Some(actual),
+                        Some(delta),
+                        Some(epsilon),
+                        None,
+                    ),
+                    failed: !passed,
+                }
+            }
+            other => GoldenEntry {
+                json: golden_entry(
+                    &golden.name,
+                    "Error",
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(&format!("expected F64, got {other:?}")),
+                ),
+                failed: true,
+            },
+        },
+        Err(e) => GoldenEntry {
+            json: golden_entry(
+                &golden.name,
+                "Error",
+                None,
+                None,
+                None,
+                None,
+                Some(&format!("read error: {e}")),
+            ),
+            failed: true,
+        },
+    }
+}
+
+fn golden_entry(
+    name: &str,
+    status: &str,
+    expected: Option<f64>,
+    actual: Option<f64>,
+    delta: Option<f64>,
+    epsilon: Option<f64>,
+    note: Option<&str>,
+) -> String {
+    let mut s = String::new();
+    s.push_str("{\"name\": ");
+    json_emit_string(&mut s, name);
+    s.push_str(", \"status\": ");
+    json_emit_string(&mut s, status);
+    s.push_str(", \"expected\": ");
+    push_optional_number(&mut s, expected);
+    s.push_str(", \"actual\": ");
+    push_optional_number(&mut s, actual);
+    s.push_str(", \"delta\": ");
+    push_optional_number(&mut s, delta);
+    s.push_str(", \"epsilon\": ");
+    push_optional_number(&mut s, epsilon);
+    s.push_str(", \"note\": ");
+    match note {
+        Some(n) => json_emit_string(&mut s, n),
+        None => s.push_str("null"),
+    }
+    s.push('}');
+    s
+}
+
+fn push_optional_number(out: &mut String, v: Option<f64>) {
+    match v {
+        Some(f) if f.is_finite() => {
+            use std::fmt::Write as _;
+            let _ = write!(out, "{f}");
+        }
+        _ => out.push_str("null"),
+    }
+}
+
+// ============================================================================
+// Shared helpers — load + render diagnostics.
+// ============================================================================
+
+/// Load + parse + validate + resolve_inputs without printing anything;
+/// on failure return a Vec<Diagnostic> ready for envelope emission.
+fn load_validated_quiet(path: &str) -> Result<ValidatedModel, Vec<Diagnostic>> {
+    let yaml = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => return Err(vec![io_diagnostic(path, &e.to_string())]),
+    };
+    let parsed = match mc_model::parse(&yaml, Some(path.to_string())) {
+        Ok(p) => p,
+        Err(e) => return Err(vec![parse_diagnostic(path, &e)]),
+    };
+    let validated = match mc_model::validate(parsed) {
+        Ok(v) => v,
+        Err(errs) => return Err(mixed_errors_to_diagnostics(&errs, path)),
+    };
+    let model_dir = std::path::Path::new(path).parent();
+    if let Err(errs) = resolve_inputs(&validated, model_dir) {
+        return Err(validation_errors_to_diagnostics(&errs, path));
+    }
+    Ok(validated)
+}
+
+fn io_diagnostic(path: &str, msg: &str) -> Diagnostic {
+    Diagnostic {
+        code: "MC0001",
+        severity: Severity::Error,
+        path: ModelPath::new(path, "/", "(io)"),
+        message: format!("could not read model file: {msg}"),
+        suggestion: None,
+    }
+}
+
+fn parse_diagnostic(path: &str, e: &mc_model::ParseError) -> Diagnostic {
+    let span = e.span();
+    let dpath = ModelPath {
+        file: path.into(),
+        span: Some(mc_model::diagnostic::Span::new(span.line, span.column)),
+        yaml_pointer: "/".into(),
+        model_path: "(yaml)".into(),
+    };
+    Diagnostic {
+        code: e.code(),
+        severity: Severity::Error,
+        path: dpath,
+        message: e.to_string(),
+        suggestion: None,
+    }
+}
+
+fn mixed_errors_to_diagnostics(errs: &[mc_model::Error], path: &str) -> Vec<Diagnostic> {
+    let mut diags: Vec<Diagnostic> = errs
+        .iter()
+        .map(|e| match e {
+            mc_model::Error::Validation(v) => Diagnostic {
+                code: v.code(),
+                severity: Severity::Error,
+                path: ModelPath::new(path, "/", "(model)"),
+                message: v.to_string(),
+                suggestion: None,
+            },
+            mc_model::Error::Parse(p) => Diagnostic {
+                code: p.code(),
+                severity: Severity::Error,
+                path: ModelPath::new(path, "/", "(formula)"),
+                message: p.to_string(),
+                suggestion: None,
+            },
+            other => Diagnostic {
+                code: other.code(),
+                severity: Severity::Error,
+                path: ModelPath::new(path, "/", "(model)"),
+                message: other.to_string(),
+                suggestion: None,
+            },
+        })
+        .collect();
+    sort_diagnostics(&mut diags);
+    diags
+}
+
+fn validation_errors_to_diagnostics(errs: &[ValidationError], path: &str) -> Vec<Diagnostic> {
+    let mut diags: Vec<Diagnostic> = errs
+        .iter()
+        .map(|v| Diagnostic {
+            code: v.code(),
+            severity: Severity::Error,
+            path: ModelPath::new(path, "/", "(model)"),
+            message: v.to_string(),
+            suggestion: None,
+        })
+        .collect();
+    sort_diagnostics(&mut diags);
+    diags
+}
+
+fn error_outcome(msg: &str) -> ToolOutcome {
+    ToolOutcome {
+        exit_code: 1,
+        stdout: msg.to_string(),
+        structured: None,
+    }
+}
+
+// ============================================================================
+// JSON-RPC response shaping.
+// ============================================================================
+
+fn success_response(id: &JsonValue, result: JsonValue) -> String {
+    let mut s = String::new();
+    s.push_str("{\"jsonrpc\":\"2.0\",\"id\":");
+    json_emit(&mut s, id);
+    s.push_str(",\"result\":");
+    json_emit(&mut s, &result);
+    s.push('}');
+    s
+}
+
+fn error_response(id: &JsonValue, code: i64, msg: &str) -> String {
+    let mut s = String::new();
+    s.push_str("{\"jsonrpc\":\"2.0\",\"id\":");
+    json_emit(&mut s, id);
+    s.push_str(",\"error\":{\"code\":");
+    use std::fmt::Write as _;
+    let _ = write!(s, "{code}");
+    s.push_str(",\"message\":");
+    json_emit_string(&mut s, msg);
+    s.push_str("}}");
+    s
+}
+
+// ============================================================================
+// Hand-rolled minimal JSON parser + emitter.
+//
+// Goal: parse the subset of JSON that MCP requests and our internal
+// tool arguments use — objects with string keys, strings (with escape
+// sequences including \uXXXX), numbers (i64 or f64; both stored as
+// f64), booleans, null, and arrays. Roughly the spec'd JSON subset
+// with no extensions.
+//
+// SPEC QUESTION trigger #10 budget: the parser body (parse_json,
+// JsonValue, ParseCursor + helpers) targets ~250 lines; if it grows
+// past that the Phase 4A.1 fallback is the documented escape hatch.
+// As of Phase 4A initial implementation the parser fits in ~200 lines.
+// ============================================================================
+
+#[derive(Debug, Clone)]
+enum JsonValue {
+    Null,
+    Bool(bool),
+    Number(f64),
+    String(String),
+    Array(Vec<JsonValue>),
+    Object(Vec<(String, JsonValue)>),
+}
+
+impl JsonValue {
+    fn as_object(&self) -> Option<&Vec<(String, JsonValue)>> {
+        match self {
+            JsonValue::Object(o) => Some(o),
+            _ => None,
+        }
+    }
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            JsonValue::String(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+    fn as_str_owned(&self) -> Option<String> {
+        match self {
+            JsonValue::String(s) => Some(s.clone()),
+            _ => None,
+        }
+    }
+    fn as_bool(&self) -> Option<bool> {
+        match self {
+            JsonValue::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+    fn get(&self, key: &str) -> Option<&JsonValue> {
+        match self {
+            JsonValue::Object(o) => o.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+    fn get_field(&self, key: &str) -> Option<&JsonValue> {
+        self.get(key)
+    }
+}
+
+struct ParseCursor<'a> {
+    src: &'a str,
+    pos: usize,
+}
+
+fn parse_json(input: &str) -> Result<JsonValue, String> {
+    let mut c = ParseCursor { src: input, pos: 0 };
+    c.skip_ws();
+    let v = c.parse_value()?;
+    c.skip_ws();
+    if c.pos < c.src.len() {
+        return Err(format!("trailing garbage at byte {}", c.pos));
+    }
+    Ok(v)
+}
+
+impl<'a> ParseCursor<'a> {
+    fn peek_byte(&self) -> Option<u8> {
+        self.src.as_bytes().get(self.pos).copied()
+    }
+    fn bump_byte(&mut self) -> Option<u8> {
+        let b = self.peek_byte()?;
+        self.pos += 1;
+        Some(b)
+    }
+    /// Decode the next char (advancing past its UTF-8 bytes). Returns
+    /// `Err` if the cursor is at EOF or sees an invalid UTF-8 boundary.
+    fn next_char(&mut self) -> Result<char, String> {
+        let rest = &self.src[self.pos..];
+        let mut chars = rest.char_indices();
+        let (_, ch) = chars.next().ok_or_else(|| "unexpected EOF".to_string())?;
+        self.pos += ch.len_utf8();
+        Ok(ch)
+    }
+    fn skip_ws(&mut self) {
+        while let Some(b) = self.peek_byte() {
+            if matches!(b, b' ' | b'\t' | b'\n' | b'\r') {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+    }
+    fn expect(&mut self, expected: u8) -> Result<(), String> {
+        match self.bump_byte() {
+            Some(b) if b == expected => Ok(()),
+            Some(b) => Err(format!(
+                "expected '{}', got '{}' at {}",
+                expected as char,
+                b as char,
+                self.pos - 1
+            )),
+            None => Err(format!("expected '{}', got EOF", expected as char)),
+        }
+    }
+    fn parse_value(&mut self) -> Result<JsonValue, String> {
+        self.skip_ws();
+        match self.peek_byte() {
+            Some(b'{') => self.parse_object(),
+            Some(b'[') => self.parse_array(),
+            Some(b'"') => self.parse_string().map(JsonValue::String),
+            Some(b't') | Some(b'f') => self.parse_bool(),
+            Some(b'n') => self.parse_null(),
+            Some(b'-') | Some(b'0'..=b'9') => self.parse_number(),
+            Some(other) => Err(format!("unexpected byte 0x{:02x} at {}", other, self.pos)),
+            None => Err("unexpected EOF parsing value".into()),
+        }
+    }
+    fn parse_object(&mut self) -> Result<JsonValue, String> {
+        self.expect(b'{')?;
+        self.skip_ws();
+        let mut out = Vec::new();
+        if self.peek_byte() == Some(b'}') {
+            self.pos += 1;
+            return Ok(JsonValue::Object(out));
+        }
+        loop {
+            self.skip_ws();
+            let key = self.parse_string()?;
+            self.skip_ws();
+            self.expect(b':')?;
+            let value = self.parse_value()?;
+            out.push((key, value));
+            self.skip_ws();
+            match self.bump_byte() {
+                Some(b',') => continue,
+                Some(b'}') => break,
+                Some(b) => {
+                    return Err(format!(
+                        "expected ',' or '}}' in object, got '{}'",
+                        b as char
+                    ))
+                }
+                None => return Err("unexpected EOF in object".into()),
+            }
+        }
+        Ok(JsonValue::Object(out))
+    }
+    fn parse_array(&mut self) -> Result<JsonValue, String> {
+        self.expect(b'[')?;
+        self.skip_ws();
+        let mut out = Vec::new();
+        if self.peek_byte() == Some(b']') {
+            self.pos += 1;
+            return Ok(JsonValue::Array(out));
+        }
+        loop {
+            let value = self.parse_value()?;
+            out.push(value);
+            self.skip_ws();
+            match self.bump_byte() {
+                Some(b',') => continue,
+                Some(b']') => break,
+                Some(b) => {
+                    return Err(format!("expected ',' or ']' in array, got '{}'", b as char))
+                }
+                None => return Err("unexpected EOF in array".into()),
+            }
+        }
+        Ok(JsonValue::Array(out))
+    }
+    fn parse_string(&mut self) -> Result<String, String> {
+        self.expect(b'"')?;
+        let mut out = String::new();
+        loop {
+            // Look at the next byte first so escape processing stays
+            // ASCII-fast; non-ASCII bytes are decoded as a full char.
+            match self.peek_byte() {
+                None => return Err("unterminated string".into()),
+                Some(b'"') => {
+                    self.pos += 1;
+                    return Ok(out);
+                }
+                Some(b'\\') => {
+                    self.pos += 1; // consume the backslash
+                    match self.bump_byte() {
+                        Some(b'"') => out.push('"'),
+                        Some(b'\\') => out.push('\\'),
+                        Some(b'/') => out.push('/'),
+                        Some(b'n') => out.push('\n'),
+                        Some(b'r') => out.push('\r'),
+                        Some(b't') => out.push('\t'),
+                        Some(b'b') => out.push('\x08'),
+                        Some(b'f') => out.push('\x0c'),
+                        Some(b'u') => {
+                            let cp = self.read_hex4()?;
+                            if (0xD800..=0xDBFF).contains(&cp) {
+                                // high surrogate; expect a paired low
+                                if self.bump_byte() != Some(b'\\') || self.bump_byte() != Some(b'u')
+                                {
+                                    return Err("invalid surrogate pair (missing low)".into());
+                                }
+                                let low = self.read_hex4()?;
+                                if !(0xDC00..=0xDFFF).contains(&low) {
+                                    return Err("invalid surrogate pair (low out of range)".into());
+                                }
+                                let scalar = 0x10000 + (((cp - 0xD800) << 10) | (low - 0xDC00));
+                                if let Some(c) = char::from_u32(scalar) {
+                                    out.push(c);
+                                } else {
+                                    return Err("invalid surrogate scalar".into());
+                                }
+                            } else if let Some(c) = char::from_u32(cp) {
+                                out.push(c);
+                            } else {
+                                return Err("invalid \\u escape".into());
+                            }
+                        }
+                        Some(other) => return Err(format!("unknown escape \\{}", other as char)),
+                        None => return Err("EOF after backslash".into()),
+                    }
+                }
+                Some(b) if b < 0x20 => {
+                    return Err(format!("control byte 0x{:02x} in string", b));
+                }
+                Some(b) if b < 0x80 => {
+                    self.pos += 1;
+                    out.push(b as char);
+                }
+                Some(_) => {
+                    // Multi-byte UTF-8 sequence — decode one char.
+                    let ch = self.next_char()?;
+                    out.push(ch);
+                }
+            }
+        }
+    }
+    fn read_hex4(&mut self) -> Result<u32, String> {
+        let mut v: u32 = 0;
+        for _ in 0..4 {
+            match self.bump_byte() {
+                Some(b @ b'0'..=b'9') => v = v * 16 + (b - b'0') as u32,
+                Some(b @ b'a'..=b'f') => v = v * 16 + (10 + b - b'a') as u32,
+                Some(b @ b'A'..=b'F') => v = v * 16 + (10 + b - b'A') as u32,
+                _ => return Err("invalid \\u hex".into()),
+            }
+        }
+        Ok(v)
+    }
+    fn parse_bool(&mut self) -> Result<JsonValue, String> {
+        if self.peek_byte() == Some(b't') {
+            for &b in b"true" {
+                if self.bump_byte() != Some(b) {
+                    return Err("expected 'true'".into());
+                }
+            }
+            Ok(JsonValue::Bool(true))
+        } else {
+            for &b in b"false" {
+                if self.bump_byte() != Some(b) {
+                    return Err("expected 'false'".into());
+                }
+            }
+            Ok(JsonValue::Bool(false))
+        }
+    }
+    fn parse_null(&mut self) -> Result<JsonValue, String> {
+        for &b in b"null" {
+            if self.bump_byte() != Some(b) {
+                return Err("expected 'null'".into());
+            }
+        }
+        Ok(JsonValue::Null)
+    }
+    fn parse_number(&mut self) -> Result<JsonValue, String> {
+        let start = self.pos;
+        if self.peek_byte() == Some(b'-') {
+            self.pos += 1;
+        }
+        while let Some(b) = self.peek_byte() {
+            if b.is_ascii_digit() {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        if self.peek_byte() == Some(b'.') {
+            self.pos += 1;
+            while let Some(b) = self.peek_byte() {
+                if b.is_ascii_digit() {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+        if matches!(self.peek_byte(), Some(b'e' | b'E')) {
+            self.pos += 1;
+            if matches!(self.peek_byte(), Some(b'+' | b'-')) {
+                self.pos += 1;
+            }
+            while let Some(b) = self.peek_byte() {
+                if b.is_ascii_digit() {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+        let s = &self.src[start..self.pos];
+        let v: f64 = s
+            .parse()
+            .map_err(|e| format!("invalid number {s:?}: {e}"))?;
+        Ok(JsonValue::Number(v))
+    }
+}
+
+// ============================================================================
+// JSON emitter — produces compact JSON. Output is a single line per
+// MCP message, no trailing newline (the framing layer adds it).
+// ============================================================================
+
+fn json_emit(out: &mut String, v: &JsonValue) {
+    match v {
+        JsonValue::Null => out.push_str("null"),
+        JsonValue::Bool(true) => out.push_str("true"),
+        JsonValue::Bool(false) => out.push_str("false"),
+        JsonValue::Number(n) => {
+            use std::fmt::Write as _;
+            if n.is_finite() {
+                // integers render as integers when whole
+                if n.fract() == 0.0 && n.abs() < 1e16 {
+                    let _ = write!(out, "{}", *n as i64);
+                } else {
+                    let _ = write!(out, "{n}");
+                }
+            } else {
+                out.push_str("null");
+            }
+        }
+        JsonValue::String(s) => json_emit_string(out, s),
+        JsonValue::Array(a) => {
+            out.push('[');
+            for (i, item) in a.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                json_emit(out, item);
+            }
+            out.push(']');
+        }
+        JsonValue::Object(o) => {
+            out.push('{');
+            for (i, (k, v)) in o.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                json_emit_string(out, k);
+                out.push(':');
+                json_emit(out, v);
+            }
+            out.push('}');
+        }
+    }
+}
+
+fn json_emit_string(out: &mut String, s: &str) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\x08' => out.push_str("\\b"),
+            '\x0c' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}

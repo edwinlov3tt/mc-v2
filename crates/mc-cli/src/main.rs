@@ -22,6 +22,8 @@ use mc_model::{
     ModelPath, Severity, ValidatedModel, ValidationError, SCHEMA_VERSION,
 };
 
+mod mcp;
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -37,6 +39,7 @@ fn main() {
             Ok(cmd) => run_model(cmd),
             Err(e) => fatal(&e),
         },
+        "mcp" => mcp::run(),
         "--help" | "-h" | "help" => print_help(),
         other => {
             eprintln!("unknown command: {other:?}");
@@ -61,6 +64,8 @@ fn print_help() {
     println!("    mc model inspect  <path> [--format text|json]");
     println!("    mc model lint     <path> [--format text|json] [--deny-warnings]");
     println!("    mc model test     <path> [--format text|json] [--fixture <name>]");
+    println!();
+    println!("    mc mcp                                  # Phase 4A MCP server (stdio JSON-RPC)");
     println!();
     println!("Per ADR-0005: lint is advisory by default; --deny-warnings flips lint");
     println!("warnings to a non-zero CLI exit code. mc demo --model does NOT run");

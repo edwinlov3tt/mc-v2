@@ -1,0 +1,348 @@
+# Acme_MarketingFinance — Phase 3A canonical example.
+#
+# This file is the YAML expression of `mc_fixtures::build_acme_cube()`.
+# The structural-equivalence test (`tests/structural_equivalence.rs`)
+# diffs the YAML-loaded cube against the Rust fixture; the byte-for-byte
+# diff in the CLI demo gate confirms behavioral parity.
+#
+# Conventions (per ADR-0004 Decision 1 — YAML safe subset):
+#   - YAML 1.2 only.
+#   - No anchors, no aliases, no merge keys, no custom tags.
+#   - Every string-like value is quoted: IDs, names, dates, enum-likes.
+#   - `model_format_version` is an integer (Decision 6 — semver deferred).
+
+model_format_version: 1
+
+# Phase 3C: canonical input data lives in a sibling CSV (2,520 rows;
+# 1 scenario × 1 version × 12 months × 5 channels × 7 markets ×
+# 6 input measures). The CSV was generated from
+# `mc_fixtures::canonical_inputs_for(...)` so YAML+CSV path == Rust
+# fixture path bit-for-bit (see tests/equivalence_acme.rs).
+#
+# `mc model test` applies these via cube.write before running goldens;
+# `mc model validate / inspect / lint` and `mc demo --model` validate
+# the declaration but do not write anything.
+canonical_inputs:
+  source: "acme.inputs.csv"
+  columns: ["Scenario", "Version", "Time", "Channel", "Market", "Measure", "value"]
+
+metadata:
+  name: "Acme_MarketingFinance"
+  description: "Brief §4 reference cube — 6 dims × 11 measures × 5 rules × 2520 input cells"
+  author: "MarketingCubes V2"
+  created: "2026-05-02"
+
+# Per spec §3.5 the dim order is exactly [Scenario, Version, Time, Channel, Market, Measure].
+dimensions:
+  - name: "Scenario"
+    description: "Plan branches the user can switch between (baseline vs alternates)."
+    kind: "Scenario"
+    elements:
+      - { name: "Baseline", scenario_meta: "Default" }
+      - { name: "Aggressive", scenario_meta: "NonDefault" }
+      - { name: "Conservative", scenario_meta: "NonDefault" }
+
+  - name: "Version"
+    description: "Workflow state of a plan revision (draft → submitted → approved)."
+    kind: "Version"
+    elements:
+      - { name: "Working", version_state: "Draft" }
+      - { name: "Submitted", version_state: "Submitted" }
+      - { name: "Approved", version_state: "Approved" }
+
+  - name: "Time"
+    description: "Calendar time periods used for plan-vs-actual rollups (months → quarters → year)."
+    kind: "Standard"
+    elements:
+      - { name: "Jan_2026" }
+      - { name: "Feb_2026" }
+      - { name: "Mar_2026" }
+      - { name: "Apr_2026" }
+      - { name: "May_2026" }
+      - { name: "Jun_2026" }
+      - { name: "Jul_2026" }
+      - { name: "Aug_2026" }
+      - { name: "Sep_2026" }
+      - { name: "Oct_2026" }
+      - { name: "Nov_2026" }
+      - { name: "Dec_2026" }
+      - { name: "Q1_2026" }
+      - { name: "Q2_2026" }
+      - { name: "Q3_2026" }
+      - { name: "Q4_2026" }
+      - { name: "FY_2026" }
+
+  - name: "Channel"
+    description: "Marketing channels grouped into Paid_Media and Owned_Earned families."
+    kind: "Standard"
+    elements:
+      - { name: "Paid_Search" }
+      - { name: "Paid_Social" }
+      - { name: "Display" }
+      - { name: "Email" }
+      - { name: "Organic" }
+      - { name: "Paid_Media" }
+      - { name: "Owned_Earned" }
+      - { name: "All_Channels" }
+
+  - name: "Market"
+    description: "Geographic markets — cities rolling up through states and regions to USA."
+    kind: "Standard"
+    elements:
+      - { name: "Tampa" }
+      - { name: "Orlando" }
+      - { name: "Miami" }
+      - { name: "Atlanta" }
+      - { name: "Charlotte" }
+      - { name: "New_York_City" }
+      - { name: "Boston" }
+      - { name: "Florida" }
+      - { name: "Georgia" }
+      - { name: "North_Carolina" }
+      - { name: "New_York_State" }
+      - { name: "Massachusetts" }
+      - { name: "Southeast" }
+      - { name: "Northeast" }
+      - { name: "USA" }
+
+  # Measure dim's elements come from the top-level `measures:` block. We
+  # declare the Measure dim here with kind: "Measure" and an empty
+  # elements list so the dim-order check sees it in the canonical 6th slot.
+  - name: "Measure"
+    description: "Inputs (Spend, ratios) and derived KPIs (Clicks, Leads, Customers, Revenue, Gross_Profit)."
+    kind: "Measure"
+    elements: []
+
+# Hierarchies — three default hierarchies on Time / Channel / Market.
+# Edges follow the same parent → child shape `mc_fixtures::build_acme_cube()`
+# uses; the `weight: 1.0` on every edge mirrors the Rust fixture's behavior.
+hierarchies:
+  - dimension: "Time"
+    name: "Calendar"
+    default: true
+    edges:
+      - { parent: "FY_2026", child: "Q1_2026", weight: 1.0 }
+      - { parent: "FY_2026", child: "Q2_2026", weight: 1.0 }
+      - { parent: "FY_2026", child: "Q3_2026", weight: 1.0 }
+      - { parent: "FY_2026", child: "Q4_2026", weight: 1.0 }
+      - { parent: "Q1_2026", child: "Jan_2026", weight: 1.0 }
+      - { parent: "Q1_2026", child: "Feb_2026", weight: 1.0 }
+      - { parent: "Q1_2026", child: "Mar_2026", weight: 1.0 }
+      - { parent: "Q2_2026", child: "Apr_2026", weight: 1.0 }
+      - { parent: "Q2_2026", child: "May_2026", weight: 1.0 }
+      - { parent: "Q2_2026", child: "Jun_2026", weight: 1.0 }
+      - { parent: "Q3_2026", child: "Jul_2026", weight: 1.0 }
+      - { parent: "Q3_2026", child: "Aug_2026", weight: 1.0 }
+      - { parent: "Q3_2026", child: "Sep_2026", weight: 1.0 }
+      - { parent: "Q4_2026", child: "Oct_2026", weight: 1.0 }
+      - { parent: "Q4_2026", child: "Nov_2026", weight: 1.0 }
+      - { parent: "Q4_2026", child: "Dec_2026", weight: 1.0 }
+
+  - dimension: "Channel"
+    name: "Grouping"
+    default: true
+    edges:
+      - { parent: "All_Channels", child: "Paid_Media", weight: 1.0 }
+      - { parent: "All_Channels", child: "Owned_Earned", weight: 1.0 }
+      - { parent: "Paid_Media", child: "Paid_Search", weight: 1.0 }
+      - { parent: "Paid_Media", child: "Paid_Social", weight: 1.0 }
+      - { parent: "Paid_Media", child: "Display", weight: 1.0 }
+      - { parent: "Owned_Earned", child: "Email", weight: 1.0 }
+      - { parent: "Owned_Earned", child: "Organic", weight: 1.0 }
+
+  - dimension: "Market"
+    name: "Geographic"
+    default: true
+    edges:
+      - { parent: "USA", child: "Southeast", weight: 1.0 }
+      - { parent: "USA", child: "Northeast", weight: 1.0 }
+      - { parent: "Southeast", child: "Florida", weight: 1.0 }
+      - { parent: "Southeast", child: "Georgia", weight: 1.0 }
+      - { parent: "Southeast", child: "North_Carolina", weight: 1.0 }
+      - { parent: "Northeast", child: "New_York_State", weight: 1.0 }
+      - { parent: "Northeast", child: "Massachusetts", weight: 1.0 }
+      - { parent: "Florida", child: "Tampa", weight: 1.0 }
+      - { parent: "Florida", child: "Orlando", weight: 1.0 }
+      - { parent: "Florida", child: "Miami", weight: 1.0 }
+      - { parent: "Georgia", child: "Atlanta", weight: 1.0 }
+      - { parent: "North_Carolina", child: "Charlotte", weight: 1.0 }
+      - { parent: "New_York_State", child: "New_York_City", weight: 1.0 }
+      - { parent: "Massachusetts", child: "Boston", weight: 1.0 }
+
+# Measures.
+# Inputs first (matches the Rust fixture's element-order convention), then
+# Derived. Aggregation methods mirror `mc_fixtures::build_measure_dim`:
+#   - Spend, Clicks, Leads, Customers, Revenue, Gross_Profit: Sum
+#   - CPC: WeightedAverage by Spend
+#   - CVR: WeightedAverage by Clicks
+#   - Close_Rate: WeightedAverage by Leads
+#   - AOV: WeightedAverage by Customers
+#   - COGS_Rate: WeightedAverage by Revenue
+measures:
+  - { name: "Spend", description: "Marketing dollars allocated to a channel/market/period (USD).", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "CPC", description: "Cost per click (USD/click); rolls up as a Spend-weighted average.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Spend" }
+  - { name: "CVR", description: "Click-to-lead conversion rate (leads/click); rolls up as a Clicks-weighted average.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Clicks" }
+  - { name: "Close_Rate", description: "Lead-to-customer close rate (customers/lead); rolls up as a Leads-weighted average.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Leads" }
+  - { name: "AOV", description: "Average order value per customer (USD); rolls up as a Customers-weighted average.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Customers" }
+  - { name: "COGS_Rate", description: "Cost-of-goods-sold rate (fraction of revenue); rolls up as a Revenue-weighted average.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Revenue" }
+  - { name: "Clicks", description: "Derived click volume; computed as Spend / CPC at the leaf level.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "Leads", description: "Derived lead volume; computed as Clicks * CVR at the leaf level.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "Customers", description: "Derived customer count; computed as Leads * Close_Rate at the leaf level.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "Revenue", description: "Derived top-line revenue (USD); computed as Customers * AOV at the leaf level.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "Gross_Profit", description: "Derived gross profit (USD); Revenue * (1 - COGS_Rate) at the leaf level.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+
+# Rules — friendly formula strings per Phase 3D (ADR-0007).
+# Formulas compile to the same `ParsedRuleBody` AST a structured tree
+# would produce; both authoring forms are accepted indefinitely. The
+# structured s-expression form is still used by Phase 3B/3C lint and
+# fixture-validator fixtures for backwards-compat regression coverage.
+rules:
+  - name: "rule_clicks"
+    description: "Clicks = Spend / CPC — translate marketing dollars into click volume."
+    target_measure: "Clicks"
+    scope: "AllLeaves"
+    body: "Spend / CPC"
+    declared_dependencies: ["Spend", "CPC"]
+
+  - name: "rule_leads"
+    description: "Leads = Clicks * CVR — apply the click-to-lead conversion rate."
+    target_measure: "Leads"
+    scope: "AllLeaves"
+    body: "Clicks * CVR"
+    declared_dependencies: ["Clicks", "CVR"]
+
+  - name: "rule_customers"
+    description: "Customers = Leads * Close_Rate — apply the lead-to-customer close rate."
+    target_measure: "Customers"
+    scope: "AllLeaves"
+    body: "Leads * Close_Rate"
+    declared_dependencies: ["Leads", "Close_Rate"]
+
+  - name: "rule_revenue"
+    description: "Revenue = Customers * AOV — top-line revenue from new customers."
+    target_measure: "Revenue"
+    scope: "AllLeaves"
+    body: "Customers * AOV"
+    declared_dependencies: ["Customers", "AOV"]
+
+  - name: "rule_gross_profit"
+    description: "Gross_Profit = Revenue * (1 - COGS_Rate) — revenue net of cost of goods sold."
+    target_measure: "Gross_Profit"
+    scope: "AllLeaves"
+    body: "Revenue * (1 - COGS_Rate)"
+    declared_dependencies: ["Revenue", "COGS_Rate"]
+
+# Inline goldens — brief §4.5.1 anchor values byte-for-byte (epsilon
+# tolerance is reserved for ratio measures whose closed-form expansion
+# carries a small floating-point tail).
+#
+# Anchor coords from `canonical_inputs_for(time_idx, channel_idx, market_idx)`:
+#   Mar_2026 / Paid_Search / Tampa  ⇒ t=3, c=0, m=0
+#     spend = 10_000 + 500*3 = 11_500.0
+#     cpc   = 1.50
+#     cvr   = 0.020
+#     close = 0.10
+#     aov   = 200.0
+#     cogs  = 0.30
+#     clicks = 11_500 / 1.50 = 7_666.666666…
+#     leads  = clicks * cvr = 153.333333…
+#     customers = leads * close = 15.333333…
+#     revenue = customers * aov = 3_066.666666…
+#     gp = revenue * (1 - cogs) = 2_146.666666…
+golden_tests:
+  - name: "spend_input_anchor_mar_paid_search_tampa"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2026"
+      Channel: "Paid_Search"
+      Market: "Tampa"
+      Measure: "Spend"
+    expect: 11500.0
+
+  - name: "cpc_input_anchor_mar_paid_search_tampa"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2026"
+      Channel: "Paid_Search"
+      Market: "Tampa"
+      Measure: "CPC"
+    expect: 1.50
+
+  - name: "aov_input_anchor_mar_paid_search_tampa"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2026"
+      Channel: "Paid_Search"
+      Market: "Tampa"
+      Measure: "AOV"
+    expect: 200.0
+
+  - name: "clicks_derived_anchor_mar_paid_search_tampa"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2026"
+      Channel: "Paid_Search"
+      Market: "Tampa"
+      Measure: "Clicks"
+    expect_within_epsilon: { value: 7666.666666666667, epsilon: 1.0e-9 }
+
+  - name: "leads_derived_anchor_mar_paid_search_tampa"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2026"
+      Channel: "Paid_Search"
+      Market: "Tampa"
+      Measure: "Leads"
+    expect_within_epsilon: { value: 153.33333333333334, epsilon: 1.0e-9 }
+
+  - name: "customers_derived_anchor_mar_paid_search_tampa"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2026"
+      Channel: "Paid_Search"
+      Market: "Tampa"
+      Measure: "Customers"
+    expect_within_epsilon: { value: 15.333333333333334, epsilon: 1.0e-9 }
+
+  - name: "revenue_derived_anchor_mar_paid_search_tampa"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2026"
+      Channel: "Paid_Search"
+      Market: "Tampa"
+      Measure: "Revenue"
+    expect_within_epsilon: { value: 3066.6666666666674, epsilon: 1.0e-9 }
+
+  - name: "gross_profit_derived_anchor_mar_paid_search_tampa"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2026"
+      Channel: "Paid_Search"
+      Market: "Tampa"
+      Measure: "Gross_Profit"
+    expect_within_epsilon: { value: 2146.666666666667, epsilon: 1.0e-9 }
+
+  # One consolidation-level golden to exercise hierarchy rollup of an
+  # input measure: Q1_2026 Spend at Paid_Search / Tampa = sum of
+  # Jan/Feb/Mar 2026 Spend at the same leaf channel × market.
+  #   Jan: t=1 ⇒ 10_000 + 500*1 = 10_500
+  #   Feb: t=2 ⇒ 10_000 + 500*2 = 11_000
+  #   Mar: t=3 ⇒ 10_000 + 500*3 = 11_500
+  #   Total = 33_000
+  - name: "spend_consolidated_q1_paid_search_tampa"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Q1_2026"
+      Channel: "Paid_Search"
+      Market: "Tampa"
+      Measure: "Spend"
+    expect: 33000.0
