@@ -1,7 +1,7 @@
-# ADR-0003: LNM substrate — AI-native planning kernel as the product vision
+# ADR-0009: LNM substrate — AI-native planning kernel as the product vision
 
 **Status:** Accepted
-**Date:** 2026-05-01
+**Date:** 2026-05-01 (originally drafted as ADR-0003 on macmini2; renumbered to ADR-0009 on 2026-05-03 to avoid clash with the workload-sketch ADR-0003 that landed first on the primary branch — content unchanged)
 **Deciders:** Project owner + implementing instance
 **Phase:** spans 3–7 (sets the strategic framing for every phase past Phase 2)
 
@@ -21,7 +21,7 @@ Two recent external sources crystallized the framing.
 
 **Claude Code's TM1-LOC analysis** ([`../external-conversations/2026-05-01-claude-code-tm1-loc-analysis.md`](../external-conversations/2026-05-01-claude-code-tm1-loc-analysis.md)) sized the work: TM1's full enterprise suite is 3–5M LOC of accumulated 40-year compatibility surface. The **actual analytic engine work** in TM1 is 150–250K LOC. MarketingCubes targets 50–100K LOC at LNM-substrate maturity (Phase 5), which is 3–7% of TM1's full suite and matches the scale of SQLite / early DuckDB / Sled / TigerBeetle / Cube.dev core. *Smaller is the whole point*: the LOC gap is from consciously not building enterprise IT integration, multi-client SDKs, multiple UI surfaces, replication, MDX, TI language, and four decades of edge-case patches.
 
-A separate exploration considered using the claw-core NBA totals pricing engine (`~/Projects/claw-core`) as a second fixture / planning workflow demonstrator. Captured in [`../research-notes/dual-fixture-claw-stress-test.md`](../research-notes/dual-fixture-claw-stress-test.md). Conclusion: claw could be a tenant of the LNM substrate (Phase 5+) only if the kernel's `Expr` grammar is extended (`NormCdf` and similar transcendentals), but it is not on the critical path. Decision-quality edge in claw — Kelly trajectories, strategy portfolio scenarios — does map onto MC's planning superpowers; model-quality edge (predictions, calibration) does not. ADR-0003 records the framing; the claw decision is downstream and ADR-worthy on its own when/if Phase 5+ tenants are scoped.
+A separate exploration considered using the claw-core NBA totals pricing engine (`~/Projects/claw-core`) as a second fixture / planning workflow demonstrator. Captured in [`../research-notes/dual-fixture-claw-stress-test.md`](../research-notes/dual-fixture-claw-stress-test.md). Conclusion: claw could be a tenant of the LNM substrate (Phase 5+) only if the kernel's `Expr` grammar is extended (`NormCdf` and similar transcendentals), but it is not on the critical path. Decision-quality edge in claw — Kelly trajectories, strategy portfolio scenarios — does map onto MC's planning superpowers; model-quality edge (predictions, calibration) does not. ADR-0009 records the framing; the claw decision is downstream and ADR-worthy on its own when/if Phase 5+ tenants are scoped.
 
 The strategic question this ADR answers: **what *is* MarketingCubes V2 as a product, beyond the Phase 1 kernel?** The answer determines what every subsequent phase has to preserve as an invariant.
 
@@ -69,7 +69,7 @@ The strategic question this ADR answers: **what *is* MarketingCubes V2 as a prod
 
 - **Reversing the three-layer principle is one-way past Phase 3 ship.** Once Layer 2's schema lands and the LLM is trained against it, walking back to "LLM writes Rust directly" or "LLM mutates cube internals" invalidates everything Phase 3 built. The decision is therefore one-way at Phase 3A's commit; it is fully reversible before then.
 - **Reversing the "AI-native" framing in favor of "TM1 clone" is reversible at any time** but means competing with IBM on their 40-year-accumulated home turf. Cheap to reverse strategically, expensive to reverse competitively.
-- **The LLM-never-writes-Rust rule is permanent.** Even if some future operation seems to call for it (e.g., generating custom kernel optimizations per customer), the right path is a `mc-core` extension exposed via Layer 2, not an LLM-to-Rust escape hatch. Phase 7 productization MUST NOT cross this line; ADR-0003 supersedes any later decision that tries to.
+- **The LLM-never-writes-Rust rule is permanent.** Even if some future operation seems to call for it (e.g., generating custom kernel optimizations per customer), the right path is a `mc-core` extension exposed via Layer 2, not an LLM-to-Rust escape hatch. Phase 7 productization MUST NOT cross this line; ADR-0009 supersedes any later decision that tries to.
 
 ## Alternatives considered
 
