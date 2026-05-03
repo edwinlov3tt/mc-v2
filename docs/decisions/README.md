@@ -34,6 +34,7 @@ Use [`../templates/adr.md`](../templates/adr.md) as the starting point.
 | [0005](./0005-phase-3b-model-qa-linter-diagnostics.md) | Phase 3B — Model QA, Linter, and Diagnostics | Accepted (with acceptance amendments) |
 | [0006](./0006-phase-3c-model-test-fixtures.md) | Phase 3C — Model Test Fixtures and Input Sets | Accepted (with acceptance amendments; redefines Phase 3C from formulas to fixtures, swaps formulas to Phase 3D) |
 | [0007](./0007-phase-3d-friendly-formula-syntax.md) | Phase 3D — Friendly Formula Syntax | Accepted (with acceptance amendments; first ADR drafted under the "handoff-first parallel flow" — see [`process-notes.md`](../process-notes.md) §1 for when to use which flow) |
+| [0008](./0008-phase-4-llm-authoring-and-plugin-ecosystem.md) | Phase 4 — LLM-Assisted Authoring + Mosaic Plugin Ecosystem | Accepted (with 9 acceptance amendments; major restructure dropped the Rust LLM client crate — Phase 4B is Python reference adapters under `mosaic-plugin/examples/adapters/`; plugin = institutional knowledge / actual moat) |
 
 ## When to write an ADR
 

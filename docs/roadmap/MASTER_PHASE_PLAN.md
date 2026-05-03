@@ -4,7 +4,7 @@
 >
 > Read this before inventing a phase name or starting work that isn't already on the list. If a new phase is needed and it isn't here, add it here first (and link the ADR explaining the decision).
 
-**Last updated:** 2026-05-02 (post-Phase 2C)
+**Last updated:** 2026-05-03 (post-Phase 4A)
 **Maintained by:** project lead. New sub-phases require an ADR in [`../decisions/`](../decisions/).
 
 ---
@@ -46,7 +46,8 @@ Productization beyond the first usable product (multi-tenancy, customer-facing a
 | **3C** | Model Test Fixtures and Input Sets — `canonical_inputs` + `test_fixtures`, sibling CSV + tabular inline YAML, 14 new validators (MC2012–MC2025), `mc model test --fixture <name>` (per ADR-0006) | **complete** (report at [`../reports/phase-3c-completion-report.md`](../reports/phase-3c-completion-report.md)) | `phase-3c-fixtures-and-inputs` (`8d2691a`) |
 | **3D** | Friendly formula syntax — `Revenue = Customers * AOV` strings compile to `ParsedRuleBody`'s structured tree (per ADR-0007; originally ADR-0004's Phase 3C — renamed to 3D per ADR-0006 roadmap impact) | **complete** (report at [`../reports/phase-3d-completion-report.md`](../reports/phase-3d-completion-report.md)) | `phase-3d-friendly-formula-syntax` (`d5ab355`) |
 | **3E–3N** | Further model layer extensions (TBD) | not started | — |
-| **4** | LLM-assisted model authoring | not started | — |
+| **4A** | LLM-assisted authoring — Mosaic Claude Code plugin (skills + agents + commands + MCP server + marketing-mix domain schema) per ADR-0008 | **complete** (report at [`../reports/phase-4a-completion-report.md`](../reports/phase-4a-completion-report.md)) | `phase-4a-mosaic-plugin` (`b1eeeab`) |
+| **4B** | Python reference adapters under `mosaic-plugin/examples/adapters/` (`anthropic-python/` + `openai-python/` ~150 lines each) | **proposed** (next-to-start) | — |
 | **5** | Data integration & actuals | not started | — |
 | **6** | UI & internal app proofs (incl. internal Media Partner model proof) | not started | — |
 | **7** | Productization (customer-facing Media Partner App + multi-tenancy) | not started | — |
@@ -220,18 +221,35 @@ Likely follow-ons (placeholders, do not pre-name without an ADR):
 
 ---
 
-## Phase 4 — LLM-Assisted Model Authoring
+## Phase 4 — LLM-Assisted Authoring + Mosaic Plugin Ecosystem
 
-> A user describes a planning model in natural language; the system produces a model file (Phase 3 format) that the kernel accepts. Strictly post-Phase-3.
+> A user describes a planning model in natural language; the system produces a Mosaic YAML file (per the Phase 3A schema, Phase 3D formula syntax) that passes `mc model validate / lint / test`. Per [ADR-0008](../decisions/0008-phase-4-llm-authoring-and-plugin-ecosystem.md), the centerpiece is the **Mosaic plugin** — a portable knowledge package (skills + agents + commands + MCP server + hooks + examples) that any AI agent can consume. The plugin is institutional knowledge in agent-framework-agnostic form. **Decomposed into Phase 4A + Phase 4B; Phase 4C dissolved per "no vague TBD buckets" rule.**
 
-- **Status:** not started.
-- **Purpose:** Lower the authoring bar from "write Rust" / "write a config file" to "describe what you want."
-- **What it proves:** A non-engineer operator can express a planning intent and the system produces a kernel-loadable cube without hand-editing config.
-- **Deliverables (anticipated, high-level):** a prompting layer that maps free-text descriptions to Phase 3 model files; a validation loop that surfaces schema errors back to the LLM (or user) in plain language; a curated test set of "planning intent → expected cube shape" pairs.
-- **Acceptance gates (anticipated):** the test set's intent → cube shape pairs round-trip with ≥ N% accuracy; no LLM output bypasses the Phase 3 parser; schema errors are surfaced with file/line context.
-- **Out of scope (explicit):** any tool that lets the LLM write directly to `mc-core/src/`; any tool that bypasses the Phase 3 schema validator; cost/latency optimization of the LLM path (defer to Phase 7 productization).
+### 4A — Mosaic Claude Code plugin (complete)
 
-**Why this comes after Phase 3.** Without Phase 3, the LLM has nothing concrete to emit. Phase 3's schema is the LLM's grounding rail.
+- **Status:** **complete** 2026-05-03, committed at `b1eeeab` (tag `phase-4a-mosaic-plugin`). Report at [`../reports/phase-4a-completion-report.md`](../reports/phase-4a-completion-report.md). Handoff at [`../handoffs/phase-4a-handoff.md`](../handoffs/phase-4a-handoff.md). [ADR-0008](../decisions/0008-phase-4-llm-authoring-and-plugin-ecosystem.md) Accepted 2026-05-03 with 9 acceptance amendments.
+- **Purpose:** Ship the Mosaic Claude Code plugin so that any Claude Code instance with the plugin installed can author a Mosaic YAML model from a natural-language prompt. The plugin is the source-of-truth knowledge package; future SDK adapters (Phase 4B) consume the same content.
+- **What it proved:** the in-session end-to-end proof produced `MyCo_Marketing_Q1_2026` (a 3-channel × 3-market × Q1 marketing-mix model materially different from Acme) from plugin content alone — converged in two iterations to validate-clean, lint-clean (zero warnings), test-pass (3/3 goldens). Full transcript + YAML at [`../reports/phase-4a-proof/`](../reports/phase-4a-proof/). Real fresh-instance verification deferred to user post-review (the in-session limitation: a separate Claude Code session must install the plugin to fully close the headline gate). The plugin's structured knowledge (skills + agents + commands + MCP server) demonstrably suffices to embue an LLM with Mosaic-authoring competence.
+- **Deliverables shipped:** `mosaic-plugin/` directory at workspace root with manifest at `.claude-plugin/plugin.json` (canonical Claude Code shape per cached vercel/0.40.1 + superpowers/5.0.7 references) + skills/ (authoring, debugging, schema-design, formulas, testing, marketing-mix domain — 6 total) + agents/ (mosaic-architect, mosaic-author, mosaic-debugger, mosaic-validator — 4 total) + commands/ (mosaic-init, validate, inspect, lint, test, author — 6 total; **/mosaic-explain deferred to Phase 4A.2** — needs `mc model trace` CLI verb that doesn't exist yet) + .mcp.json + hooks/ (placeholder per Phase 4A.1) + examples/models/ (Acme YAML + CSV byte-identical to `crates/mc-model/examples/`) + examples/adapters/ (Phase 4B placeholder). Single Rust addition: `mc-cli` gains `mc mcp` subcommand at `crates/mc-cli/src/mcp.rs` (318-line hand-rolled JSON-RPC parser body + 66-line emitter; over the 250 trigger #10 budget, user-authorized as scope-specific decision; reuses Phase 3B's `diagnostics_to_json` envelope verbatim; no new deps).
+- **Acceptance gates met:** all 13 acceptance items in [`../reports/phase-4a-completion-report.md`](../reports/phase-4a-completion-report.md) §5. Locked surfaces: `git diff 5ea0f02 -- crates/mc-core/ crates/mc-fixtures/ crates/mc-model/` returns 0 lines (Phase 4A added zero changes to the kernel/fixtures/model layer; the inherited 55-line diff vs `phase-3d-friendly-formula-syntax` is entirely the rename commit's Cargo.toml/lib.rs description updates). Test count: 396 → **416** (+20 from Phase 4A). 10/10 deterministic. Toolchain unchanged at Rust 1.78. Cargo.lock pins (`clap`, `clap_lex`, `half`, `indexmap`, `hashbrown`) all unchanged. JSON envelope `schema_version` stays `"1.0"`. Headline (in-session best-effort): a fresh-reader LLM produced a working marketing-mix YAML from the plugin's content alone; full real-environment verification = user post-review step.
+- **Out of scope (held):** Python adapters (Phase 4B); additional domain schemas beyond marketing-mix (future demand-driven phases); a Rust LLM client (`mc-author`); SDK deps in the Rust workspace; tokio / async / reqwest; toolchain bump; UI; actuals; model-backed cells.
+- **Phase 4A.1 candidate (small amendment):** ship the two hooks (`pre-commit-lint.json`, `post-edit-validate.json`) once the canonical Claude Code hook-spec format is verified against a live install. Plus skill-example sweep for any remaining mismatched-shape examples.
+- **Phase 4A.2 candidate (small amendment):** add `mc model trace <coord>` CLI verb + the `/mosaic-explain` slash command that consumes it (the kernel has rule-chain trace per PERF.md §6.4; surfacing as CLI requires touching `mc-model` which Phase 4A's locked-surfaces rule blocked).
+
+### 4B — Python reference adapters (proposed)
+
+- **Status:** **proposed.** Promoted from `planned` once Phase 4A shipped.
+- **Purpose:** Demonstrate that the Mosaic plugin's content is portable across LLM environments by shipping working Python reference adapters that consume the same plugin and produce equivalent results.
+- **Deliverables (planned):** two Python adapters under `mosaic-plugin/examples/adapters/`:
+  - `anthropic-python/` — ~150 line reference iteration loop using the official Anthropic Python SDK
+  - `openai-python/` — ~150 line reference iteration loop using the official OpenAI Python SDK
+  Each reads the plugin's `skills/`, `agents/`, `commands/`, `examples/`; calls the provider's API; runs the iteration loop against `mc-cli`'s diagnostic JSON envelope (Phase 3B contract).
+- **Acceptance gates (planned):** `python examples/adapters/anthropic-python/author.py "marketing-mix for 5-channel B2C SaaS"` AND `python examples/adapters/openai-python/author.py "..."` both produce a YAML that passes `mc model validate/lint/test`. Same plugin content drives both adapters with no provider-specific tags in `skills/` / `agents/` / `commands/`.
+- **Out of scope (explicit):** TypeScript adapters; Codex / Gemini / Mistral / Ollama adapters; cost tracking; prompt hardening; production-quality polish (rate limit handling, network failures, partial-completion resumption); schema marketplace. All deferred to demand-driven future phases.
+
+**Why this comes after Phase 3.** Without Phase 3 (3A schema, 3B diagnostics, 3C fixtures, 3D formula syntax), the LLM has nothing concrete to emit. Phase 3's schema + diagnostic codes (MC1xxx–MC4xxx) are the LLM's grounding rails.
+
+**No Phase 4C.** Per [`../process-notes.md`](../process-notes.md) "no vague TBD buckets" rule + ADR-0008 Decision 7. After 4B ships, next phase is Phase 5 (actuals). Future schemas / providers / production polish / schema marketplace are demand-driven phases (named when a real customer or proof requires them).
 
 ---
 
