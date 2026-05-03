@@ -5,6 +5,7 @@
 **Handoff:** [`handoffs/phase-3b-handoff.md`](../handoffs/phase-3b-handoff.md)
 **Operating manual:** [`CLAUDE.md`](../../CLAUDE.md)
 **Initial commit (parent):** `a4fa6dc` — *docs: ADR-0005 Accepted (Phase 3B Model QA + Linter + Diagnostics) + handoff drafted*
+**Phase 3B commit / tag:** `f4f7fa8` (tag `phase-3b-lint-and-diagnostics`) — committed 2026-05-03 after PM/spec-maintainer signoff
 **Inherited Phase 3A tag:** `phase-3a-model-definition-layer` (`603c537`)
 **Toolchain:** Rust 1.78 (pinned in [`../../rust-toolchain.toml`](../../rust-toolchain.toml)) — **no bump**
 
@@ -362,4 +363,4 @@ Not scheduled. Surfaced opportunities:
 
 ---
 
-*Phase 3B ships pending review. The user reviews this report before committing or tagging.*
+*Phase 3B shipped 2026-05-03 at `f4f7fa8` (tag `phase-3b-lint-and-diagnostics`) after project owner review. The implementing Claude Code instance honored the handoff's "You did NOT commit, tag, or push" rule — the user did the commit + tag step after review.*
