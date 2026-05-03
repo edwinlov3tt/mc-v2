@@ -29,6 +29,8 @@ Use [`../templates/adr.md`](../templates/adr.md) as the starting point.
 |---|---|---|
 | [0001](./0001-phase-1-scope.md) | Phase 1 scope: smallest kernel that runs the Acme demo | Accepted |
 | [0002](./0002-perf-assertions-in-benchmarks-not-tests.md) | Performance assertions belong in criterion benchmarks, not in `cargo test` | Accepted |
+| [0003](./0003-workload-sketch.md) | Workload sketch & perception thresholds | Accepted — Provisional (sunset 2026-11-01) |
+| [0004](./0004-phase-3a-model-definition-format.md) | Phase 3A model-definition format & parser scope | Accepted (with acceptance amendments) |
 
 ## When to write an ADR
 
