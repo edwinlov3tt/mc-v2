@@ -34,8 +34,10 @@
 #![cfg_attr(not(test), deny(clippy::expect_used))]
 
 pub mod compile;
+pub mod csv;
 pub mod diagnostic;
 pub mod error;
+pub mod inputs;
 pub mod inspect;
 pub mod lint;
 pub mod parse;
@@ -50,23 +52,40 @@ pub use diagnostic::{
     ModelPath, Severity, SCHEMA_VERSION,
 };
 pub use error::{Error, ParseError, ParseErrorKind, Span, ValidationError};
+pub use inputs::{
+    apply_canonical_inputs, apply_fixture, resolve_inputs, ResolvedFixture, ResolvedInputSet,
+    ResolvedInputs, ResolvedRow, VALUE_COLUMN,
+};
 pub use inspect::{inspect_json, inspect_text, inspect_text_with_diagnostics, ModelSummary};
 pub use lint::{lint, lint_with_file};
 pub use parse::parse;
 pub use schema::{
-    ParsedDimension, ParsedElement, ParsedGoldenTest, ParsedHierarchy, ParsedHierarchyEdge,
-    ParsedMeasure, ParsedMetadata, ParsedModel, ParsedRule, ParsedRuleBody, ParsedScalar,
-    ValidatedModel,
+    ParsedDimension, ParsedElement, ParsedFixture, ParsedGoldenTest, ParsedHierarchy,
+    ParsedHierarchyEdge, ParsedInlineRows, ParsedInputSet, ParsedMeasure, ParsedMetadata,
+    ParsedModel, ParsedRowCell, ParsedRule, ParsedRuleBody, ParsedScalar, ValidatedModel,
 };
 pub use validate::validate;
 
 /// Load a YAML model file from disk and produce a fully-built `Cube` plus
 /// the auxiliary `ModelRefs` needed to build coordinates.
 ///
-/// All errors (parse, validate, compile) are returned via the unified
-/// [`Error`] enum; multiple errors collected during validation are
-/// surfaced as `Error::Validation(Vec<ValidationError>)` per ADR-0004
-/// Decision 6 ("all errors return at once").
+/// Phase 3C extends this to run the four-stage pipeline:
+/// **parse → validate → resolve_inputs → compile**. Resolve-inputs is a
+/// named stage that reads any sibling CSV files declared by
+/// `canonical_inputs:` / `test_fixtures:`, canonicalizes their paths
+/// relative to the YAML model file's directory, and type-checks rows
+/// against measure declarations. Errors from resolve-inputs surface as
+/// `Error::Validation` (the MC2012–MC2025 codes) so the diagnostic
+/// envelope shape is unchanged.
+///
+/// `load()` does **not** apply the resolved inputs to the cube — the
+/// returned `CompiledCube.cube` is empty of input data. `mc model test`
+/// (the only consumer that needs populated cells) calls
+/// [`resolve_inputs`] + [`apply_canonical_inputs`] / [`apply_fixture`]
+/// separately.
+///
+/// All errors (parse, validate, resolve_inputs, compile) are returned
+/// via the unified [`Error`] enum.
 pub fn load(path: impl AsRef<Path>) -> Result<CompiledCube, Vec<Error>> {
     let path_ref = path.as_ref();
     let bytes = match std::fs::read_to_string(path_ref) {
@@ -78,14 +97,33 @@ pub fn load(path: impl AsRef<Path>) -> Result<CompiledCube, Vec<Error>> {
             }]);
         }
     };
-    load_str(&bytes, Some(path_ref.display().to_string()))
+    let parsed =
+        parse(&bytes, Some(path_ref.display().to_string())).map_err(|e| vec![Error::Parse(e)])?;
+    let validated = validate(parsed)
+        .map_err(|errs| errs.into_iter().map(Error::Validation).collect::<Vec<_>>())?;
+    // Phase 3C resolve-inputs stage. We discard the resolved data here
+    // (load() doesn't apply inputs to the cube); only the validation
+    // side-effects matter at this layer.
+    if let Err(errs) = resolve_inputs(&validated, path_ref.parent()) {
+        return Err(errs.into_iter().map(Error::Validation).collect());
+    }
+    compile(validated).map_err(|e| vec![Error::Compile(e.to_string())])
 }
 
-/// Parse + validate + compile from an in-memory YAML string. Used by tests
-/// and by future Phase 4 LLM-authoring paths that don't have a file path.
+/// Parse + validate + (resolve_inputs with no file context) + compile
+/// from an in-memory YAML string. Used by tests and by future Phase 4
+/// LLM-authoring paths that don't have a file path.
+///
+/// Because there is no file context, any `canonical_inputs:` /
+/// `test_fixtures:` declaration that uses `source:` will fail with
+/// MC2022 (`reason: "no file context: ..."`). Inline-only declarations
+/// resolve cleanly.
 pub fn load_str(yaml: &str, source_label: Option<String>) -> Result<CompiledCube, Vec<Error>> {
     let parsed = parse(yaml, source_label).map_err(|e| vec![Error::Parse(e)])?;
     let validated = validate(parsed)
         .map_err(|errs| errs.into_iter().map(Error::Validation).collect::<Vec<_>>())?;
+    if let Err(errs) = resolve_inputs(&validated, None) {
+        return Err(errs.into_iter().map(Error::Validation).collect());
+    }
     compile(validated).map_err(|e| vec![Error::Compile(e.to_string())])
 }

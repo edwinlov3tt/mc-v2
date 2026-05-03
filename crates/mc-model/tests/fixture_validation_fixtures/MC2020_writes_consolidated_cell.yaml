@@ -1,0 +1,32 @@
+# MC2020 — row writes 'Roll_Up' which is a hierarchy parent (consolidated).
+# Time has elements [Jan, Feb, Roll_Up] with Roll_Up as parent of both leaves.
+model_format_version: 1
+metadata:
+  name: "MC2020_neg"
+  description: "x"
+dimensions:
+  - { name: "Scenario", description: "x", kind: "Scenario", elements: [{ name: "Base", scenario_meta: "Default" }] }
+  - { name: "Version",  description: "x", kind: "Version",  elements: [{ name: "Working", version_state: "Draft" }] }
+  - name: "Time"
+    description: "x"
+    kind: "Standard"
+    elements:
+      - { name: "Jan" }
+      - { name: "Feb" }
+      - { name: "Roll_Up" }
+  - { name: "Measure", description: "x", kind: "Measure", elements: [] }
+hierarchies:
+  - dimension: "Time"
+    name: "h"
+    default: true
+    edges:
+      - { parent: "Roll_Up", child: "Jan", weight: 1.0 }
+      - { parent: "Roll_Up", child: "Feb", weight: 1.0 }
+measures:
+  - { name: "Spend", description: "x", role: "Input", data_type: "F64", aggregation: "Sum" }
+rules: []
+canonical_inputs:
+  inline:
+    rows:
+      - ["Base", "Working", "Roll_Up", "Spend", 100.0]
+  columns: ["Scenario", "Version", "Time", "Measure", "value"]

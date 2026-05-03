@@ -13,6 +13,19 @@
 
 model_format_version: 1
 
+# Phase 3C: canonical input data lives in a sibling CSV (2,520 rows;
+# 1 scenario × 1 version × 12 months × 5 channels × 7 markets ×
+# 6 input measures). The CSV was generated from
+# `mc_fixtures::canonical_inputs_for(...)` so YAML+CSV path == Rust
+# fixture path bit-for-bit (see tests/equivalence_acme.rs).
+#
+# `mc model test` applies these via cube.write before running goldens;
+# `mc model validate / inspect / lint` and `mc demo --model` validate
+# the declaration but do not write anything.
+canonical_inputs:
+  source: "acme.inputs.csv"
+  columns: ["Scenario", "Version", "Time", "Channel", "Market", "Measure", "value"]
+
 metadata:
   name: "Acme_MarketingFinance"
   description: "Brief §4 reference cube — 6 dims × 11 measures × 5 rules × 2520 input cells"

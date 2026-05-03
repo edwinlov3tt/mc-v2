@@ -1,0 +1,20 @@
+# MC2017 — golden references 'ghost' which isn't in test_fixtures.
+model_format_version: 1
+metadata:
+  name: "MC2017_neg"
+  description: "x"
+dimensions:
+  - { name: "Scenario", description: "x", kind: "Scenario", elements: [{ name: "Base", scenario_meta: "Default" }] }
+  - { name: "Version",  description: "x", kind: "Version",  elements: [{ name: "Working", version_state: "Draft" }] }
+  - { name: "Measure",  description: "x", kind: "Measure",  elements: [] }
+measures:
+  - { name: "Spend", description: "x", role: "Input", data_type: "F64", aggregation: "Sum" }
+rules: []
+golden_tests:
+  - name: "g1"
+    coord:
+      Scenario: "Base"
+      Version: "Working"
+      Measure: "Spend"
+    expect: 100.0
+    fixture: "ghost"

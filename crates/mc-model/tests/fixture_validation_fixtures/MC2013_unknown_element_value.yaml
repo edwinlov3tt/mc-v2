@@ -1,0 +1,18 @@
+# MC2013 — column 'Scenario' is correctly named but row's value 'Bse'
+# isn't an element of the Scenario dim ('Base' is).
+model_format_version: 1
+metadata:
+  name: "MC2013_neg"
+  description: "x"
+dimensions:
+  - { name: "Scenario", description: "x", kind: "Scenario", elements: [{ name: "Base", scenario_meta: "Default" }] }
+  - { name: "Version",  description: "x", kind: "Version",  elements: [{ name: "Working", version_state: "Draft" }] }
+  - { name: "Measure",  description: "x", kind: "Measure",  elements: [] }
+measures:
+  - { name: "Spend", description: "x", role: "Input", data_type: "F64", aggregation: "Sum" }
+rules: []
+canonical_inputs:
+  inline:
+    rows:
+      - ["Bse", "Working", "Spend", 100.0]
+  columns: ["Scenario", "Version", "Measure", "value"]

@@ -16,9 +16,9 @@
 use mc_core::{CellValue, ScalarValue, TraceNode, TraceOp, WriteIntent, WritebackRequest};
 use mc_fixtures::{build_acme_cube, coord, write_canonical_inputs, AcmeRefs};
 use mc_model::{
-    diagnostics_to_json, diagnostics_to_text, inspect_json, inspect_text_with_diagnostics,
-    lint_with_file, sort_diagnostics, Diagnostic, ModelPath, Severity, ValidatedModel,
-    ValidationError, SCHEMA_VERSION,
+    apply_canonical_inputs, apply_fixture, diagnostics_to_json, diagnostics_to_text, inspect_json,
+    inspect_text_with_diagnostics, lint_with_file, resolve_inputs, sort_diagnostics, Diagnostic,
+    ModelPath, Severity, ValidatedModel, ValidationError, SCHEMA_VERSION,
 };
 
 fn main() {
@@ -59,11 +59,15 @@ fn print_help() {
     println!("    mc model validate <path> [--format text|json]");
     println!("    mc model inspect  <path> [--format text|json]");
     println!("    mc model lint     <path> [--format text|json] [--deny-warnings]");
-    println!("    mc model test     <path> [--format text|json]");
+    println!("    mc model test     <path> [--format text|json] [--fixture <name>]");
     println!();
     println!("Per ADR-0005: lint is advisory by default; --deny-warnings flips lint");
     println!("warnings to a non-zero CLI exit code. mc demo --model does NOT run");
     println!("goldens — that is exclusively mc model test's responsibility.");
+    println!();
+    println!("Per ADR-0006 Decision 7: --fixture <name> filters `mc model test` to");
+    println!("only the goldens whose `fixture:` field equals that name; other goldens");
+    println!("are reported as skipped.");
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +95,11 @@ struct ModelCommand {
     path: String,
     format: OutputFormat,
     deny_warnings: bool,
+    /// Phase 3C `--fixture <name>` filter for `mc model test`. Filter
+    /// semantics per ADR-0006 Decision 7: when set, only goldens whose
+    /// `fixture:` field equals this name are run; the rest are reported
+    /// as skipped.
+    fixture_filter: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,6 +131,7 @@ fn parse_model_args(args: &[String]) -> Result<ModelCommand, String> {
     let mut path: Option<String> = None;
     let mut format = OutputFormat::Text;
     let mut deny_warnings = false;
+    let mut fixture_filter: Option<String> = None;
     let mut iter = args[1..].iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -137,6 +147,15 @@ fn parse_model_args(args: &[String]) -> Result<ModelCommand, String> {
                 }
                 deny_warnings = true;
             }
+            "--fixture" => {
+                if verb != ModelVerb::Test {
+                    return Err("--fixture is only valid for `mc model test`".into());
+                }
+                match iter.next() {
+                    Some(v) => fixture_filter = Some(v.clone()),
+                    None => return Err("--fixture requires a name argument".into()),
+                }
+            }
             other if !other.starts_with("--") && path.is_none() => {
                 path = Some(other.to_string());
             }
@@ -149,6 +168,7 @@ fn parse_model_args(args: &[String]) -> Result<ModelCommand, String> {
         path,
         format,
         deny_warnings,
+        fixture_filter,
     })
 }
 
@@ -161,14 +181,22 @@ fn run_model(cmd: ModelCommand) {
         ModelVerb::Validate => run_validate(&cmd.path, cmd.format),
         ModelVerb::Inspect => run_inspect(&cmd.path, cmd.format),
         ModelVerb::Lint => run_lint(&cmd.path, cmd.format, cmd.deny_warnings),
-        ModelVerb::Test => run_test(&cmd.path, cmd.format),
+        ModelVerb::Test => run_test(&cmd.path, cmd.format, cmd.fixture_filter.as_deref()),
     }
 }
 
 /// Load `path` as a `ValidatedModel`. Bypasses the compile stage so we
 /// don't pay kernel construction cost on the validate/inspect/lint paths.
-/// On parse or validation error, prints diagnostics in the requested
-/// format and exits non-zero.
+/// On parse, validation, or resolve-inputs error, prints diagnostics
+/// in the requested format and exits non-zero.
+///
+/// Phase 3C: also runs the resolve-inputs stage so the
+/// `mc model validate` user surface catches MC2012–MC2025 fixture/CSV
+/// errors. Per the project owner's architectural clarification, this
+/// is a named stage between `validate()` and `compile()`; it produces
+/// `ValidationError` diagnostics because they are model-invalidating
+/// fixture/input errors, but `validate()` itself remains
+/// filesystem-free.
 fn load_validated(path: &str, format: OutputFormat) -> ValidatedModel {
     let yaml = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -184,13 +212,22 @@ fn load_validated(path: &str, format: OutputFormat) -> ValidatedModel {
             std::process::exit(1);
         }
     };
-    match mc_model::validate(parsed) {
+    let validated = match mc_model::validate(parsed) {
         Ok(v) => v,
         Err(errs) => {
             print_validation_errors(path, &errs, format);
             std::process::exit(1);
         }
+    };
+    // Resolve-inputs stage. Discards the resolved data; only the
+    // validation side-effects matter at this layer (`mc model test`
+    // re-runs resolve_inputs to actually use the data).
+    let model_dir = std::path::Path::new(path).parent();
+    if let Err(errs) = resolve_inputs(&validated, model_dir) {
+        print_validation_errors(path, &errs, format);
+        std::process::exit(1);
     }
+    validated
 }
 
 fn run_validate(path: &str, format: OutputFormat) {
@@ -209,9 +246,18 @@ fn run_inspect(path: &str, format: OutputFormat) {
     // — purely informational; lint never blocks inspect.
     let mut diags = lint_with_file(&model, path);
     sort_diagnostics(&mut diags);
+    // Phase 3C: also resolve_inputs so the summary can show row counts
+    // for canonical_inputs / test_fixtures. load_validated already
+    // pre-cleared resolve-inputs errors, so this call is for data
+    // extraction only.
+    let model_dir = std::path::Path::new(path).parent();
+    let inputs = resolve_inputs(&model, model_dir).ok();
     match format {
-        OutputFormat::Text => print!("{}", inspect_text_with_diagnostics(&model, &diags)),
-        OutputFormat::Json => print!("{}", inspect_json(&model, &diags)),
+        OutputFormat::Text => print!(
+            "{}",
+            inspect_text_with_diagnostics(&model, &diags, inputs.as_ref())
+        ),
+        OutputFormat::Json => print!("{}", inspect_json(&model, &diags, inputs.as_ref())),
     }
 }
 
@@ -232,8 +278,26 @@ fn run_lint(path: &str, format: OutputFormat, deny_warnings: bool) {
     }
 }
 
-fn run_test(path: &str, format: OutputFormat) {
+fn run_test(path: &str, format: OutputFormat, fixture_filter: Option<&str>) {
+    // Phase 3C: load + resolve_inputs + compile, then apply
+    // canonical_inputs and run goldens against the model-owned data.
+    // Generic flow — no metadata.name special cases.
     let model = load_validated(path, format);
+
+    // Re-run resolve_inputs to obtain the typed row data. The first
+    // call (inside load_validated) handled validation; the second call
+    // is pure data extraction. CSV is read twice; at Acme size that's
+    // microseconds — well within the < 500 ms perf gate.
+    let model_dir = std::path::Path::new(path).parent();
+    let inputs = match resolve_inputs(&model, model_dir) {
+        Ok(i) => i,
+        Err(errs) => {
+            // Should not happen — load_validated already pre-cleared.
+            print_validation_errors(path, &errs, format);
+            std::process::exit(1);
+        }
+    };
+
     // Compile to a Cube. The validator pre-cleared every kernel surface
     // that returns a structured error, so this should not normally fail.
     let compiled = match mc_model::compile(model.clone()) {
@@ -246,87 +310,48 @@ fn run_test(path: &str, format: OutputFormat) {
     let mut cube = compiled.cube;
     let principal = compiled.root_principal;
 
-    // Phase 3B limitation (documented in completion report): canonical
-    // inputs are only written for the Acme model. Other YAML models test
-    // against an empty cube — goldens referencing cells that need inputs
-    // will see Null. Future phases may add an `inline_inputs:` block.
-    if model.parsed.metadata.name == "Acme_MarketingFinance" {
-        if let Some(refs) = try_build_acme_refs(&compiled.refs, principal) {
-            if let Err(e) = write_canonical_inputs(&mut cube, &refs) {
-                print_compile_error(path, &format!("write_canonical_inputs failed: {e}"), format);
-                std::process::exit(1);
-            }
-        }
+    // Apply canonical_inputs (no-op if the model didn't declare any).
+    if let Err(e) = apply_canonical_inputs(&mut cube, &compiled.refs, principal, &inputs) {
+        print_compile_error(path, &format!("apply_canonical_inputs failed: {e}"), format);
+        std::process::exit(1);
     }
 
+    // Per ADR-0006 amendment #17: snapshot once after canonical_inputs
+    // load; rollback only between goldens that mutated the cube via a
+    // fixture overlay. Read-only goldens (no `fixture:`) skip rollback
+    // since the cube state is unchanged across them.
+    let snap = cube.snapshot(None);
+
     let mut results: Vec<GoldenResult> = Vec::with_capacity(model.parsed.golden_tests.len());
+    let mut skipped_count = 0usize;
     let mut any_failed = false;
+
     for golden in &model.parsed.golden_tests {
-        let coord = match compiled.refs.coord_from_names(&golden.coord) {
-            Some(c) => c,
-            None => {
-                results.push(GoldenResult {
-                    name: golden.name.clone(),
-                    status: GoldenStatus::Error,
-                    expected: golden
-                        .expect
-                        .or(golden.expect_within_epsilon.as_ref().map(|e| e.value)),
-                    actual: None,
-                    delta: None,
-                    epsilon: golden.expect_within_epsilon.as_ref().map(|e| e.epsilon),
-                    note: Some(
-                        "coord_from_names failed — coord references unknown dim/element name(s)"
-                            .to_string(),
-                    ),
-                });
-                any_failed = true;
+        // --fixture <name> filter: skip goldens that don't reference
+        // the named fixture. Filter-only semantic per ADR-0006
+        // Decision 7 + amendment (g).
+        if let Some(filter) = fixture_filter {
+            let matches = golden
+                .fixture
+                .as_deref()
+                .map(|n| n == filter)
+                .unwrap_or(false);
+            if !matches {
+                skipped_count += 1;
                 continue;
             }
-        };
-        match cube.read(&coord, principal) {
-            Ok(cell) => match cell.value {
-                ScalarValue::F64(actual) => {
-                    let (expected, epsilon) = match (golden.expect, &golden.expect_within_epsilon) {
-                        (Some(v), _) => (v, 1e-9_f64),
-                        (None, Some(e)) => (e.value, e.epsilon),
-                        (None, None) => {
-                            results.push(GoldenResult {
-                                name: golden.name.clone(),
-                                status: GoldenStatus::Error,
-                                expected: None,
-                                actual: Some(actual),
-                                delta: None,
-                                epsilon: None,
-                                note: Some(
-                                    "golden has neither `expect` nor `expect_within_epsilon`"
-                                        .into(),
-                                ),
-                            });
-                            any_failed = true;
-                            continue;
-                        }
-                    };
-                    let delta = actual - expected;
-                    let passed = delta.abs() < epsilon;
-                    if !passed {
-                        any_failed = true;
-                    }
-                    results.push(GoldenResult {
-                        name: golden.name.clone(),
-                        status: if passed {
-                            GoldenStatus::Pass
-                        } else {
-                            GoldenStatus::Fail
-                        },
-                        expected: Some(expected),
-                        actual: Some(actual),
-                        delta: Some(delta),
-                        epsilon: Some(epsilon),
-                        note: None,
-                    });
-                }
-                other => {
-                    any_failed = true;
+        }
+
+        // Apply this golden's fixture overlay (override semantic over
+        // canonical_inputs). Track whether we mutated so we know to
+        // rollback after the check.
+        let mut mutated = false;
+        if let Some(fname) = &golden.fixture {
+            // resolve_inputs already validated this reference (MC2017),
+            // so the lookup is total; the unwrap_or branch is a
+            // belt-and-suspenders.
+            if let Some(fixture) = inputs.fixture(fname) {
+                if let Err(e) = apply_fixture(&mut cube, &compiled.refs, principal, fixture) {
                     results.push(GoldenResult {
                         name: golden.name.clone(),
                         status: GoldenStatus::Error,
@@ -336,33 +361,123 @@ fn run_test(path: &str, format: OutputFormat) {
                         actual: None,
                         delta: None,
                         epsilon: golden.expect_within_epsilon.as_ref().map(|e| e.epsilon),
-                        note: Some(format!("expected F64, got {other:?}")),
+                        note: Some(format!("fixture {fname:?} apply error: {e}")),
                     });
+                    any_failed = true;
+                    // Best-effort rollback before continuing.
+                    let _ = cube.rollback_to(&snap);
+                    continue;
                 }
-            },
-            Err(e) => {
-                any_failed = true;
-                results.push(GoldenResult {
-                    name: golden.name.clone(),
-                    status: GoldenStatus::Error,
-                    expected: golden
-                        .expect
-                        .or(golden.expect_within_epsilon.as_ref().map(|e| e.value)),
-                    actual: None,
-                    delta: None,
-                    epsilon: golden.expect_within_epsilon.as_ref().map(|e| e.epsilon),
-                    note: Some(format!("read error: {e}")),
-                });
+                mutated = true;
+            }
+        }
+
+        let result = run_one_golden(golden, &compiled.refs, principal, &mut cube);
+        if !matches!(result.status, GoldenStatus::Pass) {
+            any_failed = true;
+        }
+        results.push(result);
+
+        if mutated {
+            if let Err(e) = cube.rollback_to(&snap) {
+                eprintln!("warning: between-goldens rollback failed: {e}");
             }
         }
     }
 
     match format {
-        OutputFormat::Text => print_goldens_text(&results),
-        OutputFormat::Json => print_goldens_json(&results),
+        OutputFormat::Text => print_goldens_text(&results, skipped_count),
+        OutputFormat::Json => print_goldens_json(&results, skipped_count),
     }
     if any_failed {
         std::process::exit(1);
+    }
+}
+
+fn run_one_golden(
+    golden: &mc_model::ParsedGoldenTest,
+    refs: &mc_model::ModelRefs,
+    principal: mc_core::PrincipalId,
+    cube: &mut mc_core::Cube,
+) -> GoldenResult {
+    let coord = match refs.coord_from_names(&golden.coord) {
+        Some(c) => c,
+        None => {
+            return GoldenResult {
+                name: golden.name.clone(),
+                status: GoldenStatus::Error,
+                expected: golden
+                    .expect
+                    .or(golden.expect_within_epsilon.as_ref().map(|e| e.value)),
+                actual: None,
+                delta: None,
+                epsilon: golden.expect_within_epsilon.as_ref().map(|e| e.epsilon),
+                note: Some(
+                    "coord_from_names failed — coord references unknown dim/element name(s)"
+                        .to_string(),
+                ),
+            };
+        }
+    };
+    match cube.read(&coord, principal) {
+        Ok(cell) => match cell.value {
+            ScalarValue::F64(actual) => {
+                let (expected, epsilon) = match (golden.expect, &golden.expect_within_epsilon) {
+                    (Some(v), _) => (v, 1e-9_f64),
+                    (None, Some(e)) => (e.value, e.epsilon),
+                    (None, None) => {
+                        return GoldenResult {
+                            name: golden.name.clone(),
+                            status: GoldenStatus::Error,
+                            expected: None,
+                            actual: Some(actual),
+                            delta: None,
+                            epsilon: None,
+                            note: Some(
+                                "golden has neither `expect` nor `expect_within_epsilon`".into(),
+                            ),
+                        };
+                    }
+                };
+                let delta = actual - expected;
+                let passed = delta.abs() < epsilon;
+                GoldenResult {
+                    name: golden.name.clone(),
+                    status: if passed {
+                        GoldenStatus::Pass
+                    } else {
+                        GoldenStatus::Fail
+                    },
+                    expected: Some(expected),
+                    actual: Some(actual),
+                    delta: Some(delta),
+                    epsilon: Some(epsilon),
+                    note: None,
+                }
+            }
+            other => GoldenResult {
+                name: golden.name.clone(),
+                status: GoldenStatus::Error,
+                expected: golden
+                    .expect
+                    .or(golden.expect_within_epsilon.as_ref().map(|e| e.value)),
+                actual: None,
+                delta: None,
+                epsilon: golden.expect_within_epsilon.as_ref().map(|e| e.epsilon),
+                note: Some(format!("expected F64, got {other:?}")),
+            },
+        },
+        Err(e) => GoldenResult {
+            name: golden.name.clone(),
+            status: GoldenStatus::Error,
+            expected: golden
+                .expect
+                .or(golden.expect_within_epsilon.as_ref().map(|e| e.value)),
+            actual: None,
+            delta: None,
+            epsilon: golden.expect_within_epsilon.as_ref().map(|e| e.epsilon),
+            note: Some(format!("read error: {e}")),
+        },
     }
 }
 
@@ -394,7 +509,7 @@ struct GoldenResult {
     note: Option<String>,
 }
 
-fn print_goldens_text(results: &[GoldenResult]) {
+fn print_goldens_text(results: &[GoldenResult], skipped: usize) {
     let total = results.len();
     let passed = results
         .iter()
@@ -419,14 +534,20 @@ fn print_goldens_text(results: &[GoldenResult]) {
         }
     }
     println!();
-    println!("Goldens: {passed}/{total} passed, {failed} failed");
+    if skipped > 0 {
+        println!("Goldens: {passed}/{total} passed, {failed} failed, {skipped} skipped (filtered)");
+    } else {
+        println!("Goldens: {passed}/{total} passed, {failed} failed");
+    }
 }
 
-fn print_goldens_json(results: &[GoldenResult]) {
+fn print_goldens_json(results: &[GoldenResult], skipped: usize) {
     let mut out = String::new();
     out.push_str("{\n  \"schema_version\": \"");
     out.push_str(SCHEMA_VERSION);
-    out.push_str("\",\n  \"goldens\": [");
+    out.push_str("\",\n  \"skipped\": ");
+    out.push_str(&skipped.to_string());
+    out.push_str(",\n  \"goldens\": [");
     if results.is_empty() {
         out.push_str("]\n}\n");
         print!("{out}");

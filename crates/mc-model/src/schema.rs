@@ -32,6 +32,15 @@ pub struct ParsedModel {
     pub rules: Vec<ParsedRule>,
     #[serde(default)]
     pub golden_tests: Vec<ParsedGoldenTest>,
+    /// Phase 3C: optional always-load input set (sibling CSV or inline
+    /// rows). Replaces the `mc-cli/main.rs` Acme-name special case.
+    /// Models without this block load identically to Phase 3B.
+    #[serde(default)]
+    pub canonical_inputs: Option<ParsedInputSet>,
+    /// Phase 3C: optional named per-test input fixtures. Each fixture is
+    /// referenced by `golden_tests[i].fixture` for override semantics.
+    #[serde(default)]
+    pub test_fixtures: Vec<ParsedFixture>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -238,6 +247,12 @@ pub struct ParsedGoldenTest {
     pub expect: Option<f64>,
     #[serde(default)]
     pub expect_within_epsilon: Option<ParsedEpsilonExpect>,
+    /// Phase 3C: optional reference to a `test_fixtures` entry by name.
+    /// When set, the named fixture's rows are applied (override semantic)
+    /// on top of `canonical_inputs` before this golden runs. When unset,
+    /// only `canonical_inputs` apply.
+    #[serde(default)]
+    pub fixture: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -245,6 +260,73 @@ pub struct ParsedGoldenTest {
 pub struct ParsedEpsilonExpect {
     pub value: f64,
     pub epsilon: f64,
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3C: canonical_inputs + test_fixtures schema
+// ---------------------------------------------------------------------------
+
+/// One declared input set (`canonical_inputs:` or one entry of
+/// `test_fixtures:`). The block declares the column layout once and then
+/// either points at a sibling CSV file (`source:`) OR carries the rows
+/// inline (`inline:`). Exactly one of `source` / `inline` must be set —
+/// the resolve-inputs stage enforces this and emits a structural error
+/// if both / neither are set.
+///
+/// `columns:` is required for both forms. The last column name is reserved
+/// as the cell value (literal `"value"` per ADR-0006 amendment #19's
+/// alternate-route flag); every other column must match a dimension
+/// name declared in the model.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedInputSet {
+    pub columns: Vec<String>,
+    /// Sibling CSV file path, resolved relative to the YAML model file's
+    /// directory. Path-escapes (`../`) are rejected per ADR-0006
+    /// amendment #18 (MC2022 with a path-escape variant).
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Inline rows. Each inner Vec must have `columns.len()` entries.
+    /// Per ADR-0006 Decision 1: tabular inline form only (per-row inline
+    /// dropped pre-acceptance).
+    #[serde(default)]
+    pub inline: Option<ParsedInlineRows>,
+}
+
+/// Inline `rows:` payload for a `ParsedInputSet`. Each inner cell is a
+/// [`ParsedRowCell`] (string OR number OR bool) so dim columns (string)
+/// and the value column (numeric / bool) coexist on the same row.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedInlineRows {
+    pub rows: Vec<Vec<ParsedRowCell>>,
+}
+
+/// One cell in an inline `canonical_inputs.rows[i]` / `test_fixtures[i].inline.rows[j]`.
+/// Wider than `ParsedScalar` (which is for rule constants and excludes
+/// strings on purpose) — inline rows mix string dim values with numeric
+/// cell values.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum ParsedRowCell {
+    Float(f64),
+    Int(i64),
+    Bool(bool),
+    Str(String),
+}
+
+/// One named per-test fixture under `test_fixtures:`. Fixtures inherit the
+/// same source-XOR-inline shape as `canonical_inputs:`, but carry a
+/// `name:` so golden tests can reference them.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedFixture {
+    pub name: String,
+    pub columns: Vec<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub inline: Option<ParsedInlineRows>,
 }
 
 // ---------------------------------------------------------------------------

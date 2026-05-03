@@ -1,0 +1,19 @@
+# MC2025 — two rows resolve to the exact same coordinate; would be
+# silent last-write-wins under the kernel.
+model_format_version: 1
+metadata:
+  name: "MC2025_neg"
+  description: "x"
+dimensions:
+  - { name: "Scenario", description: "x", kind: "Scenario", elements: [{ name: "Base", scenario_meta: "Default" }] }
+  - { name: "Version",  description: "x", kind: "Version",  elements: [{ name: "Working", version_state: "Draft" }] }
+  - { name: "Measure",  description: "x", kind: "Measure",  elements: [] }
+measures:
+  - { name: "Spend", description: "x", role: "Input", data_type: "F64", aggregation: "Sum" }
+rules: []
+canonical_inputs:
+  inline:
+    rows:
+      - ["Base", "Working", "Spend", 100.0]
+      - ["Base", "Working", "Spend", 200.0]
+  columns: ["Scenario", "Version", "Measure", "value"]

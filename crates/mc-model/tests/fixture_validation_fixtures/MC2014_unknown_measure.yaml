@@ -1,0 +1,17 @@
+# MC2014 — row's Measure column references 'Spnd' (typo) which isn't in measures.
+model_format_version: 1
+metadata:
+  name: "MC2014_neg"
+  description: "x"
+dimensions:
+  - { name: "Scenario", description: "x", kind: "Scenario", elements: [{ name: "Base", scenario_meta: "Default" }] }
+  - { name: "Version",  description: "x", kind: "Version",  elements: [{ name: "Working", version_state: "Draft" }] }
+  - { name: "Measure",  description: "x", kind: "Measure",  elements: [] }
+measures:
+  - { name: "Spend", description: "x", role: "Input", data_type: "F64", aggregation: "Sum" }
+rules: []
+canonical_inputs:
+  inline:
+    rows:
+      - ["Base", "Working", "Spnd", 100.0]
+  columns: ["Scenario", "Version", "Measure", "value"]

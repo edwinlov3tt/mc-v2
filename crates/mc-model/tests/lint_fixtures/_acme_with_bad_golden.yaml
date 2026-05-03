@@ -211,6 +211,16 @@ rules:
             - { ref: "COGS_Rate" }
     declared_dependencies: ["Revenue", "COGS_Rate"]
 
+# Phase 3C: minimal inline canonical_inputs so `mc model test` reads a
+# real value at this coord and FAILS the golden (rather than reading
+# Null and producing an ERROR). Inline form keeps the fixture self-
+# contained — no sibling CSV needed.
+canonical_inputs:
+  inline:
+    rows:
+      - ["Baseline", "Working", "Mar_2026", "Paid_Search", "Tampa", "Spend", 11500.0]
+  columns: ["Scenario", "Version", "Time", "Channel", "Market", "Measure", "value"]
+
 # The bad golden — expects 999999.0 where the canonical input writes
 # 11500.0 at Mar_2026 / Paid_Search / Tampa. `mc model test` fails
 # loudly on this; `mc demo --model` MUST exit 0 nonetheless because

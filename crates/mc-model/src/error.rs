@@ -103,25 +103,40 @@ impl std::fmt::Display for ParseErrorKind {
 }
 
 /// Stage 2 errors: semantic validation. One variant per Decision 6 row,
-/// plus the Phase 3B promotion (`WeightedAverageMissingWeight` — MC2011).
+/// plus the Phase 3B promotion (`WeightedAverageMissingWeight` — MC2011)
+/// and Phase 3C's fixture/input validators (MC2012–MC2025).
 /// Multiple `ValidationError`s are returned at once from `validate` so a
 /// user editing a 500-line YAML sees every problem in one pass.
 ///
 /// Each variant carries a stable diagnostic code via [`ValidationError::code`]:
 ///
-/// | Code   | Variant                          |
-/// |--------|----------------------------------|
-/// | MC2001 | `DuplicateName`                  |
-/// | MC2002 | `MissingDimension`               |
-/// | MC2003 | `InvalidHierarchyEdge`           |
-/// | MC2004 | `HierarchyCycle`                 |
-/// | MC2005 | `RuleReferencesUnknownMeasure`   |
-/// | MC2006 | `DerivedMeasureWithoutRule`      |
-/// | MC2007 | `InputMeasureHasRule`            |
-/// | MC2008 | `RuleCycle`                      |
-/// | MC2009 | `UnsupportedAggregation`         |
-/// | MC2010 | `Schema`                         |
+/// | Code   | Variant                                 |
+/// |--------|-----------------------------------------|
+/// | MC2001 | `DuplicateName`                         |
+/// | MC2002 | `MissingDimension`                      |
+/// | MC2003 | `InvalidHierarchyEdge`                  |
+/// | MC2004 | `HierarchyCycle`                        |
+/// | MC2005 | `RuleReferencesUnknownMeasure`          |
+/// | MC2006 | `DerivedMeasureWithoutRule`             |
+/// | MC2007 | `InputMeasureHasRule`                   |
+/// | MC2008 | `RuleCycle`                             |
+/// | MC2009 | `UnsupportedAggregation`                |
+/// | MC2010 | `Schema`                                |
 /// | MC2011 | `WeightedAverageMissingWeight` (Phase 3B promotion from MC3008) |
+/// | MC2012 | `FixtureUnknownDimensionKey` (Phase 3C) |
+/// | MC2013 | `FixtureUnknownElementValue` (Phase 3C) |
+/// | MC2014 | `FixtureUnknownMeasure` (Phase 3C)      |
+/// | MC2015 | `FixtureWritesDerivedMeasure` (Phase 3C)|
+/// | MC2016 | `DuplicateFixtureName` (Phase 3C)       |
+/// | MC2017 | `GoldenReferencesUnknownFixture` (Phase 3C) |
+/// | MC2018 | `FixtureValueTypeMismatch` (Phase 3C)   |
+/// | MC2019 | `FixtureMissingDimension` (Phase 3C)    |
+/// | MC2020 | `FixtureWritesConsolidatedCell` (Phase 3C) |
+/// | MC2021 | `FixtureValueIsNaN` (Phase 3C)          |
+/// | MC2022 | `FixtureSourceUnreadable` (Phase 3C; includes path-escape variant) |
+/// | MC2023 | `FixtureCsvRowColumnCountMismatch` (Phase 3C) |
+/// | MC2024 | `FixtureCsvHeaderMismatch` (Phase 3C)   |
+/// | MC2025 | `FixtureDuplicateCoordinate` (Phase 3C) |
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ValidationError {
@@ -188,6 +203,164 @@ pub enum ValidationError {
     /// authors don't bounce through a half-validated model.
     #[error("schema error: {message}")]
     Schema { message: String },
+
+    // -----------------------------------------------------------------------
+    // Phase 3C: fixture / input validators (MC2012–MC2025).
+    //
+    // These are emitted by the resolve-inputs stage rather than by
+    // `validate()` itself, because they need filesystem access (CSV reads,
+    // path canonicalization). They carry the `ValidationError` enum so the
+    // diagnostic envelope shape is uniform — `mc model validate` reports
+    // them via the same MC2xxx code namespace as the pure-validate errors.
+    // -----------------------------------------------------------------------
+    /// **MC2012** — A fixture / canonical_inputs column header (or coord
+    /// key) names a dimension that isn't declared on the model. Catches
+    /// typos like `Scenrio` instead of `Scenario`. Distinct from MC2013:
+    /// MC2012 means the *column header* is wrong; MC2013 means the column
+    /// is correct but the *row's value* names an unknown element.
+    #[error("input set {input_set:?}: column {column:?} is not a declared dimension name")]
+    FixtureUnknownDimensionKey { input_set: String, column: String },
+
+    /// **MC2013** — A row in a fixture / canonical_inputs cites an element
+    /// name (e.g., `Mar2026`) that isn't in the named dimension's element
+    /// list. The column is correctly named; the value is wrong.
+    #[error(
+        "input set {input_set:?} row {row_index}: dimension {dim:?} has no element named {value:?}"
+    )]
+    FixtureUnknownElementValue {
+        input_set: String,
+        row_index: usize,
+        dim: String,
+        value: String,
+    },
+
+    /// **MC2014** — A row's `Measure` value (e.g., `Spnd`) doesn't match
+    /// any measure declared in the model.
+    #[error("input set {input_set:?} row {row_index}: unknown measure {measure:?}")]
+    FixtureUnknownMeasure {
+        input_set: String,
+        row_index: usize,
+        measure: String,
+    },
+
+    /// **MC2015** — A fixture / canonical_inputs row writes to a derived
+    /// measure. Only `Input` measures are writable; derived cells are
+    /// computed by rules (mirrors kernel `WritebackError::DerivedCellNotWritable`,
+    /// caught here at load time for a friendlier file:row error message).
+    #[error(
+        "input set {input_set:?} row {row_index}: cannot write derived measure {measure:?} \
+         (only Input measures are writable)"
+    )]
+    FixtureWritesDerivedMeasure {
+        input_set: String,
+        row_index: usize,
+        measure: String,
+    },
+
+    /// **MC2016** — Two `test_fixtures` entries share the same `name:`.
+    #[error("test_fixtures: duplicate fixture name {name:?}")]
+    DuplicateFixtureName { name: String },
+
+    /// **MC2017** — A `golden_test.fixture` field references a name that
+    /// isn't in `test_fixtures`.
+    #[error("golden_test {golden_name:?}: references unknown fixture {fixture_name:?}")]
+    GoldenReferencesUnknownFixture {
+        golden_name: String,
+        fixture_name: String,
+    },
+
+    /// **MC2018** — A row's value column doesn't parse as the row's
+    /// measure-declared type (e.g., `"abc"` for an `F64` measure).
+    #[error(
+        "input set {input_set:?} row {row_index}: value {value:?} is not a valid {data_type} \
+         for measure {measure:?}"
+    )]
+    FixtureValueTypeMismatch {
+        input_set: String,
+        row_index: usize,
+        measure: String,
+        data_type: String,
+        value: String,
+    },
+
+    /// **MC2019** — A fixture / canonical_inputs row is missing a column
+    /// for one of the model's dimensions. Every leaf write must specify
+    /// all dim coordinates; missing any is ambiguous.
+    #[error(
+        "input set {input_set:?}: columns {columns:?} are missing required dimension(s): {missing:?}"
+    )]
+    FixtureMissingDimension {
+        input_set: String,
+        columns: Vec<String>,
+        missing: Vec<String>,
+    },
+
+    /// **MC2020** — A fixture / canonical_inputs row coordinates a
+    /// consolidated element on at least one dimension. Only leaf
+    /// coordinates are writable (mirrors kernel
+    /// `WritebackError::ConsolidatedCellNotWritable`, caught here at
+    /// load time for a friendlier file:row error message).
+    #[error(
+        "input set {input_set:?} row {row_index}: coordinate references consolidated element \
+         {element:?} in dim {dim:?} (only leaves are writable)"
+    )]
+    FixtureWritesConsolidatedCell {
+        input_set: String,
+        row_index: usize,
+        dim: String,
+        element: String,
+    },
+
+    /// **MC2021** — A fixture / canonical_inputs row's value column is
+    /// `NaN`. The kernel rejects NaN at write time anyway; catching it
+    /// here yields a file:row error message instead of a kernel-side
+    /// error after a partial write batch.
+    #[error("input set {input_set:?} row {row_index}: value is NaN (rejected)")]
+    FixtureValueIsNaN { input_set: String, row_index: usize },
+
+    /// **MC2022** — The `source:` CSV file could not be read. The
+    /// `reason` field disambiguates `not found` / `path escape` / `IO
+    /// error`. ADR-0006 amendment #18 requires path-escape rejection
+    /// (paths resolving outside the YAML model file's directory).
+    #[error("input set {input_set:?}: source path {path:?} unreadable — {reason}")]
+    FixtureSourceUnreadable {
+        input_set: String,
+        path: String,
+        reason: String,
+    },
+
+    /// **MC2023** — A CSV data row's field count does not match the
+    /// declared `columns:` length.
+    #[error("input set {input_set:?} CSV line {line}: expected {expected} fields, got {actual}")]
+    FixtureCsvRowColumnCountMismatch {
+        input_set: String,
+        line: usize,
+        expected: usize,
+        actual: usize,
+    },
+
+    /// **MC2024** — A CSV header row does not byte-exact match the
+    /// declared `columns:` (per ADR-0006 amendment #19's columns
+    /// contract).
+    #[error("input set {input_set:?} CSV header mismatch: expected {expected:?}, got {actual:?}")]
+    FixtureCsvHeaderMismatch {
+        input_set: String,
+        expected: Vec<String>,
+        actual: Vec<String>,
+    },
+
+    /// **MC2025** — Two rows in the same `canonical_inputs` or single
+    /// `test_fixtures` entry resolve to the exact same coordinate. The
+    /// kernel would silently last-write-wins; catching it at load time
+    /// surfaces an authoring mistake.
+    #[error(
+        "input set {input_set:?}: duplicate coordinate written by rows {first_row} and {second_row}"
+    )]
+    FixtureDuplicateCoordinate {
+        input_set: String,
+        first_row: usize,
+        second_row: usize,
+    },
 }
 
 impl ValidationError {
@@ -207,6 +380,20 @@ impl ValidationError {
             ValidationError::UnsupportedAggregation { .. } => "MC2009",
             ValidationError::Schema { .. } => "MC2010",
             ValidationError::WeightedAverageMissingWeight { .. } => "MC2011",
+            ValidationError::FixtureUnknownDimensionKey { .. } => "MC2012",
+            ValidationError::FixtureUnknownElementValue { .. } => "MC2013",
+            ValidationError::FixtureUnknownMeasure { .. } => "MC2014",
+            ValidationError::FixtureWritesDerivedMeasure { .. } => "MC2015",
+            ValidationError::DuplicateFixtureName { .. } => "MC2016",
+            ValidationError::GoldenReferencesUnknownFixture { .. } => "MC2017",
+            ValidationError::FixtureValueTypeMismatch { .. } => "MC2018",
+            ValidationError::FixtureMissingDimension { .. } => "MC2019",
+            ValidationError::FixtureWritesConsolidatedCell { .. } => "MC2020",
+            ValidationError::FixtureValueIsNaN { .. } => "MC2021",
+            ValidationError::FixtureSourceUnreadable { .. } => "MC2022",
+            ValidationError::FixtureCsvRowColumnCountMismatch { .. } => "MC2023",
+            ValidationError::FixtureCsvHeaderMismatch { .. } => "MC2024",
+            ValidationError::FixtureDuplicateCoordinate { .. } => "MC2025",
         }
     }
 }

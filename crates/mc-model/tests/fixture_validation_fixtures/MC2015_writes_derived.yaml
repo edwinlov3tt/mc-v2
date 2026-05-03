@@ -1,0 +1,27 @@
+# MC2015 — row writes a Derived measure ('Doubled') instead of an Input.
+model_format_version: 1
+metadata:
+  name: "MC2015_neg"
+  description: "x"
+dimensions:
+  - { name: "Scenario", description: "x", kind: "Scenario", elements: [{ name: "Base", scenario_meta: "Default" }] }
+  - { name: "Version",  description: "x", kind: "Version",  elements: [{ name: "Working", version_state: "Draft" }] }
+  - { name: "Measure",  description: "x", kind: "Measure",  elements: [] }
+measures:
+  - { name: "Spend",   description: "x", role: "Input",   data_type: "F64", aggregation: "Sum" }
+  - { name: "Doubled", description: "x", role: "Derived", data_type: "F64", aggregation: "Sum" }
+rules:
+  - name: "rule_doubled"
+    description: "x"
+    target_measure: "Doubled"
+    scope: "AllLeaves"
+    body:
+      mul:
+        - { ref: "Spend" }
+        - { const: 2.0 }
+    declared_dependencies: ["Spend"]
+canonical_inputs:
+  inline:
+    rows:
+      - ["Base", "Working", "Doubled", 200.0]
+  columns: ["Scenario", "Version", "Measure", "value"]

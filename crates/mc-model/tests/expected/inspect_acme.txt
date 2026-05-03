@@ -26,4 +26,6 @@ Rules: 5
 
 Cardinality (Cartesian product across all dim elements): 201960
 Golden tests: 9
+Canonical inputs: 2520 cells from acme.inputs.csv
+Test fixtures: (none declared)
 Diagnostics: 0 errors, 0 warnings, 0 info

@@ -1,0 +1,15 @@
+# MC2024 — sibling CSV header doesn't byte-exact match `columns:`.
+model_format_version: 1
+metadata:
+  name: "MC2024_neg"
+  description: "x"
+dimensions:
+  - { name: "Scenario", description: "x", kind: "Scenario", elements: [{ name: "Base", scenario_meta: "Default" }] }
+  - { name: "Version",  description: "x", kind: "Version",  elements: [{ name: "Working", version_state: "Draft" }] }
+  - { name: "Measure",  description: "x", kind: "Measure",  elements: [] }
+measures:
+  - { name: "Spend", description: "x", role: "Input", data_type: "F64", aggregation: "Sum" }
+rules: []
+canonical_inputs:
+  source: "MC2024_data.csv"
+  columns: ["Scenario", "Version", "Measure", "value"]

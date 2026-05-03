@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use crate::diagnostic::{
     diagnostics_to_json, write_json_string, Diagnostic, Severity, SCHEMA_VERSION,
 };
+use crate::inputs::ResolvedInputs;
 use crate::schema::{ParsedHierarchy, ParsedRuleBody, ValidatedModel};
 
 /// Structured summary of a validated model. Mirrors the fields the
@@ -40,6 +41,26 @@ pub struct ModelSummary {
     pub error_count: usize,
     pub warning_count: usize,
     pub info_count: usize,
+    /// Phase 3C: canonical_inputs summary. `None` if the model didn't
+    /// declare canonical_inputs OR if no `ResolvedInputs` was passed
+    /// to the summarize call.
+    pub canonical_inputs: Option<InputSetSummary>,
+    /// Phase 3C: per-fixture summary. Empty when no fixtures declared
+    /// OR when no `ResolvedInputs` was passed.
+    pub test_fixtures: Vec<FixtureSummary>,
+}
+
+#[derive(Clone, Debug)]
+pub struct InputSetSummary {
+    pub source_label: String,
+    pub row_count: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct FixtureSummary {
+    pub name: String,
+    pub source_label: String,
+    pub row_count: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -85,12 +106,22 @@ pub struct RuleBreakdown {
     pub longest_chain_depth: usize,
 }
 
-/// Build a [`ModelSummary`] for the given model + diagnostic list.
+/// Build a [`ModelSummary`] for the given model + diagnostic list +
+/// optional resolved inputs.
 ///
 /// `diagnostics` is the (already-sorted) lint output from
 /// [`crate::lint`]; counts are derived from severity. Pass an empty
 /// slice if you have no diagnostics yet.
-pub fn summarize(model: &ValidatedModel, diagnostics: &[Diagnostic]) -> ModelSummary {
+///
+/// `inputs` is the Phase 3C resolve-inputs stage output. When `Some`,
+/// the summary's `canonical_inputs` and `test_fixtures` fields are
+/// populated with row counts. When `None` (or when the model declared
+/// no inputs), they are empty.
+pub fn summarize(
+    model: &ValidatedModel,
+    diagnostics: &[Diagnostic],
+    inputs: Option<&ResolvedInputs>,
+) -> ModelSummary {
     let dimensions: Vec<DimensionSummary> = model
         .parsed
         .dimensions
@@ -176,6 +207,25 @@ pub fn summarize(model: &ValidatedModel, diagnostics: &[Diagnostic]) -> ModelSum
         }
     }
 
+    let canonical_inputs = inputs.and_then(|i| {
+        i.canonical.as_ref().map(|c| InputSetSummary {
+            source_label: c.source_label.clone(),
+            row_count: c.rows.len(),
+        })
+    });
+    let test_fixtures: Vec<FixtureSummary> = inputs
+        .map(|i| {
+            i.fixtures
+                .iter()
+                .map(|f| FixtureSummary {
+                    name: f.name.clone(),
+                    source_label: f.source_label.clone(),
+                    row_count: f.rows.len(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     ModelSummary {
         name: model.parsed.metadata.name.clone(),
         format_version: model.parsed.model_format_version,
@@ -199,6 +249,8 @@ pub fn summarize(model: &ValidatedModel, diagnostics: &[Diagnostic]) -> ModelSum
         error_count,
         warning_count,
         info_count,
+        canonical_inputs,
+        test_fixtures,
     }
 }
 
@@ -206,13 +258,18 @@ pub fn summarize(model: &ValidatedModel, diagnostics: &[Diagnostic]) -> ModelSum
 /// snapshot-locked by `tests/cli_snapshot.rs`; do not change without
 /// updating the expected fixtures in lock-step.
 pub fn inspect_text(model: &ValidatedModel) -> String {
-    inspect_text_with_diagnostics(model, &[])
+    inspect_text_with_diagnostics(model, &[], None)
 }
 
-/// Like [`inspect_text`] but factors in a diagnostic list for the
-/// `Diagnostics:` summary line.
-pub fn inspect_text_with_diagnostics(model: &ValidatedModel, diagnostics: &[Diagnostic]) -> String {
-    let summary = summarize(model, diagnostics);
+/// Like [`inspect_text`] but factors in a diagnostic list (for the
+/// `Diagnostics:` summary line) and an optional [`ResolvedInputs`]
+/// (for the Phase 3C `Canonical inputs:` / `Test fixtures:` lines).
+pub fn inspect_text_with_diagnostics(
+    model: &ValidatedModel,
+    diagnostics: &[Diagnostic],
+    inputs: Option<&ResolvedInputs>,
+) -> String {
+    let summary = summarize(model, diagnostics, inputs);
     let mut out = String::new();
     out.push_str(&format!(
         "Model: {} (format v{})\n",
@@ -291,6 +348,35 @@ pub fn inspect_text_with_diagnostics(model: &ValidatedModel, diagnostics: &[Diag
         summary.cardinality
     ));
     out.push_str(&format!("Golden tests: {}\n", summary.golden_test_count));
+    // Phase 3C input declarations. Show what the model declared even
+    // when no ResolvedInputs was passed (count is omitted then).
+    match (
+        &summary.canonical_inputs,
+        model.parsed.canonical_inputs.is_some(),
+    ) {
+        (Some(c), _) => out.push_str(&format!(
+            "Canonical inputs: {} cells from {}\n",
+            c.row_count, c.source_label
+        )),
+        (None, true) => out.push_str("Canonical inputs: declared (run `mc model test` to load)\n"),
+        (None, false) => out.push_str("Canonical inputs: (none declared)\n"),
+    }
+    if !summary.test_fixtures.is_empty() {
+        out.push_str(&format!("Test fixtures: {}\n", summary.test_fixtures.len()));
+        for f in &summary.test_fixtures {
+            out.push_str(&format!(
+                "  - {}: {} cells from {}\n",
+                f.name, f.row_count, f.source_label
+            ));
+        }
+    } else if !model.parsed.test_fixtures.is_empty() {
+        out.push_str(&format!(
+            "Test fixtures: {} declared (run `mc model test` to load)\n",
+            model.parsed.test_fixtures.len()
+        ));
+    } else {
+        out.push_str("Test fixtures: (none declared)\n");
+    }
     out.push_str(&format!(
         "Diagnostics: {} errors, {} warnings, {} info\n",
         summary.error_count, summary.warning_count, summary.info_count
@@ -310,8 +396,12 @@ pub fn inspect_text_with_diagnostics(model: &ValidatedModel, diagnostics: &[Diag
 ///
 /// `schema_version` is unconditional (amendment #13). The diagnostics
 /// array is the same shape `mc model lint --format json` produces.
-pub fn inspect_json(model: &ValidatedModel, diagnostics: &[Diagnostic]) -> String {
-    let summary = summarize(model, diagnostics);
+pub fn inspect_json(
+    model: &ValidatedModel,
+    diagnostics: &[Diagnostic],
+    inputs: Option<&ResolvedInputs>,
+) -> String {
+    let summary = summarize(model, diagnostics, inputs);
     let mut out = String::new();
     out.push_str("{\n  \"schema_version\": \"");
     out.push_str(SCHEMA_VERSION);
@@ -466,7 +556,47 @@ fn write_summary_json(out: &mut String, s: &ModelSummary, indent: usize) {
     out.push_str(&s.warning_count.to_string());
     out.push_str(", \"info\": ");
     out.push_str(&s.info_count.to_string());
-    out.push_str("}\n");
+    out.push_str("},\n");
+
+    // Phase 3C: canonical_inputs + test_fixtures.
+    out.push_str(&pad2);
+    out.push_str("\"canonical_inputs\": ");
+    match &s.canonical_inputs {
+        Some(c) => {
+            out.push_str("{\"source_label\": ");
+            write_json_string(out, &c.source_label);
+            out.push_str(", \"row_count\": ");
+            out.push_str(&c.row_count.to_string());
+            out.push('}');
+        }
+        None => out.push_str("null"),
+    }
+    out.push_str(",\n");
+
+    out.push_str(&pad2);
+    out.push_str("\"test_fixtures\": [");
+    if s.test_fixtures.is_empty() {
+        out.push(']');
+    } else {
+        out.push('\n');
+        for (i, f) in s.test_fixtures.iter().enumerate() {
+            out.push_str(&" ".repeat(indent + 4));
+            out.push_str("{\"name\": ");
+            write_json_string(out, &f.name);
+            out.push_str(", \"source_label\": ");
+            write_json_string(out, &f.source_label);
+            out.push_str(", \"row_count\": ");
+            out.push_str(&f.row_count.to_string());
+            out.push('}');
+            if i + 1 < s.test_fixtures.len() {
+                out.push(',');
+            }
+            out.push('\n');
+        }
+        out.push_str(&pad2);
+        out.push(']');
+    }
+    out.push('\n');
 
     out.push_str(&pad);
     out.push('}');
