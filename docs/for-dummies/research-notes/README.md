@@ -4,7 +4,7 @@
 
 The research notes capture *non-obvious choices* the engine makes — decisions that someone reading the code would miss the reason for unless they happened to read the spec, the completion report, AND the operating manual. This translation gives you the gist with an analogy you can hold onto.
 
-## The 6 notes
+## The notes
 
 | For-dummies | One-line takeaway | Technical version |
 |---|---|---|
@@ -14,6 +14,7 @@ The research notes capture *non-obvious choices* the engine makes — decisions 
 | [`weighted-average-consolidation.md`](./weighted-average-consolidation.md) | Your GPA isn't the average of your course grades — it's the *credit-weighted* average. Same for CPC. | [→](../../research-notes/weighted-average-consolidation.md) |
 | [`two-caching-layers-in-read.md`](./two-caching-layers-in-read.md) | Two scratch-pads sitting next to the engine to remember answers it already worked out. | [→](../../research-notes/two-caching-layers-in-read.md) |
 | [`snapshot-as-deep-clone.md`](./snapshot-as-deep-clone.md) | "Save As" makes a full photocopy. We just photocopy. The fancy stuff comes later. | [→](../../research-notes/snapshot-as-deep-clone.md) |
+| [`totals-vs-formulas.md`](./totals-vs-formulas.md) | Excel users write `=SUM`. We don't — totals are *already there* at consolidated coords. Plus an open product question about ad-hoc calculations that future phases may need to answer. | *(no technical counterpart yet — see note in the file)* |
 
 ## How to read these
 
