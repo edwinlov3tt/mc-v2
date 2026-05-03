@@ -5,7 +5,7 @@
 **Handoff:** [`../handoffs/phase-3c-handoff.md`](../handoffs/phase-3c-handoff.md)
 **Operating manual:** [`../../CLAUDE.md`](../../CLAUDE.md)
 **Inherited HEAD:** `f4f7fa8` (tag `phase-3b-lint-and-diagnostics`)
-**Phase 3C work-tree HEAD (pre-commit):** uncommitted; awaiting user review per handoff hard rule
+**Phase 3C commit / tag:** `8d2691a` (tag `phase-3c-fixtures-and-inputs`) — committed 2026-05-03 after PM/spec-maintainer signoff
 **Toolchain:** Rust 1.78 (pinned in [`../../rust-toolchain.toml`](../../rust-toolchain.toml)) — unchanged
 
 ---
@@ -327,4 +327,4 @@ Verified by direct grep + file-by-file audit.
 | Determinism | 10× `cargo test --workspace -q` | **10 / 10 at 328 / 0** |
 | Locked surfaces | `git diff phase-3b...` on `mc-core/` + `mc-fixtures/src/` + `mc-fixtures/Cargo.toml` | **0 lines** |
 
-**Phase 3C ships pending user review of this report and the diff.** No commit, no tag, no push performed by the implementer per the handoff hard rule.
+*Phase 3C shipped 2026-05-03 at `8d2691a` (tag `phase-3c-fixtures-and-inputs`) after project owner review. The implementing Claude Code instance honored the handoff's "You did NOT commit, tag, or push" rule — the user did the commit + tag step after review.*
