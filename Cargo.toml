@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/mc-core", "crates/mc-fixtures", "crates/mc-cli"]
+members = ["crates/mc-core", "crates/mc-fixtures", "crates/mc-cli", "crates/mc-model"]
 
 [workspace.package]
 version = "0.1.0"

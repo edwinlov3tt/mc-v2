@@ -1,0 +1,26 @@
+[package]
+name = "mc-model"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MarketingCubes Phase 3A model definition layer (YAML → mc_core::Cube)."
+
+# Per ADR-0004 Decision 3: parser dependencies live ONLY in this crate.
+# `mc-core` keeps its 4-runtime-deps surface (smallvec, ahash, thiserror, once_cell)
+# and gains nothing from this crate's existence.
+[dependencies]
+mc-core = { path = "../mc-core" }
+serde = { version = "1", features = ["derive"] }
+# serde_yaml 0.9.34 is the last release; upstream archived it 2024 but it
+# remains the most-mature YAML 1.2 deserializer for serde on Rust 1.78.
+# ADR-0004 Decision 3 order of preference: (1) 1.78-compatible library →
+# this satisfies (1); no transitive pinning needed; no toolchain bump.
+serde_yaml = "0.9.34"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Per ADR-0004 Decision 3 + Decision 7: structural-equivalence + golden tests
+# diff YAML-loaded Acme against the canonical Rust fixture. Dev-only.
+mc-fixtures = { path = "../mc-fixtures" }

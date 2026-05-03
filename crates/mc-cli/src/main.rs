@@ -12,9 +12,34 @@ use mc_fixtures::{build_acme_cube, coord, write_canonical_inputs, AcmeRefs};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let cmd = args.get(1).map(String::as_str).unwrap_or("demo");
-    match cmd {
-        "demo" => run_demo(),
+    // Crude but sufficient arg parser. Phase 3A's only new flag is
+    // `--model <path>`; we accept it after the subcommand.
+    //   mc demo                       — Rust fixture (unchanged)
+    //   mc demo --model <path>        — YAML-loaded cube via mc-model::load
+    let mut iter = args.iter().skip(1);
+    let cmd = iter
+        .next()
+        .map(String::as_str)
+        .unwrap_or("demo")
+        .to_string();
+    let mut model_path: Option<String> = None;
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--model" => match iter.next() {
+                Some(p) => model_path = Some(p.clone()),
+                None => {
+                    eprintln!("--model requires a path argument");
+                    std::process::exit(1);
+                }
+            },
+            other => {
+                eprintln!("unknown argument: {other:?}");
+                std::process::exit(1);
+            }
+        }
+    }
+    match cmd.as_str() {
+        "demo" => run_demo(model_path.as_deref()),
         "--help" | "-h" | "help" => print_help(),
         other => {
             eprintln!("unknown command: {other:?}");
@@ -28,14 +53,21 @@ fn print_help() {
     println!("mc — MarketingCubes CLI");
     println!();
     println!("USAGE:");
-    println!("    mc demo");
+    println!("    mc demo                          # Rust fixture (canonical)");
+    println!("    mc demo --model <path>           # YAML model via mc-model::load");
     println!();
     println!("Runs the Acme demo end-to-end (per brief §4.6).");
 }
 
-fn run_demo() {
+fn run_demo(model_path: Option<&str>) {
     println!("Building Acme cube...");
-    let (mut cube, refs) = build_acme_cube().expect("acme fixture must build");
+    let (mut cube, refs) = match model_path {
+        // Per ADR-0004 + handoff: --model routes through mc_model::load,
+        // which goes YAML → ParsedModel → ValidatedModel → Cube. Stdout
+        // is byte-for-byte identical to the Rust fixture path.
+        Some(path) => load_acme_from_yaml(path),
+        None => build_acme_cube().expect("acme fixture must build"),
+    };
     let dims = cube.dimensions().len();
     let hierarchies = cube
         .dimensions()
@@ -245,6 +277,122 @@ fn run_demo() {
     println!();
 
     println!("Done.");
+}
+
+/// Translate a `mc_model::CompiledCube` into the `(Cube, AcmeRefs)`
+/// pair the rest of the demo expects. Every named ID on `AcmeRefs` is
+/// resolved by name from the YAML-loaded cube's `ModelRefs`. Any name
+/// the YAML doesn't carry is a programming error in `acme.yaml` —
+/// surface via expect so the CLI fails loudly instead of producing a
+/// silently-different output (which would defeat the byte-for-byte gate).
+fn load_acme_from_yaml(path: &str) -> (mc_core::Cube, AcmeRefs) {
+    let compiled = mc_model::load(path).unwrap_or_else(|errs| {
+        for e in &errs {
+            eprintln!("model error: {e}");
+        }
+        std::process::exit(1);
+    });
+    let resolve = |dim: &str, name: &str| -> mc_core::ElementId {
+        compiled
+            .refs
+            .element(dim, name)
+            .unwrap_or_else(|| panic!("acme.yaml missing element {name:?} in dim {dim:?}"))
+    };
+    let dim = |name: &str| -> mc_core::DimensionId {
+        compiled
+            .refs
+            .dimensions
+            .get(name)
+            .copied()
+            .unwrap_or_else(|| panic!("acme.yaml missing dimension {name:?}"))
+    };
+    let rule = |name: &str| -> mc_core::RuleId {
+        compiled
+            .refs
+            .rules
+            .get(name)
+            .copied()
+            .unwrap_or_else(|| panic!("acme.yaml missing rule {name:?}"))
+    };
+    let refs = AcmeRefs {
+        root_principal: compiled.root_principal,
+        scenario_dim: dim("Scenario"),
+        version_dim: dim("Version"),
+        time_dim: dim("Time"),
+        channel_dim: dim("Channel"),
+        market_dim: dim("Market"),
+        measure_dim: dim("Measure"),
+        // Hierarchies aren't named in ModelRefs (the kernel's
+        // HierarchyId isn't part of any user-visible flow path); the
+        // demo doesn't read these fields. Use HierarchyId(0) as a
+        // sentinel so AcmeRefs is constructible.
+        time_hierarchy: mc_core::HierarchyId(0),
+        channel_hierarchy: mc_core::HierarchyId(0),
+        market_hierarchy: mc_core::HierarchyId(0),
+        scen_baseline: resolve("Scenario", "Baseline"),
+        scen_aggressive: resolve("Scenario", "Aggressive"),
+        scen_conservative: resolve("Scenario", "Conservative"),
+        ver_working: resolve("Version", "Working"),
+        ver_submitted: resolve("Version", "Submitted"),
+        ver_approved: resolve("Version", "Approved"),
+        jan_2026: resolve("Time", "Jan_2026"),
+        feb_2026: resolve("Time", "Feb_2026"),
+        mar_2026: resolve("Time", "Mar_2026"),
+        apr_2026: resolve("Time", "Apr_2026"),
+        may_2026: resolve("Time", "May_2026"),
+        jun_2026: resolve("Time", "Jun_2026"),
+        jul_2026: resolve("Time", "Jul_2026"),
+        aug_2026: resolve("Time", "Aug_2026"),
+        sep_2026: resolve("Time", "Sep_2026"),
+        oct_2026: resolve("Time", "Oct_2026"),
+        nov_2026: resolve("Time", "Nov_2026"),
+        dec_2026: resolve("Time", "Dec_2026"),
+        q1_2026: resolve("Time", "Q1_2026"),
+        q2_2026: resolve("Time", "Q2_2026"),
+        q3_2026: resolve("Time", "Q3_2026"),
+        q4_2026: resolve("Time", "Q4_2026"),
+        fy_2026: resolve("Time", "FY_2026"),
+        paid_search: resolve("Channel", "Paid_Search"),
+        paid_social: resolve("Channel", "Paid_Social"),
+        display: resolve("Channel", "Display"),
+        email: resolve("Channel", "Email"),
+        organic: resolve("Channel", "Organic"),
+        paid_media: resolve("Channel", "Paid_Media"),
+        owned_earned: resolve("Channel", "Owned_Earned"),
+        all_channels: resolve("Channel", "All_Channels"),
+        tampa: resolve("Market", "Tampa"),
+        orlando: resolve("Market", "Orlando"),
+        miami: resolve("Market", "Miami"),
+        atlanta: resolve("Market", "Atlanta"),
+        charlotte: resolve("Market", "Charlotte"),
+        new_york_city: resolve("Market", "New_York_City"),
+        boston: resolve("Market", "Boston"),
+        florida: resolve("Market", "Florida"),
+        georgia: resolve("Market", "Georgia"),
+        north_carolina: resolve("Market", "North_Carolina"),
+        new_york_state: resolve("Market", "New_York_State"),
+        massachusetts: resolve("Market", "Massachusetts"),
+        southeast: resolve("Market", "Southeast"),
+        northeast: resolve("Market", "Northeast"),
+        usa: resolve("Market", "USA"),
+        spend: resolve("Measure", "Spend"),
+        cpc: resolve("Measure", "CPC"),
+        cvr: resolve("Measure", "CVR"),
+        close_rate: resolve("Measure", "Close_Rate"),
+        aov: resolve("Measure", "AOV"),
+        cogs_rate: resolve("Measure", "COGS_Rate"),
+        clicks: resolve("Measure", "Clicks"),
+        leads: resolve("Measure", "Leads"),
+        customers: resolve("Measure", "Customers"),
+        revenue: resolve("Measure", "Revenue"),
+        gross_profit: resolve("Measure", "Gross_Profit"),
+        rule_clicks: rule("rule_clicks"),
+        rule_leads: rule("rule_leads"),
+        rule_customers: rule("rule_customers"),
+        rule_revenue: rule("rule_revenue"),
+        rule_gross_profit: rule("rule_gross_profit"),
+    };
+    (compiled.cube, refs)
 }
 
 fn coord_at(

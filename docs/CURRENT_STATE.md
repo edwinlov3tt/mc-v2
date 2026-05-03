@@ -2,13 +2,14 @@
 
 > **What's live right now.** Update whenever a phase ships, a gate flips, or a deferral closes.
 
-**Last updated:** 2026-05-02 (Phase 2D shipped at `0678a98`, tagged `phase-2d-bitset-and-invalidated-fix`; closes PERF.md §9.3 and the §6.14 `load_canonical_inputs` cliff; acceptance gate beat by 47×. ADR-0004 Accepted later same day; Phase 3A flipped from `planned, blocked` → `proposed`; Phase 3A handoff drafted at `docs/handoffs/phase-3a-handoff.md`)
+**Last updated:** 2026-05-02 (Phase 3A — Model Definition Layer — **complete pending owner review**. New `mc-model` crate ships the three-stage YAML → ParsedModel → ValidatedModel → Cube pipeline per ADR-0004 Decision 9. Acceptance gate met: `diff <(mc demo) <(mc demo --model crates/mc-model/examples/acme.yaml)` produces empty output. Tests 252 / 0 (was 227; +25). `mc-core` deps unchanged. `mc-fixtures` byte-for-byte unchanged. Rust 1.78 unbumped; `indexmap` pinned to 2.7.0 per ADR-0004 Decision 3 escape hatch.)
 **Last Phase 1A commit:** `bee2812` — *mc-core: update lib.rs doc-comment to point at docs/specs/* (Phase 1A kernel at `4aa674a`)
 **Last Phase 1B + Phase 2A commit:** `48d52e9` — *bench: complete Phase 2A cold-path benchmark expansion* (Phase 1B and Phase 2A bundled into one commit; tag `phase-2a-cold-path-baseline` at this hash)
 **Phase 2B commit / tag:** `6ea58ab` (tag `phase-2b-consolidation-fast-path`)
 **Phase 2 housekeeping Q3 closure commit:** `9f7420c`
 **Phase 2C commit / tag:** `789db15` (tag `phase-2c-workload-baseline`)
 **Phase 2D commit / tag:** `0678a98` (tag `phase-2d-bitset-and-invalidated-fix`)
+**Phase 3A commit / tag:** *(uncommitted — user reviews first)*
 **Branch:** `main` (tracking `origin/main` at github.com/edwinlov3tt/mc-v2)
 
 ---
@@ -20,6 +21,7 @@
 - **Phase 2A — Cold-Path Benchmark Expansion.** Complete 2026-05-01. Both Phase 1B measurement gaps closed: cold consolidation rows added against §11.2 ceilings (PERF.md §6.7); synthetic no-deps write fixture added against §11.1 50 µs ceiling (PERF.md §6.8). Two new diagnostic suites (snapshot clone PERF.md §6.9; hierarchy ancestor mark microbench PERF.md §6.10). **No `crates/mc-core/src/` files modified.** See [`reports/phase-2a-completion-report.md`](./reports/phase-2a-completion-report.md).
 - **Phase 2B — Consolidation Fast Path.** Complete 2026-05-01, committed at `6ea58ab` (tag `phase-2b-consolidation-fast-path`). One targeted kernel change in [`cube.rs::read_consolidated`](../crates/mc-core/src/cube.rs) plus a `Vec<Arc<Hierarchy>>` shape change in [`dimension.rs`](../crates/mc-core/src/dimension.rs); replaces per-call `Vec<Dimension>` + `Vec<Hierarchy>` deep-clones with one `Arc::clone` + a `Vec<Arc<Hierarchy>>` collect (refcount-bumps). PERF.md §6.7 3-leaf cold consol drops 14.3 µs → **2.53 µs** (clears brief §11.2 1B target ≤ 3 µs); every other §6.7 row improves by ~12 µs absolute. New kernel unit test `consecutive_recompute_reads_match_phase_2b` (handoff item 3). One contract test rewritten (`t_consolidation_caches_value_within_revision`, semantic-not-timing) per ADR-0002 + the SPEC QUESTION round-trip approval. See [`reports/phase-2b-completion-report.md`](./reports/phase-2b-completion-report.md) and [`PERF.md`](./PERF.md) §6.11 + §9.4 + §10.
 - **Phase 2C — Production-Shaped Workload Benchmarks.** Complete 2026-05-02, committed at `789db15` (tag `phase-2c-workload-baseline`). Measurement-only phase; **no `crates/mc-core/src/` change.** Adds internal `mc_fixtures::build_scaled_acme_cube(scale)` (`pub(crate)`) + three public wrappers `_10x` / `_50x` / `_100x` + 6 unit tests including the mandatory scale-1× equivalence test against brief §4.5.1 anchor goldens. Adds 27 new bench rows extending the existing five Phase 1B/2A bench files at 10× / 50× / 100×. Adds new [`combined_workflow.rs`](../crates/mc-core/benches/combined_workflow.rs) that simulates a 100-iteration planner session at 50× (100× attempted then abandoned) with stacked-snapshot hold (TM1 sandbox pattern per ADR-0003 Decision 6). PERF.md §6.12 / §6.13 / §6.14 written from the gate run. Headline finding: `load_canonical_inputs` super-linear cliff between 10× (4.33×/write) and 50× (19.7×/write) — points at §9.3 as the Phase 2D candidate. **Did not pick a Phase 2D winner** in §9; the pick is in [`handoffs/phase-2d-handoff.md`](./handoffs/phase-2d-handoff.md). See [`reports/phase-2c-completion-report.md`](./reports/phase-2c-completion-report.md).
+- **Phase 3A — Model Definition Layer (`mc-model` crate).** **Complete 2026-05-02, pending owner review + commit.** Ships a new `crates/mc-model/` crate that translates a human-authored YAML cube definition into an `mc_core::Cube` via the three-stage pipeline per [ADR-0004](./decisions/0004-phase-3a-model-definition-format.md) Decision 9: YAML bytes → `ParsedModel` → `ValidatedModel` → `Cube`. Each stage has its own error type (`ParseError` / `ValidationError` / `EngineError`) so blame is unambiguous (Phase 4's LLM-feedback loop and Phase 6's UI editor consume these). The Acme cube is re-expressed as [`crates/mc-model/examples/acme.yaml`](../crates/mc-model/examples/acme.yaml) (264 lines, 9 inline goldens covering brief §4.5.1 anchor values + 1 consolidation rollup). `mc-cli` gains a `--model <path>` flag that routes through `mc_model::load`. **Acceptance gate cleared:** `diff <(./target/release/mc demo) <(./target/release/mc demo --model crates/mc-model/examples/acme.yaml)` produces empty output (byte-for-byte stdout equality between Rust and YAML paths). 14 validator negative tests cover ADR-0004 Decision 6's 10-row table (one extra split for the 10th row's structural vs value sides). Structural-equivalence test diffs YAML-loaded Acme against `build_acme_cube()` on dim count, element names, hierarchy edges, measure metadata, weight-measure targets, and rule body shapes. **`mc-core` not modified** — same 4 runtime deps as Phase 2D. **`mc-fixtures` not modified** — `build_acme_cube()` byte-for-byte unchanged. **Toolchain stayed at Rust 1.78** — `serde_yaml 0.9.34`'s transitive `indexmap 2.14.0` pinned to `2.7.0` per [ADR-0004](./decisions/0004-phase-3a-model-definition-format.md) Decision 3 escape hatch (Phase 1B precedent); ADR-0005 was *not* opened. See [`reports/phase-3a-completion-report.md`](./reports/phase-3a-completion-report.md).
 - **Phase 2D — Bitset-Backed Dirty Tracker + WritebackResult.invalidated semantic correction.** Complete 2026-05-02, committed at `0678a98` (tag `phase-2d-bitset-and-invalidated-fix`). Acceptance gate cleared by ~47×: `load_canonical_inputs/50x` drops from 230.80 s → **1.06 s (−99.5 %)**; 100× ingest (abandoned at >38 min in phase-2c) now runs in **2.13 s**. Two changes shipped per [Phase 2D handoff §A](./handoffs/phase-2d-handoff.md): (1) `DirtyTracker` internal repr replaced with a Cartesian-product flat bitset behind `Arc<CubeShape>` (foundation), and (2) `WritebackResult.invalidated` semantic correction in `cube.rs::write` from cumulative-dirty (Phase 1A reading of brief line-1938 pseudocode shorthand) to marginal-per-write (brief type-doc + engine-semantics.md §13 + I-WB-7 reading). A/B isolation confirmed the writeback semantic correction is the load-bearing change for the §6.14 cliff; the bitset is enabling (makes `is_dirty` O(1) so the marginal capture is bounded by per-write fan-out, not cumulative set size) but moves the cliff by < 0.2 % in isolation. New test file [`tests/writeback_invalidated.rs`](../crates/mc-core/tests/writeback_invalidated.rs) with five tests pinning the marginal semantics. Public API surface unchanged; the brief's `WritebackResult.invalidated: Vec<CellCoordinate>` field name + type + re-export are byte-for-byte identical — only the *contents* differ per the spec audit in [PERF.md §6.15](./PERF.md). See [`reports/phase-2d-completion-report.md`](./reports/phase-2d-completion-report.md).
 
 ## What's queued
@@ -27,7 +29,8 @@
 - **Phase 2 housekeeping — Q3 (criterion baseline tracking).** **Closed retroactively 2026-05-01.** Workflow proven end-to-end at commit `9f7420c`. Both `phase-2a` and `phase-2b` baselines captured under [`reports/bench-data/`](./reports/bench-data/) (1.4 MB JSON; 45 rows × 2 phases × 4 files). Phase 2C onward must use `cargo bench -p mc-core --bench <name> -- --baseline phase-2b`. See [`reports/phase-2b-completion-report.md`](./reports/phase-2b-completion-report.md) §6.A.1 for the closure record. **Phase 2C extended this to a third baseline:** `phase-2c` saved under [`reports/bench-data/phase-2c/`](./reports/bench-data/phase-2c/). **Phase 2D extended this to a fourth baseline:** `phase-2d` saved under [`reports/bench-data/phase-2d/`](./reports/bench-data/phase-2d/) (post-2D corrected-semantics + bitset baseline at sample-size 10).
 - **Phase 2 housekeeping — Q1 (workload sketch ADR).** **Accepted (provisional) 2026-05-01.** [`decisions/0003-workload-sketch.md`](./decisions/0003-workload-sketch.md) — sunset clause auto-flips status to "Needs revision" on first real planner usage data or 2026-11-01, whichever comes first. The workload curve (10× / 50× / 100× Acme) and 100 ms click-instant threshold from this ADR are what Phase 2C calibrates against. **Phase 2C produced the workload-shaped data ADR-0003 anchored to;** ADR-0003 stays Accepted — Provisional, no amendment yet. **Phase 2D's measured 50× ingest at 1.06 s is well within ADR-0003's 10 s patience-limit gate** (the metric was Phase 2D's acceptance contract).
 - **Phase 2 housekeeping — Q2 (toolchain bump).** Deferred until any new runtime dep needs it (likely Phase 3A's parser dep choice).
-- **Phase 3A — Model definition & parser — proposed.** Both Phase 3A preconditions cleared on 2026-05-02: (1) Phase 2D shipped at `0678a98`; (2) [ADR-0004](./decisions/0004-phase-3a-model-definition-format.md) Accepted, fixing the format (YAML safe subset), parser crate (`mc-model`), dep boundary, rule shape (structured trees; formula strings deferred to Phase 3C), three-stage pipeline (YAML → ParsedModel → ValidatedModel → Cube), validator surface, golden-test format (inline default), and out-of-scope cliffs. **Handoff at [`handoffs/phase-3a-handoff.md`](./handoffs/phase-3a-handoff.md)** is the implementation contract. Phase 2 housekeeping Q2 (toolchain bump) is now a *conditional* precondition — only triggers ADR-0005 if the chosen YAML library can't build on Rust 1.78 with transitive pins. **Acceptance gate:** byte-for-byte equivalence between `mc demo` (Rust path) and `mc demo --model crates/mc-model/examples/acme.yaml` (YAML path); zero new `mc-core` deps; ≥ 227 / 0 tests; 10/10 deterministic.
+- **Phase 3B — Model linter (TBD).** Not started. Static analysis layer over `ValidatedModel` (rule chain depth warnings, orphan elements, naming conventions). Forward-extension of `mc-model`; no `mc-core` changes. Triggered by Phase 3A shipping. No handoff yet.
+- **Phase 3C — Friendly formula syntax (TBD).** Not started. `Revenue = Customers * AOV` strings compile down to `ParsedRuleBody`'s structured tree per ADR-0004 Decision 4. No handoff yet.
 
 ## Active ADRs
 
@@ -45,9 +48,11 @@
 | Build | `cargo build --release --workspace` | ✓ zero warnings |
 | Format | `cargo fmt --check --all` | ✓ |
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` | ✓ |
-| Tests | `cargo test --workspace` | ✓ 227 / 0 (was 216; +11 from Phase 2D: 4 cube_shape unit tests + 2 dirty.rs bitset equivalence tests + 5 writeback_invalidated tests) |
-| Determinism (10×) | `for i in $(seq 1 10); do cargo test --workspace -q ...; done` | ✓ 10 / 10 identical at 227 / 0 each run |
-| CLI demo | `cargo run --release --bin mc -- demo` | ✓ matches brief §4.6; "N dependent cells dirtied" line now reports the marginal count (9 in the demo flow) — the brief says "exact N depends on impl; bounded — see §8" and 9 is more consistent with "bounded" than the Phase 1A cumulative ~17,820+ value |
+| Tests | `cargo test --workspace` | ✓ **252 / 0** (was 227; +25 from Phase 3A: 6 mc-model unit tests + 3 parse_validate_smoke + 1 structural_equivalence + 14 validators + 1 golden_acme) |
+| Determinism (10×) | `for i in $(seq 1 10); do cargo test --workspace -q ...; done` | ✓ 10 / 10 identical at 252 / 0 each run |
+| CLI demo (Rust path) | `./target/release/mc demo` | ✓ matches brief §4.6 |
+| CLI demo (YAML path) | `./target/release/mc demo --model crates/mc-model/examples/acme.yaml` | ✓ matches brief §4.6 |
+| **Acceptance gate** | `diff <(./target/release/mc demo) <(./target/release/mc demo --model ...)` | **✓ empty output** (Phase 3A headline) |
 | Benchmarks | `cargo bench --workspace` | ✓ Phase 1B baseline + Phase 2A cold-path expansion + Phase 2B fast path + **Phase 2C workload-shaped benches** all green. Numbers in [`PERF.md`](./PERF.md) §6 (Phase 1B), §6.7–§6.10 (Phase 2A), §6.11 (Phase 2B before/after), and **§6.12 / §6.13 / §6.14 (Phase 2C 10× / 50× / 100× rows + combined-workflow + scaling-shape summary)**. Phase 2C scaled rows compared against `--baseline phase-2b`; no Phase 1B/2A/2B regression beyond ±10% noise. **Phase 2C did not pick a Phase 2D winner** — §9 row priorities stay unspecified per the handoff hard rule. |
 
 ---
@@ -70,7 +75,12 @@
 | `tests/coordinate_validity.rs` | 9 |
 | `tests/value_nan.rs` | 8 |
 | `mc-fixtures` unit tests (Phase 1A: 4 + Phase 2A: 6 + Phase 2C: 6) | 16 |
-| **Total** | **227** |
+| `mc-model` unit tests (Phase 3A — `src/parse/tests`) | 6 |
+| `mc-model` `tests/parse_validate_smoke.rs` (Phase 3A) | 3 |
+| `mc-model` `tests/structural_equivalence.rs` (Phase 3A) | 1 |
+| `mc-model` `tests/validators.rs` (Phase 3A — one negative test per ADR-0004 Decision 6 row) | 14 |
+| `mc-model` `tests/golden_acme.rs` (Phase 3A — runs the 9 inline goldens from acme.yaml) | 1 |
+| **Total** | **252** |
 
 `mc-core` unit tests are 90 (was 84) after Phase 2D added 4
 `cube_shape::tests` (cardinality + linearize round-trip + arity
@@ -95,6 +105,8 @@ extra-leaf round-trip at 10× + scale-zero rejection.
 - `mc-core` dev deps: `mc-fixtures` (path), `criterion = "0.5"` (workspace, default-features=false). Added in Phase 1B.
 - `mc-fixtures` and `mc-cli` depend on `mc-core` only.
 - **Cargo.lock pins (Phase 1B):** `clap → 4.4.18`, `clap_lex → 0.6.0`, `half → 2.4.1`. These pre-edition2024 versions keep criterion buildable on Rust 1.78. Documented in [`PERF.md`](./PERF.md) §5.
+- **Cargo.lock pins (Phase 3A):** `indexmap → 2.7.0`, `hashbrown → 0.15.5`. Pre-edition2024 versions keep `serde_yaml 0.9.34` buildable on Rust 1.78. Per ADR-0004 Decision 3 escape hatch (Phase 1B precedent reused). ADR-0005 was *not* opened — toolchain stays at 1.78.
+- **`mc-model` (new in Phase 3A) runtime deps:** `serde 1` (derive), `serde_yaml 0.9.34`, `thiserror`. Dev-deps: `mc-fixtures` (path).
 - **Still deferred:** `proptest` and `insta` declared at workspace level only; not pulled into `mc-core`. The toolchain blocker is no longer the reason — they're paired with §10.7 doctrines and snapshot tests that are Phase 2 work. See CLAUDE.md §1.1.
 
 ---
@@ -145,7 +157,8 @@ Optimization candidates surfaced from current data:
 ├── crates/
 │   ├── mc-core/           kernel
 │   ├── mc-fixtures/       Acme demo cube
-│   └── mc-cli/            `mc demo` runner
+│   ├── mc-model/          model definition layer (Phase 3A) — YAML → mc_core::Cube
+│   └── mc-cli/            `mc demo` runner (Phase 3A: + `--model <path>` flag)
 ├── docs/                  this folder
 ├── research/              raw reference PDFs (TM1 manuals, books, infra specs)
 ├── CLAUDE.md              operating manual

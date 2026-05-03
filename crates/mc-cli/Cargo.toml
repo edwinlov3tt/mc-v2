@@ -10,6 +10,10 @@ description = "Smoke-test CLI for the MarketingCubes Acme demo"
 [dependencies]
 mc-core = { path = "../mc-core" }
 mc-fixtures = { path = "../mc-fixtures" }
+# Phase 3A: `mc demo --model <path>` routes through mc-model::load.
+# The Rust fixture path stays as the canonical reference; --model is the
+# new YAML path. Both paths produce byte-for-byte identical stdout.
+mc-model = { path = "../mc-model" }
 
 [[bin]]
 name = "mc"
