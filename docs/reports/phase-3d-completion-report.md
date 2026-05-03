@@ -3,7 +3,8 @@
 **Project:** MarketingCubes V2 — Rust kernel
 **Brief:** [Phase 3D handoff](../handoffs/phase-3d-handoff.md) (the binding contract; ADR-0007 was drafted in parallel per the project owner's "handoff-first parallel flow" decision for this small phase only)
 **Operating manual:** [`CLAUDE.md`](../../CLAUDE.md)
-**Initial commit:** Phase 3C ship at `8d2691a` — *phase-3c: model test fixtures + input sets* (tag `phase-3c-fixtures-and-inputs`)
+**Initial commit (parent):** Phase 3C ship at `8d2691a` — *phase-3c: model test fixtures + input sets* (tag `phase-3c-fixtures-and-inputs`)
+**Phase 3D commit / tag:** `d5ab355` (tag `phase-3d-friendly-formula-syntax`) — committed 2026-05-03 after PM/spec-maintainer signoff
 **Toolchain:** Rust 1.78 (pinned in [`../../rust-toolchain.toml`](../../rust-toolchain.toml)) — unchanged
 
 ---
@@ -243,4 +244,4 @@ Acme migration is mechanical — five rules become five formula strings; `Gross_
 
 ---
 
-*Phase 3D ships pending user review. No commit, no tag, no push — per the handoff hard rule, the user does that after reading the review.*
+*Phase 3D shipped 2026-05-03 at `d5ab355` (tag `phase-3d-friendly-formula-syntax`) after project owner review. The implementing Claude Code instance honored the handoff's "You did NOT commit, tag, or push" rule — the user did the commit + tag step after review. ADR-0007 flipped to Accepted in the same commit batch as the metadata backfill, with the implementer's 3 deviations folded in as acceptance amendments #28 (validate signature, pre-approved), #32 (Error helpers, additive), and #33 (YAML null body fires MC1001).*
