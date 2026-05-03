@@ -4,7 +4,7 @@
 **Phase 3A handoff:** [`../handoffs/phase-3a-handoff.md`](../handoffs/phase-3a-handoff.md)
 **ADR (binding strategic context):** [`../decisions/0004-phase-3a-model-definition-format.md`](../decisions/0004-phase-3a-model-definition-format.md)
 **Operating manual:** [`../../CLAUDE.md`](../../CLAUDE.md)
-**Initial commit:** *(uncommitted — user reviews before commit)*
+**Initial commit:** `603c537` (tag `phase-3a-model-definition-layer`) — committed 2026-05-02 after PM/spec-maintainer signoff
 **Toolchain:** Rust 1.78 (unchanged; pinned in [`../../rust-toolchain.toml`](../../rust-toolchain.toml))
 
 ---
@@ -164,7 +164,7 @@ body:
 | 19 | Completion report written at `docs/reports/phase-3a-completion-report.md` (this file) | ✓ |
 | 20 | CURRENT_STATE.md + MASTER_PHASE_PLAN.md updated to flip Phase 3A from `proposed` → `complete` | ✓ |
 | 21 | ADR-0004, brief, and engine-semantics.md unchanged | ✓ |
-| 22 | No commit, no tag, no push (user reviews first) | ✓ |
+| 22 | No commit, no tag, no push by implementing instance (user did the commit + tag at `603c537` after review) | ✓ |
 | 23 | Did not start Phase 3B / 3C / 4 | ✓ |
 
 ---
@@ -376,4 +376,4 @@ Deviations:
 
 ---
 
-*Phase 3A ships pending owner review + commit + tag.*
+*Phase 3A shipped 2026-05-02 at `603c537` (tag `phase-3a-model-definition-layer`) after project owner review. The implementing Claude Code instance honored the handoff's "Final checklist" line item "**You did NOT commit, tag, or push.** The user does that after reading the review." — the user did the commit + tag step after PM/spec-maintainer signoff.*

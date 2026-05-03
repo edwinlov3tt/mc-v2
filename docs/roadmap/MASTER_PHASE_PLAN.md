@@ -41,7 +41,7 @@ Productization beyond the first usable product (multi-tenancy, customer-facing a
 | **2C** | Production-Shaped Workload Benchmarks | **complete** | `phase-2c-workload-baseline` (`789db15`) |
 | **2D** | Bitset-Backed Dirty Tracker + WritebackResult.invalidated semantic correction (§9.3 closure) | **complete** | `phase-2d-bitset-and-invalidated-fix` (`0678a98`) |
 | **2E–2N** | Further optimization rounds (TBD) | not started | — |
-| **3A** | Model definition layer — YAML + `mc-model` crate (per ADR-0004) | **complete** (report at [`../reports/phase-3a-completion-report.md`](../reports/phase-3a-completion-report.md)) | — *(uncommitted; user reviews + tags)* |
+| **3A** | Model definition layer — YAML + `mc-model` crate (per ADR-0004) | **complete** (report at [`../reports/phase-3a-completion-report.md`](../reports/phase-3a-completion-report.md)) | `phase-3a-model-definition-layer` (`603c537`) |
 | **3B–3N** | Model layer extensions (TBD) | not started | — |
 | **4** | LLM-assisted model authoring | not started | — |
 | **5** | Data integration & actuals | not started | — |
