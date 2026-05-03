@@ -40,10 +40,13 @@ This `for-dummies/` folder is a parallel translation of the more technical docs:
 
 ```
 docs/for-dummies/
-└── research-notes/        plain-English versions of docs/research-notes/
+├── research-notes/        plain-English versions of docs/research-notes/
+└── phases/                plain-English explanations of what each optimization phase did + why
 ```
 
-Each layman's note has the **same filename** as its technical counterpart, so if you read the for-dummies version and want the deep version, just go to `docs/research-notes/<same-filename>.md`.
+Layman's notes in `research-notes/` have the **same filename** as their technical counterpart, so if you read the for-dummies version and want the deep version, go to `docs/research-notes/<same-filename>.md`.
+
+Notes in `phases/` cover **what each Phase 2-and-onward sub-phase actually did and why** — Phase 2C, Phase 2D, etc. The technical counterparts live across `docs/reports/<phase>-completion-report.md`, `docs/handoffs/<phase>-handoff.md`, and `docs/PERF.md`; the for-dummies version stitches them together into a single "what / why / what-if-we-didn't" narrative per phase.
 
 ## What the technical folders are for
 
