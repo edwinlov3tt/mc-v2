@@ -42,7 +42,8 @@ Productization beyond the first usable product (multi-tenancy, customer-facing a
 | **2D** | Bitset-Backed Dirty Tracker + WritebackResult.invalidated semantic correction (§9.3 closure) | **complete** | `phase-2d-bitset-and-invalidated-fix` (`0678a98`) |
 | **2E–2N** | Further optimization rounds (TBD) | not started | — |
 | **3A** | Model definition layer — YAML + `mc-model` crate (per ADR-0004) | **complete** (report at [`../reports/phase-3a-completion-report.md`](../reports/phase-3a-completion-report.md)) | `phase-3a-model-definition-layer` (`603c537`) |
-| **3B–3N** | Model layer extensions (TBD) | not started | — |
+| **3B** | Model QA, Linter, and Diagnostics — `mc model {validate,inspect,lint,test}` + 10 lint rules + JSON diagnostics envelope (per ADR-0005) | **proposed** (handoff at [`../handoffs/phase-3b-handoff.md`](../handoffs/phase-3b-handoff.md)) | — |
+| **3C–3N** | Friendly formula syntax + further model layer extensions (TBD) | not started | — |
 | **4** | LLM-assisted model authoring | not started | — |
 | **5** | Data integration & actuals | not started | — |
 | **6** | UI & internal app proofs (incl. internal Media Partner model proof) | not started | — |
@@ -179,10 +180,20 @@ Rule: bump `rust-toolchain.toml` past 1.78 **before any new runtime dep lands th
 - **Acceptance gates (planned):** see ADR-0004 success-criteria section (8 items). Headline: byte-for-byte demo equivalence; zero new `mc-core` deps; ≥ 227 / 0 tests; 10/10 deterministic.
 - **Out of scope (explicit):** see ADR-0004 "Out of scope" table (UI, LLM authoring, DuckDB, actuals, auth, permissions, multi-cube, cross-cube rules, custom formula parser, format migration, bidirectional round-trip — each named with its real future Phase). **Dep-discipline rule:** `serde` and any other parser dep must NOT be added to `mc-core` — this is enforced by Decision 3 of ADR-0004, not by intuition.
 
-### 3B, 3C, … (TBD)
+### 3B — Model QA, Linter, and Diagnostics (proposed)
+
+- **Status:** **proposed.** Handoff at [`../handoffs/phase-3b-handoff.md`](../handoffs/phase-3b-handoff.md). [ADR-0005](../decisions/0005-phase-3b-model-qa-linter-diagnostics.md) Accepted 2026-05-02 with 15 project-owner acceptance amendments (10 from GPT + 5 from Claude Desktop).
+- **Purpose:** Add a **read-only quality and diagnostics layer** over `mc-model` that makes authoring (human, and later LLM) safer *before* Phase 3C friendly formulas, Phase 4 LLM authoring, Phase 5 actuals, or Phase 6 UI work begins. Closes four gaps in Phase 3A's surface: (1) no way to inspect a model at-a-glance; (2) no quality signal beyond "is it buildable?"; (3) no stable diagnostic vocabulary for Phase 4 LLM consumption; (4) no CLI surface for any of the above.
+- **What it proves:** Adding diagnostics + lint over `mc-model` is a small, reversible, leverage move that unblocks every later phase (each consumes Phase 3B's stable diagnostic codes + JSON envelope). The Acme YAML lints cleanly with zero documented warnings; intentionally-flawed fixtures trigger each rule; `mc demo --model` does NOT run goldens (separation of concerns); `mc model test` is the dedicated golden runner.
+- **Deliverables (planned, high-level):** four new CLI subcommands (`mc model validate / inspect / lint / test`) plus a `--format text|json` modifier; 10 starting lint rules (MC3001–MC3007 + MC3009–MC3011, with MC3008 permanently retired and promoted to validation as MC2011); structured `Diagnostic { code, severity, path, message, suggestion }` shape; JSON output wrapped in `{ "schema_version": "1.0", "diagnostics": [...] }` envelope; deterministic emission order `(severity desc, code asc, yaml_pointer asc, message asc)`; one negative test fixture per lint rule under `crates/mc-model/tests/lint_fixtures/`; hand-rolled snapshot fixture comparison (no `insta` unless proven on Rust 1.78); MC3008-retirement assertion; `mc demo --model` doesn't-run-goldens integration test.
+- **Acceptance gates (planned):** see ADR-0005 Decision 8 (15 items). Headline: Acme lints clean with zero warnings; ≥ 252 tests still pass; `mc-core` and `mc-fixtures` untouched; deterministic 10/10; JSON envelope schema_version assertion; demo-without-goldens integration test passes.
+- **Out of scope (explicit):** see ADR-0005 Decision 6 — no formula strings (Phase 3C), no LLM authoring (Phase 4), no UI (Phase 6), no actuals (Phase 5), no DuckDB, no multi-cube, no `mc-core` changes, no auto-fix, no snapshot diff. **Dep-discipline rule:** parser/serde deps stay in `mc-model` only (per ADR-0004 Decision 3, inherited).
+
+### 3C, 3D, … (TBD)
 
 Likely follow-ons (placeholders, do not pre-name without an ADR):
 
+- **Phase 3C — Friendly formula syntax.** `Revenue = Customers * AOV` strings compile down to ParsedRuleBody's structured tree per ADR-0004 Decision 4. Sequenced after Phase 3B per ADR-0005's "What this unlocks" rationale.
 - Round-trip *write* (cube → declarative file). Needed for Phase 6 UI editors.
 - Multi-cube / cube-of-cubes composition. Needed once the first model file outgrows a single document.
 - Schema versioning + migration semantics. Needed once a real user has authored a cube the format authors can't reflexively rewrite.

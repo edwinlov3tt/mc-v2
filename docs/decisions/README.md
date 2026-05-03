@@ -31,6 +31,7 @@ Use [`../templates/adr.md`](../templates/adr.md) as the starting point.
 | [0002](./0002-perf-assertions-in-benchmarks-not-tests.md) | Performance assertions belong in criterion benchmarks, not in `cargo test` | Accepted |
 | [0003](./0003-workload-sketch.md) | Workload sketch & perception thresholds | Accepted — Provisional (sunset 2026-11-01) |
 | [0004](./0004-phase-3a-model-definition-format.md) | Phase 3A model-definition format & parser scope | Accepted (with acceptance amendments) |
+| [0005](./0005-phase-3b-model-qa-linter-diagnostics.md) | Phase 3B — Model QA, Linter, and Diagnostics | Accepted (with acceptance amendments) |
 
 ## When to write an ADR
 
