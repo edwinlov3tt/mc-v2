@@ -518,11 +518,12 @@ fn check_aggregation_methods_supported(parsed: &ParsedModel, errors: &mut Vec<Va
                 }
             }
             "WeightedAverage" => match &m.weight_measure {
-                None => errors.push(ValidationError::Schema {
-                    message: format!(
-                        "measure {:?}: aggregation WeightedAverage requires weight_measure",
-                        m.name
-                    ),
+                // Per ADR-0005 amendment #4 (Phase 3B): promoted from lint
+                // (formerly MC3008) to a typed validator error (MC2011).
+                // Blocks `mc_model::load()`; the kernel cannot meaningfully
+                // consolidate a WeightedAverage measure without a weight.
+                None => errors.push(ValidationError::WeightedAverageMissingWeight {
+                    measure_name: m.name.clone(),
                 }),
                 Some(w) => {
                     if !known_measures.contains(w.as_str()) {

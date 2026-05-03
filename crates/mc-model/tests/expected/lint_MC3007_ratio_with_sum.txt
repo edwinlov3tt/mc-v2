@@ -1,0 +1,4 @@
+MC3007 [Warning] measures.click_rate.aggregation: Measure 'click_rate' is named like a ratio but uses Sum aggregation
+  in: crates/mc-model/tests/lint_fixtures/MC3007_ratio_with_sum.yaml
+  pointer: /measures/1/aggregation
+  suggestion: Ratios should typically use WeightedAverage (e.g., CPC weighted by Spend); Sum produces meaningless values when consolidated. Verify the aggregation rule matches the measure's intent — this lint is heuristic and may produce false positives.

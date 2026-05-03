@@ -1,0 +1,77 @@
+{
+  "schema_version": "1.0",
+  "diagnostics": [
+    {
+      "code": "MC3001",
+      "severity": "Warning",
+      "path": {
+        "file": "crates/mc-model/tests/lint_fixtures/_multi_diagnostic.yaml",
+        "span": null,
+        "yaml_pointer": "/dimensions/0",
+        "model_path": "dimensions.Time"
+      },
+      "message": "Dimension 'Time' has no description",
+      "suggestion": "Add a one-line description explaining what the dim represents"
+    },
+    {
+      "code": "MC3002",
+      "severity": "Warning",
+      "path": {
+        "file": "crates/mc-model/tests/lint_fixtures/_multi_diagnostic.yaml",
+        "span": null,
+        "yaml_pointer": "/measures/0",
+        "model_path": "measures.Spend"
+      },
+      "message": "Measure 'Spend' has no description",
+      "suggestion": "Add a one-line description explaining what the measure represents and its unit"
+    },
+    {
+      "code": "MC3003",
+      "severity": "Warning",
+      "path": {
+        "file": "crates/mc-model/tests/lint_fixtures/_multi_diagnostic.yaml",
+        "span": null,
+        "yaml_pointer": "/rules/0",
+        "model_path": "rules.rule_doubled"
+      },
+      "message": "Rule 'rule_doubled' has no description",
+      "suggestion": "Add a one-line description explaining the business meaning of the rule"
+    },
+    {
+      "code": "MC3004",
+      "severity": "Warning",
+      "path": {
+        "file": "crates/mc-model/tests/lint_fixtures/_multi_diagnostic.yaml",
+        "span": null,
+        "yaml_pointer": "/golden_tests",
+        "model_path": "golden_tests"
+      },
+      "message": "Model declares no golden_tests",
+      "suggestion": "Add at least one golden test pinning a known-good value (start with the model's anchor coords)"
+    },
+    {
+      "code": "MC3007",
+      "severity": "Warning",
+      "path": {
+        "file": "crates/mc-model/tests/lint_fixtures/_multi_diagnostic.yaml",
+        "span": null,
+        "yaml_pointer": "/measures/1/aggregation",
+        "model_path": "measures.cpc.aggregation"
+      },
+      "message": "Measure 'cpc' is named like a ratio but uses Sum aggregation",
+      "suggestion": "Ratios should typically use WeightedAverage (e.g., CPC weighted by Spend); Sum produces meaningless values when consolidated. Verify the aggregation rule matches the measure's intent — this lint is heuristic and may produce false positives."
+    },
+    {
+      "code": "MC3010",
+      "severity": "Info",
+      "path": {
+        "file": "crates/mc-model/tests/lint_fixtures/_multi_diagnostic.yaml",
+        "span": null,
+        "yaml_pointer": "/measures/2",
+        "model_path": "measures.Doubled"
+      },
+      "message": "Unused derived measure 'Doubled'",
+      "suggestion": "If intentional, add a description noting it's a placeholder for future use; otherwise consider removing"
+    }
+  ]
+}

@@ -52,6 +52,12 @@ pub struct ParsedDimension {
     pub name: String,
     /// `"Standard"` | `"Measure"` | `"Scenario"` | `"Version"`.
     pub kind: String,
+    /// Optional human-readable description. Phase 3B's MC3001 lint fires
+    /// when this is missing on a Standard / Measure / Scenario / Version
+    /// dim. The field is additive over the ADR-0004 schema; Phase 3A
+    /// models with no descriptions still parse cleanly.
+    #[serde(default)]
+    pub description: Option<String>,
     pub elements: Vec<ParsedElement>,
 }
 
@@ -108,6 +114,10 @@ pub struct ParsedMeasure {
     /// `"F64" | "I64" | "Bool" | "Category"`. Phase 3A's Acme uses F64
     /// only; the others are forward surface.
     pub data_type: String,
+    /// Optional human-readable description. Phase 3B's MC3002 lint fires
+    /// when this is missing. Additive over ADR-0004's schema.
+    #[serde(default)]
+    pub description: Option<String>,
     /// Required when `data_type: "Category"`. Ignored otherwise.
     #[serde(default)]
     pub category_domain: Option<Vec<String>>,
@@ -128,6 +138,10 @@ pub struct ParsedRule {
     pub target_measure: String,
     /// `"AllLeaves"` (Phase 3A's only supported scope).
     pub scope: String,
+    /// Optional human-readable description. Phase 3B's MC3003 lint fires
+    /// when this is missing. Additive over ADR-0004's schema.
+    #[serde(default)]
+    pub description: Option<String>,
     pub body: ParsedRuleBody,
     pub declared_dependencies: Vec<String>,
 }

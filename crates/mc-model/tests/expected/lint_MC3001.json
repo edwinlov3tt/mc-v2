@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "diagnostics": [
+    {
+      "code": "MC3001",
+      "severity": "Warning",
+      "path": {
+        "file": "crates/mc-model/tests/lint_fixtures/MC3001_missing_dim_description.yaml",
+        "span": null,
+        "yaml_pointer": "/dimensions/0",
+        "model_path": "dimensions.Time"
+      },
+      "message": "Dimension 'Time' has no description",
+      "suggestion": "Add a one-line description explaining what the dim represents"
+    }
+  ]
+}

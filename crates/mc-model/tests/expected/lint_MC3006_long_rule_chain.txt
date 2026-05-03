@@ -1,0 +1,4 @@
+MC3006 [Info] rules.rule_f: Rule 'rule_f' targets measure 'F' at chain depth 6 (threshold > 5)
+  in: crates/mc-model/tests/lint_fixtures/MC3006_long_rule_chain.yaml
+  pointer: /rules/5
+  suggestion: Long rule chains are harder to reason about; consider whether intermediate measures could be inlined or whether the chain reflects unnecessary indirection. (Performance is a secondary concern: cold derived reads scale ~linearly with chain depth — see PERF.md §6.)

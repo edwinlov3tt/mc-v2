@@ -1,0 +1,33 @@
+# MC3004 fixture — no golden_tests block.
+#
+# Two mutually-weighting Input measures keep MC3009 silent without needing
+# rules or goldens; the model is intentionally a stub that triggers exactly
+# MC3004 (the "you forgot golden tests" lint).
+model_format_version: 1
+metadata:
+  name: "MC3004Fixture"
+  description: "Triggers MC3004 — no golden tests."
+dimensions:
+  - name: "Time"
+    description: "Calendar."
+    kind: "Standard"
+    elements:
+      - { name: "Jan" }
+      - { name: "Year" }
+  - name: "Measure"
+    description: "Inputs only — partially authored."
+    kind: "Measure"
+    elements: []
+hierarchies:
+  - dimension: "Time"
+    name: "Cal"
+    default: true
+    edges:
+      - { parent: "Year", child: "Jan", weight: 1.0 }
+measures:
+  # A and B mutually weight each other so neither is "unused" (MC3009 silent)
+  # while the model still has zero rules and zero goldens.
+  - { name: "A", description: "Input A.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "B" }
+  - { name: "B", description: "Input B.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "A" }
+rules: []
+# golden_tests deliberately omitted — triggers MC3004.

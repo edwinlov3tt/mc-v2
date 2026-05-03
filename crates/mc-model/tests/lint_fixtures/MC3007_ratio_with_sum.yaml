@@ -1,0 +1,46 @@
+# MC3007 fixture — a measure named "click_rate" using Sum aggregation.
+# Ratio names should typically use WeightedAverage; Sum produces meaningless
+# rolled-up values.
+#
+# click_rate is referenced by rule_doubled so MC3009 stays silent on it.
+model_format_version: 1
+metadata:
+  name: "MC3007Fixture"
+  description: "Triggers MC3007 — ratio-named measure with Sum aggregation."
+dimensions:
+  - name: "Time"
+    description: "Calendar."
+    kind: "Standard"
+    elements:
+      - { name: "Jan" }
+      - { name: "Year" }
+  - name: "Measure"
+    description: "Inputs and derived outputs."
+    kind: "Measure"
+    elements: []
+hierarchies:
+  - dimension: "Time"
+    name: "Cal"
+    default: true
+    edges:
+      - { parent: "Year", child: "Jan", weight: 1.0 }
+measures:
+  - { name: "Spend", description: "Spend.", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "click_rate", description: "Click rate (heuristic should flag this).", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "Doubled", description: "Doubled spend × click_rate.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+rules:
+  - name: "rule_doubled"
+    description: "Doubled = Spend * click_rate."
+    target_measure: "Doubled"
+    scope: "AllLeaves"
+    body:
+      mul:
+        - { ref: "Spend" }
+        - { ref: "click_rate" }
+    declared_dependencies: ["Spend", "click_rate"]
+golden_tests:
+  - name: "anchor"
+    coord:
+      Time: "Jan"
+      Measure: "Doubled"
+    expect: 0.0

@@ -1,0 +1,29 @@
+MC3001 [Warning] dimensions.Time: Dimension 'Time' has no description
+  in: crates/mc-model/tests/lint_fixtures/_multi_diagnostic.yaml
+  pointer: /dimensions/0
+  suggestion: Add a one-line description explaining what the dim represents
+
+MC3002 [Warning] measures.Spend: Measure 'Spend' has no description
+  in: crates/mc-model/tests/lint_fixtures/_multi_diagnostic.yaml
+  pointer: /measures/0
+  suggestion: Add a one-line description explaining what the measure represents and its unit
+
+MC3003 [Warning] rules.rule_doubled: Rule 'rule_doubled' has no description
+  in: crates/mc-model/tests/lint_fixtures/_multi_diagnostic.yaml
+  pointer: /rules/0
+  suggestion: Add a one-line description explaining the business meaning of the rule
+
+MC3004 [Warning] golden_tests: Model declares no golden_tests
+  in: crates/mc-model/tests/lint_fixtures/_multi_diagnostic.yaml
+  pointer: /golden_tests
+  suggestion: Add at least one golden test pinning a known-good value (start with the model's anchor coords)
+
+MC3007 [Warning] measures.cpc.aggregation: Measure 'cpc' is named like a ratio but uses Sum aggregation
+  in: crates/mc-model/tests/lint_fixtures/_multi_diagnostic.yaml
+  pointer: /measures/1/aggregation
+  suggestion: Ratios should typically use WeightedAverage (e.g., CPC weighted by Spend); Sum produces meaningless values when consolidated. Verify the aggregation rule matches the measure's intent — this lint is heuristic and may produce false positives.
+
+MC3010 [Info] measures.Doubled: Unused derived measure 'Doubled'
+  in: crates/mc-model/tests/lint_fixtures/_multi_diagnostic.yaml
+  pointer: /measures/2
+  suggestion: If intentional, add a description noting it's a placeholder for future use; otherwise consider removing

@@ -1,0 +1,4 @@
+MC3005 [Warning] dimensions.Time.elements.Orphan: Element 'Orphan' in dim 'Time' is not a member of default hierarchy 'Cal'
+  in: crates/mc-model/tests/lint_fixtures/MC3005_orphan_element.yaml
+  pointer: /dimensions/0/elements/2
+  suggestion: Either add the element to the default hierarchy via an edge, or remove it if unused

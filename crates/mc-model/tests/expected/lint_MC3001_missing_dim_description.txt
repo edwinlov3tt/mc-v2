@@ -1,0 +1,4 @@
+MC3001 [Warning] dimensions.Time: Dimension 'Time' has no description
+  in: crates/mc-model/tests/lint_fixtures/MC3001_missing_dim_description.yaml
+  pointer: /dimensions/0
+  suggestion: Add a one-line description explaining what the dim represents

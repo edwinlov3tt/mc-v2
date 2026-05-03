@@ -1,0 +1,4 @@
+MC3011 [Warning] hierarchies.Cal: Default hierarchy 'Cal' on dim 'Time' has 2 roots (Year1, Year2)
+  in: crates/mc-model/tests/lint_fixtures/MC3011_hierarchy_root_ambiguity.yaml
+  pointer: /hierarchies/0
+  suggestion: A hierarchy should typically have exactly one root (e.g., USA, All_Channels, FY). Multiple roots usually indicate missing edges or an unintended structural shape

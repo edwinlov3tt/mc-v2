@@ -60,10 +60,19 @@ fn duplicate_element_name_fires() {
 
 #[test]
 fn duplicate_measure_name_fires() {
-    let mutated = ACME.replace(
+    // Append a duplicate Spend measure line right after the existing one.
+    // Searching for the leading `- { name: "Spend",` is sufficient; we
+    // append a synthesized duplicate line after the next `\n`.
+    let needle = "  - { name: \"Spend\",";
+    let idx = ACME.find(needle).expect("Spend measure line must exist");
+    let line_end = ACME[idx..].find('\n').expect("newline after Spend line");
+    let line_end_abs = idx + line_end + 1;
+    let mut mutated = String::with_capacity(ACME.len() + 80);
+    mutated.push_str(&ACME[..line_end_abs]);
+    mutated.push_str(
         "  - { name: \"Spend\", role: \"Input\", data_type: \"F64\", aggregation: \"Sum\" }\n",
-        "  - { name: \"Spend\", role: \"Input\", data_type: \"F64\", aggregation: \"Sum\" }\n  - { name: \"Spend\", role: \"Input\", data_type: \"F64\", aggregation: \"Sum\" }\n",
     );
+    mutated.push_str(&ACME[line_end_abs..]);
     let errs = must_validate_with_error(&mutated);
     assert_any(
         &errs,
@@ -188,11 +197,8 @@ fn derived_measure_without_rule_fires() {
 #[test]
 fn input_measure_with_rule_fires() {
     // Change `rule_clicks` to target Spend (an Input measure) instead of Clicks.
-    let mutated = ACME.replacen(
-        "  - name: \"rule_clicks\"\n    target_measure: \"Clicks\"",
-        "  - name: \"rule_clicks\"\n    target_measure: \"Spend\"",
-        1,
-    );
+    // The line `target_measure: "Clicks"` is unique on rule_clicks.
+    let mutated = ACME.replacen("target_measure: \"Clicks\"", "target_measure: \"Spend\"", 1);
     let errs = must_validate_with_error(&mutated);
     assert_any(
         &errs,
@@ -229,11 +235,10 @@ fn rule_cycle_fires() {
 #[test]
 fn unsupported_aggregation_fires() {
     // Set Spend's aggregation to "Median", which mc_core doesn't implement.
-    let mutated = ACME.replacen(
-        "  - { name: \"Spend\", role: \"Input\", data_type: \"F64\", aggregation: \"Sum\" }",
-        "  - { name: \"Spend\", role: \"Input\", data_type: \"F64\", aggregation: \"Median\" }",
-        1,
-    );
+    // Spend is the only measure with `aggregation: "Sum" }` followed by
+    // newline and CPC's line — so the first `aggregation: "Sum" }` swap
+    // mutates exactly the Spend row.
+    let mutated = ACME.replacen("aggregation: \"Sum\" }", "aggregation: \"Median\" }", 1);
     let errs = must_validate_with_error(&mutated);
     assert_any(
         &errs,

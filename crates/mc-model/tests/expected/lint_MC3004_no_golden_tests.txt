@@ -1,0 +1,4 @@
+MC3004 [Warning] golden_tests: Model declares no golden_tests
+  in: crates/mc-model/tests/lint_fixtures/MC3004_no_golden_tests.yaml
+  pointer: /golden_tests
+  suggestion: Add at least one golden test pinning a known-good value (start with the model's anchor coords)

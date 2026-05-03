@@ -1,0 +1,4 @@
+MC3002 [Warning] measures.Spend: Measure 'Spend' has no description
+  in: crates/mc-model/tests/lint_fixtures/MC3002_missing_measure_description.yaml
+  pointer: /measures/0
+  suggestion: Add a one-line description explaining what the measure represents and its unit

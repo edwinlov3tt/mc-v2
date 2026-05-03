@@ -1,0 +1,29 @@
+Model: Acme_MarketingFinance (format v1)
+  Description: Brief §4 reference cube — 6 dims × 11 measures × 5 rules × 2520 input cells
+  Author: MarketingCubes V2
+  Created: 2026-05-02
+
+Dimensions: 6
+  - Scenario (Scenario) — 3 elements (3 leaves, 0 consolidated)
+  - Version (Version) — 3 elements (3 leaves, 0 consolidated)
+  - Time (Standard) — 17 elements (12 leaves, 5 consolidated; default hierarchy 'Calendar' with 16 edges, depth 2)
+  - Channel (Standard) — 8 elements (5 leaves, 3 consolidated; default hierarchy 'Grouping' with 7 edges, depth 2)
+  - Market (Standard) — 15 elements (7 leaves, 8 consolidated; default hierarchy 'Geographic' with 14 edges, depth 3)
+  - Measure (Measure) — 11 elements (11 leaves, 0 consolidated)
+
+Measures: 11
+  Input (6): Spend, CPC, CVR, Close_Rate, AOV, COGS_Rate
+  Derived (5): Clicks, Leads, Customers, Revenue, Gross_Profit
+  Aggregations: Sum (6), WeightedAverage (5)
+
+Rules: 5
+  - rule_clicks: Clicks = (Spend / CPC)
+  - rule_leads: Leads = (Clicks * CVR)
+  - rule_customers: Customers = (Leads * Close_Rate)
+  - rule_revenue: Revenue = (Customers * AOV)
+  - rule_gross_profit: Gross_Profit = (Revenue * (Const(Float(1.0)) - COGS_Rate))
+  Longest rule chain depth: 5
+
+Cardinality (Cartesian product across all dim elements): 201960
+Golden tests: 9
+Diagnostics: 0 errors, 0 warnings, 0 info

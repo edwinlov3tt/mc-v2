@@ -1,0 +1,47 @@
+# MC3006 fixture — a 6-deep rule chain (Spend → A → B → C → D → E → F).
+# Per Phase 3B threshold (handoff §C, strict > 5): F has depth 6, so the
+# rule targeting F fires MC3006 once. A..E sit at depths 1..5 — all clean.
+#
+# F is referenced in the golden so MC3010 stays silent on it.
+model_format_version: 1
+metadata:
+  name: "MC3006Fixture"
+  description: "Triggers MC3006 — depth-6 rule chain."
+dimensions:
+  - name: "Time"
+    description: "Calendar."
+    kind: "Standard"
+    elements:
+      - { name: "Jan" }
+      - { name: "Year" }
+  - name: "Measure"
+    description: "Inputs and derived outputs."
+    kind: "Measure"
+    elements: []
+hierarchies:
+  - dimension: "Time"
+    name: "Cal"
+    default: true
+    edges:
+      - { parent: "Year", child: "Jan", weight: 1.0 }
+measures:
+  - { name: "Spend", description: "Spend.", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "A", description: "A.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "B", description: "B.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "C", description: "C.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "D", description: "D.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "E", description: "E.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "F", description: "F.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+rules:
+  - { name: "rule_a", description: "A = Spend * 1.", target_measure: "A", scope: "AllLeaves", body: { mul: [ { ref: "Spend" }, { const: 1.0 } ] }, declared_dependencies: ["Spend"] }
+  - { name: "rule_b", description: "B = A * 1.",     target_measure: "B", scope: "AllLeaves", body: { mul: [ { ref: "A" },     { const: 1.0 } ] }, declared_dependencies: ["A"] }
+  - { name: "rule_c", description: "C = B * 1.",     target_measure: "C", scope: "AllLeaves", body: { mul: [ { ref: "B" },     { const: 1.0 } ] }, declared_dependencies: ["B"] }
+  - { name: "rule_d", description: "D = C * 1.",     target_measure: "D", scope: "AllLeaves", body: { mul: [ { ref: "C" },     { const: 1.0 } ] }, declared_dependencies: ["C"] }
+  - { name: "rule_e", description: "E = D * 1.",     target_measure: "E", scope: "AllLeaves", body: { mul: [ { ref: "D" },     { const: 1.0 } ] }, declared_dependencies: ["D"] }
+  - { name: "rule_f", description: "F = E * 1.",     target_measure: "F", scope: "AllLeaves", body: { mul: [ { ref: "E" },     { const: 1.0 } ] }, declared_dependencies: ["E"] }
+golden_tests:
+  - name: "anchor"
+    coord:
+      Time: "Jan"
+      Measure: "F"
+    expect: 0.0

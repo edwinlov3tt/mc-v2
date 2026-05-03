@@ -1,25 +1,20 @@
-# Acme_MarketingFinance — Phase 3A canonical example.
+# Acme model with one impossible golden_test value. Used by
+# `tests/demo_no_goldens.rs` to prove that `mc demo --model` does NOT
+# run goldens — if it did, this fixture would fail the demo, but per
+# ADR-0005 amendment #12 demo's job is "load + validate + run + print",
+# not "check goldens".
 #
-# This file is the YAML expression of `mc_fixtures::build_acme_cube()`.
-# The structural-equivalence test (`tests/structural_equivalence.rs`)
-# diffs the YAML-loaded cube against the Rust fixture; the byte-for-byte
-# diff in the CLI demo gate confirms behavioral parity.
-#
-# Conventions (per ADR-0004 Decision 1 — YAML safe subset):
-#   - YAML 1.2 only.
-#   - No anchors, no aliases, no merge keys, no custom tags.
-#   - Every string-like value is quoted: IDs, names, dates, enum-likes.
-#   - `model_format_version` is an integer (Decision 6 — semver deferred).
-
+# Identical to examples/acme.yaml except: the `spend_input_anchor_...`
+# golden expects 999_999.0 instead of 11500.0 (impossible — the
+# canonical input is 11500.0 at this coord).
 model_format_version: 1
 
 metadata:
   name: "Acme_MarketingFinance"
-  description: "Brief §4 reference cube — 6 dims × 11 measures × 5 rules × 2520 input cells"
-  author: "MarketingCubes V2"
-  created: "2026-05-02"
+  description: "Acme variant with one bad golden — used to prove demo doesn't run goldens."
+  author: "Phase 3B test"
+  created: "2026-05-03"
 
-# Per spec §3.5 the dim order is exactly [Scenario, Version, Time, Channel, Market, Measure].
 dimensions:
   - name: "Scenario"
     description: "Plan branches the user can switch between (baseline vs alternates)."
@@ -92,17 +87,11 @@ dimensions:
       - { name: "Northeast" }
       - { name: "USA" }
 
-  # Measure dim's elements come from the top-level `measures:` block. We
-  # declare the Measure dim here with kind: "Measure" and an empty
-  # elements list so the dim-order check sees it in the canonical 6th slot.
   - name: "Measure"
     description: "Inputs (Spend, ratios) and derived KPIs (Clicks, Leads, Customers, Revenue, Gross_Profit)."
     kind: "Measure"
     elements: []
 
-# Hierarchies — three default hierarchies on Time / Channel / Market.
-# Edges follow the same parent → child shape `mc_fixtures::build_acme_cube()`
-# uses; the `weight: 1.0` on every edge mirrors the Rust fixture's behavior.
 hierarchies:
   - dimension: "Time"
     name: "Calendar"
@@ -156,15 +145,6 @@ hierarchies:
       - { parent: "New_York_State", child: "New_York_City", weight: 1.0 }
       - { parent: "Massachusetts", child: "Boston", weight: 1.0 }
 
-# Measures.
-# Inputs first (matches the Rust fixture's element-order convention), then
-# Derived. Aggregation methods mirror `mc_fixtures::build_measure_dim`:
-#   - Spend, Clicks, Leads, Customers, Revenue, Gross_Profit: Sum
-#   - CPC: WeightedAverage by Spend
-#   - CVR: WeightedAverage by Clicks
-#   - Close_Rate: WeightedAverage by Leads
-#   - AOV: WeightedAverage by Customers
-#   - COGS_Rate: WeightedAverage by Revenue
 measures:
   - { name: "Spend", description: "Marketing dollars allocated to a channel/market/period (USD).", role: "Input", data_type: "F64", aggregation: "Sum" }
   - { name: "CPC", description: "Cost per click (USD/click); rolls up as a Spend-weighted average.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Spend" }
@@ -178,11 +158,9 @@ measures:
   - { name: "Revenue", description: "Derived top-line revenue (USD); computed as Customers * AOV at the leaf level.", role: "Derived", data_type: "F64", aggregation: "Sum" }
   - { name: "Gross_Profit", description: "Derived gross profit (USD); Revenue * (1 - COGS_Rate) at the leaf level.", role: "Derived", data_type: "F64", aggregation: "Sum" }
 
-# Rules — structured expression trees per ADR-0004 Decision 4.
-# Friendly formula strings (`Revenue = Customers * AOV`) are Phase 3C.
 rules:
   - name: "rule_clicks"
-    description: "Clicks = Spend / CPC — translate marketing dollars into click volume."
+    description: "Clicks = Spend / CPC."
     target_measure: "Clicks"
     scope: "AllLeaves"
     body:
@@ -192,7 +170,7 @@ rules:
     declared_dependencies: ["Spend", "CPC"]
 
   - name: "rule_leads"
-    description: "Leads = Clicks * CVR — apply the click-to-lead conversion rate."
+    description: "Leads = Clicks * CVR."
     target_measure: "Leads"
     scope: "AllLeaves"
     body:
@@ -202,7 +180,7 @@ rules:
     declared_dependencies: ["Clicks", "CVR"]
 
   - name: "rule_customers"
-    description: "Customers = Leads * Close_Rate — apply the lead-to-customer close rate."
+    description: "Customers = Leads * Close_Rate."
     target_measure: "Customers"
     scope: "AllLeaves"
     body:
@@ -212,7 +190,7 @@ rules:
     declared_dependencies: ["Leads", "Close_Rate"]
 
   - name: "rule_revenue"
-    description: "Revenue = Customers * AOV — top-line revenue from new customers."
+    description: "Revenue = Customers * AOV."
     target_measure: "Revenue"
     scope: "AllLeaves"
     body:
@@ -222,7 +200,7 @@ rules:
     declared_dependencies: ["Customers", "AOV"]
 
   - name: "rule_gross_profit"
-    description: "Gross_Profit = Revenue * (1 - COGS_Rate) — revenue net of cost of goods sold."
+    description: "Gross_Profit = Revenue * (1 - COGS_Rate)."
     target_measure: "Gross_Profit"
     scope: "AllLeaves"
     body:
@@ -233,25 +211,12 @@ rules:
             - { ref: "COGS_Rate" }
     declared_dependencies: ["Revenue", "COGS_Rate"]
 
-# Inline goldens — brief §4.5.1 anchor values byte-for-byte (epsilon
-# tolerance is reserved for ratio measures whose closed-form expansion
-# carries a small floating-point tail).
-#
-# Anchor coords from `canonical_inputs_for(time_idx, channel_idx, market_idx)`:
-#   Mar_2026 / Paid_Search / Tampa  ⇒ t=3, c=0, m=0
-#     spend = 10_000 + 500*3 = 11_500.0
-#     cpc   = 1.50
-#     cvr   = 0.020
-#     close = 0.10
-#     aov   = 200.0
-#     cogs  = 0.30
-#     clicks = 11_500 / 1.50 = 7_666.666666…
-#     leads  = clicks * cvr = 153.333333…
-#     customers = leads * close = 15.333333…
-#     revenue = customers * aov = 3_066.666666…
-#     gp = revenue * (1 - cogs) = 2_146.666666…
+# The bad golden — expects 999999.0 where the canonical input writes
+# 11500.0 at Mar_2026 / Paid_Search / Tampa. `mc model test` fails
+# loudly on this; `mc demo --model` MUST exit 0 nonetheless because
+# demo doesn't run goldens.
 golden_tests:
-  - name: "spend_input_anchor_mar_paid_search_tampa"
+  - name: "spend_anchor_INTENTIONALLY_WRONG"
     coord:
       Scenario: "Baseline"
       Version: "Working"
@@ -259,91 +224,4 @@ golden_tests:
       Channel: "Paid_Search"
       Market: "Tampa"
       Measure: "Spend"
-    expect: 11500.0
-
-  - name: "cpc_input_anchor_mar_paid_search_tampa"
-    coord:
-      Scenario: "Baseline"
-      Version: "Working"
-      Time: "Mar_2026"
-      Channel: "Paid_Search"
-      Market: "Tampa"
-      Measure: "CPC"
-    expect: 1.50
-
-  - name: "aov_input_anchor_mar_paid_search_tampa"
-    coord:
-      Scenario: "Baseline"
-      Version: "Working"
-      Time: "Mar_2026"
-      Channel: "Paid_Search"
-      Market: "Tampa"
-      Measure: "AOV"
-    expect: 200.0
-
-  - name: "clicks_derived_anchor_mar_paid_search_tampa"
-    coord:
-      Scenario: "Baseline"
-      Version: "Working"
-      Time: "Mar_2026"
-      Channel: "Paid_Search"
-      Market: "Tampa"
-      Measure: "Clicks"
-    expect_within_epsilon: { value: 7666.666666666667, epsilon: 1.0e-9 }
-
-  - name: "leads_derived_anchor_mar_paid_search_tampa"
-    coord:
-      Scenario: "Baseline"
-      Version: "Working"
-      Time: "Mar_2026"
-      Channel: "Paid_Search"
-      Market: "Tampa"
-      Measure: "Leads"
-    expect_within_epsilon: { value: 153.33333333333334, epsilon: 1.0e-9 }
-
-  - name: "customers_derived_anchor_mar_paid_search_tampa"
-    coord:
-      Scenario: "Baseline"
-      Version: "Working"
-      Time: "Mar_2026"
-      Channel: "Paid_Search"
-      Market: "Tampa"
-      Measure: "Customers"
-    expect_within_epsilon: { value: 15.333333333333334, epsilon: 1.0e-9 }
-
-  - name: "revenue_derived_anchor_mar_paid_search_tampa"
-    coord:
-      Scenario: "Baseline"
-      Version: "Working"
-      Time: "Mar_2026"
-      Channel: "Paid_Search"
-      Market: "Tampa"
-      Measure: "Revenue"
-    expect_within_epsilon: { value: 3066.6666666666674, epsilon: 1.0e-9 }
-
-  - name: "gross_profit_derived_anchor_mar_paid_search_tampa"
-    coord:
-      Scenario: "Baseline"
-      Version: "Working"
-      Time: "Mar_2026"
-      Channel: "Paid_Search"
-      Market: "Tampa"
-      Measure: "Gross_Profit"
-    expect_within_epsilon: { value: 2146.666666666667, epsilon: 1.0e-9 }
-
-  # One consolidation-level golden to exercise hierarchy rollup of an
-  # input measure: Q1_2026 Spend at Paid_Search / Tampa = sum of
-  # Jan/Feb/Mar 2026 Spend at the same leaf channel × market.
-  #   Jan: t=1 ⇒ 10_000 + 500*1 = 10_500
-  #   Feb: t=2 ⇒ 10_000 + 500*2 = 11_000
-  #   Mar: t=3 ⇒ 10_000 + 500*3 = 11_500
-  #   Total = 33_000
-  - name: "spend_consolidated_q1_paid_search_tampa"
-    coord:
-      Scenario: "Baseline"
-      Version: "Working"
-      Time: "Q1_2026"
-      Channel: "Paid_Search"
-      Market: "Tampa"
-      Measure: "Spend"
-    expect: 33000.0
+    expect: 999999.0

@@ -1,0 +1,4 @@
+MC3003 [Warning] rules.rule_doubled: Rule 'rule_doubled' has no description
+  in: crates/mc-model/tests/lint_fixtures/MC3003_missing_rule_description.yaml
+  pointer: /rules/0
+  suggestion: Add a one-line description explaining the business meaning of the rule

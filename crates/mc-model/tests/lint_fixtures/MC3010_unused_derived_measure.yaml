@@ -1,0 +1,53 @@
+# MC3010 fixture — a Derived measure ("Extra") whose value no other rule
+# references and that doesn't appear in any golden coord.
+model_format_version: 1
+metadata:
+  name: "MC3010Fixture"
+  description: "Triggers MC3010 — unused derived measure."
+dimensions:
+  - name: "Time"
+    description: "Calendar."
+    kind: "Standard"
+    elements:
+      - { name: "Jan" }
+      - { name: "Year" }
+  - name: "Measure"
+    description: "Inputs and derived outputs."
+    kind: "Measure"
+    elements: []
+hierarchies:
+  - dimension: "Time"
+    name: "Cal"
+    default: true
+    edges:
+      - { parent: "Year", child: "Jan", weight: 1.0 }
+measures:
+  - { name: "Spend", description: "Spend.", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "Doubled", description: "Doubled spend.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "Extra", description: "Extra derived — leaf output, nothing reads it.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+rules:
+  - name: "rule_doubled"
+    description: "Doubled = Spend * 2."
+    target_measure: "Doubled"
+    scope: "AllLeaves"
+    body:
+      mul:
+        - { ref: "Spend" }
+        - { const: 2.0 }
+    declared_dependencies: ["Spend"]
+  - name: "rule_extra"
+    description: "Extra = Spend * 3."
+    target_measure: "Extra"
+    scope: "AllLeaves"
+    body:
+      mul:
+        - { ref: "Spend" }
+        - { const: 3.0 }
+    declared_dependencies: ["Spend"]
+golden_tests:
+  # Only Doubled is in goldens; Extra is unreferenced + unchecked → MC3010.
+  - name: "anchor"
+    coord:
+      Time: "Jan"
+      Measure: "Doubled"
+    expect: 0.0

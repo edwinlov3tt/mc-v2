@@ -1,0 +1,47 @@
+# MC3011 fixture — Time hierarchy has two disjoint roots (Year1 and Year2),
+# each with its own leaf, with no edge connecting them.
+#
+# Both leaves are touched by some edge, so MC3005 stays silent.
+model_format_version: 1
+metadata:
+  name: "MC3011Fixture"
+  description: "Triggers MC3011 — hierarchy with two disconnected roots."
+dimensions:
+  - name: "Time"
+    description: "Calendar with two disjoint years."
+    kind: "Standard"
+    elements:
+      - { name: "Jan1" }
+      - { name: "Year1" }
+      - { name: "Jan2" }
+      - { name: "Year2" }
+  - name: "Measure"
+    description: "Inputs and derived outputs."
+    kind: "Measure"
+    elements: []
+hierarchies:
+  - dimension: "Time"
+    name: "Cal"
+    default: true
+    edges:
+      - { parent: "Year1", child: "Jan1", weight: 1.0 }
+      - { parent: "Year2", child: "Jan2", weight: 1.0 }
+measures:
+  - { name: "Spend", description: "Spend.", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "Doubled", description: "Doubled spend.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+rules:
+  - name: "rule_doubled"
+    description: "Doubled = Spend * 2."
+    target_measure: "Doubled"
+    scope: "AllLeaves"
+    body:
+      mul:
+        - { ref: "Spend" }
+        - { const: 2.0 }
+    declared_dependencies: ["Spend"]
+golden_tests:
+  - name: "anchor"
+    coord:
+      Time: "Jan1"
+      Measure: "Doubled"
+    expect: 0.0

@@ -1,0 +1,41 @@
+# MC3003 fixture — rule_doubled lacks a description.
+model_format_version: 1
+metadata:
+  name: "MC3003Fixture"
+  description: "Triggers MC3003 — rule has no description."
+dimensions:
+  - name: "Time"
+    description: "Calendar."
+    kind: "Standard"
+    elements:
+      - { name: "Jan" }
+      - { name: "Year" }
+  - name: "Measure"
+    description: "Inputs and derived outputs."
+    kind: "Measure"
+    elements: []
+hierarchies:
+  - dimension: "Time"
+    name: "Cal"
+    default: true
+    edges:
+      - { parent: "Year", child: "Jan", weight: 1.0 }
+measures:
+  - { name: "Spend", description: "Spend.", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "Doubled", description: "Doubled spend.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+rules:
+  - name: "rule_doubled"
+    # description deliberately omitted
+    target_measure: "Doubled"
+    scope: "AllLeaves"
+    body:
+      mul:
+        - { ref: "Spend" }
+        - { const: 2.0 }
+    declared_dependencies: ["Spend"]
+golden_tests:
+  - name: "anchor"
+    coord:
+      Time: "Jan"
+      Measure: "Doubled"
+    expect: 0.0

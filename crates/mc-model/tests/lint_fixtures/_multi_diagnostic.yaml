@@ -1,0 +1,44 @@
+# Multi-diagnostic fixture used by tests/deterministic_emission.rs to
+# verify the (severity desc, code asc, yaml_pointer asc, message asc) sort
+# is byte-exact across runs.
+#
+# Triggers MC3001, MC3002, MC3003, MC3004, MC3007 simultaneously.
+model_format_version: 1
+metadata:
+  name: "MultiDiagnosticFixture"
+  description: "Triggers ≥ 3 lints for the deterministic-emission test."
+dimensions:
+  - name: "Time"
+    # description omitted → MC3001
+    kind: "Standard"
+    elements:
+      - { name: "Jan" }
+      - { name: "Year" }
+  - name: "Measure"
+    description: "Inputs and derived outputs."
+    kind: "Measure"
+    elements: []
+hierarchies:
+  - dimension: "Time"
+    name: "Cal"
+    default: true
+    edges:
+      - { parent: "Year", child: "Jan", weight: 1.0 }
+measures:
+  # Spend missing description → MC3002
+  - { name: "Spend", role: "Input", data_type: "F64", aggregation: "Sum" }
+  # cpc named like a ratio + Sum → MC3007. cpc is referenced below so
+  # MC3009 stays silent.
+  - { name: "cpc", description: "Cost per click.", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "Doubled", description: "Doubled spend × cpc.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+rules:
+  # Description omitted → MC3003
+  - name: "rule_doubled"
+    target_measure: "Doubled"
+    scope: "AllLeaves"
+    body:
+      mul:
+        - { ref: "Spend" }
+        - { ref: "cpc" }
+    declared_dependencies: ["Spend", "cpc"]
+# golden_tests block omitted → MC3004

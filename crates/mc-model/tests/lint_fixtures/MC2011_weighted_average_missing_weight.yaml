@@ -1,0 +1,35 @@
+# MC2011 fixture — a measure declared aggregation: WeightedAverage with
+# NO weight_measure: field. This is a hard validation error (Phase 3B
+# promotion from lint per ADR-0005 amendment #4); load() returns Err.
+model_format_version: 1
+metadata:
+  name: "MC2011Fixture"
+  description: "Triggers MC2011 — WeightedAverage missing weight_measure."
+dimensions:
+  - name: "Time"
+    description: "Calendar."
+    kind: "Standard"
+    elements:
+      - { name: "Jan" }
+      - { name: "Year" }
+  - name: "Measure"
+    description: "Inputs and derived outputs."
+    kind: "Measure"
+    elements: []
+hierarchies:
+  - dimension: "Time"
+    name: "Cal"
+    default: true
+    edges:
+      - { parent: "Year", child: "Jan", weight: 1.0 }
+measures:
+  - { name: "Spend", description: "Spend.", role: "Input", data_type: "F64", aggregation: "Sum" }
+  # WeightedAverage with no weight_measure — MC2011.
+  - { name: "Rate", description: "Rate.", role: "Input", data_type: "F64", aggregation: "WeightedAverage" }
+rules: []
+golden_tests:
+  - name: "anchor"
+    coord:
+      Time: "Jan"
+      Measure: "Spend"
+    expect: 0.0

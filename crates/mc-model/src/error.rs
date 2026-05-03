@@ -35,6 +35,13 @@ impl std::fmt::Display for Span {
 }
 
 /// Stage 1 errors: YAML syntax + safe-subset rejections.
+///
+/// Stable diagnostic codes (Phase 3B contract):
+///
+/// | Code   | Variant      |
+/// |--------|--------------|
+/// | MC1001 | `Syntax`     |
+/// | MC1002 | `SafeSubset` |
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ParseError {
@@ -49,6 +56,26 @@ pub enum ParseError {
     /// YAML is valid but uses a feature we banned."
     #[error("yaml safe-subset violation at {span}: {kind}")]
     SafeSubset { span: Span, kind: ParseErrorKind },
+}
+
+impl ParseError {
+    /// Stable diagnostic code (`MC1xxx`). See the variant table above.
+    pub fn code(&self) -> &'static str {
+        match self {
+            ParseError::Syntax { .. } => "MC1001",
+            ParseError::SafeSubset { .. } => "MC1002",
+        }
+    }
+
+    /// Source span carried by the error. Always present — the parser
+    /// synthesizes a zero-position span when `serde_yaml` returns no
+    /// location.
+    pub fn span(&self) -> &Span {
+        match self {
+            ParseError::Syntax { span, .. } => span,
+            ParseError::SafeSubset { span, .. } => span,
+        }
+    }
 }
 
 /// Why a safe-subset prefilter rejected the YAML. ADR-0004 Decision 1
@@ -75,9 +102,26 @@ impl std::fmt::Display for ParseErrorKind {
     }
 }
 
-/// Stage 2 errors: semantic validation. One variant per Decision 6 row.
+/// Stage 2 errors: semantic validation. One variant per Decision 6 row,
+/// plus the Phase 3B promotion (`WeightedAverageMissingWeight` — MC2011).
 /// Multiple `ValidationError`s are returned at once from `validate` so a
 /// user editing a 500-line YAML sees every problem in one pass.
+///
+/// Each variant carries a stable diagnostic code via [`ValidationError::code`]:
+///
+/// | Code   | Variant                          |
+/// |--------|----------------------------------|
+/// | MC2001 | `DuplicateName`                  |
+/// | MC2002 | `MissingDimension`               |
+/// | MC2003 | `InvalidHierarchyEdge`           |
+/// | MC2004 | `HierarchyCycle`                 |
+/// | MC2005 | `RuleReferencesUnknownMeasure`   |
+/// | MC2006 | `DerivedMeasureWithoutRule`      |
+/// | MC2007 | `InputMeasureHasRule`            |
+/// | MC2008 | `RuleCycle`                      |
+/// | MC2009 | `UnsupportedAggregation`         |
+/// | MC2010 | `Schema`                         |
+/// | MC2011 | `WeightedAverageMissingWeight` (Phase 3B promotion from MC3008) |
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ValidationError {
@@ -132,12 +176,39 @@ pub enum ValidationError {
         method: String,
     },
 
+    /// A measure declared `aggregation: WeightedAverage` did not declare a
+    /// `weight_measure:`. Promoted from lint to validator in Phase 3B per
+    /// ADR-0005 acceptance amendment #4 — code MC2011.
+    #[error("measure {measure_name:?}: aggregation WeightedAverage requires weight_measure")]
+    WeightedAverageMissingWeight { measure_name: String },
+
     /// Generic schema misshape: a required field was missing, a required
     /// type didn't match, a `model_format_version` other than 1, etc. The
     /// validator surfaces these alongside the targeted Decision 6 errors so
     /// authors don't bounce through a half-validated model.
     #[error("schema error: {message}")]
     Schema { message: String },
+}
+
+impl ValidationError {
+    /// Stable diagnostic code (`MC2xxx`). Phase 3B contract: this value is
+    /// part of the public API; renaming or renumbering would silently
+    /// break LLM/UI consumers pinned to the code-to-meaning map.
+    pub fn code(&self) -> &'static str {
+        match self {
+            ValidationError::DuplicateName { .. } => "MC2001",
+            ValidationError::MissingDimension { .. } => "MC2002",
+            ValidationError::InvalidHierarchyEdge { .. } => "MC2003",
+            ValidationError::HierarchyCycle { .. } => "MC2004",
+            ValidationError::RuleReferencesUnknownMeasure { .. } => "MC2005",
+            ValidationError::DerivedMeasureWithoutRule { .. } => "MC2006",
+            ValidationError::InputMeasureHasRule { .. } => "MC2007",
+            ValidationError::RuleCycle { .. } => "MC2008",
+            ValidationError::UnsupportedAggregation { .. } => "MC2009",
+            ValidationError::Schema { .. } => "MC2010",
+            ValidationError::WeightedAverageMissingWeight { .. } => "MC2011",
+        }
+    }
 }
 
 /// Top-level error wrapper. `load` and `load_str` return `Vec<Error>` so

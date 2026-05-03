@@ -1,0 +1,4 @@
+MC3009 [Info] measures.Unused: Unused input measure 'Unused'
+  in: crates/mc-model/tests/lint_fixtures/MC3009_unused_input_measure.yaml
+  pointer: /measures/1
+  suggestion: If intentional, add a description noting it's a placeholder for future use; otherwise consider removing

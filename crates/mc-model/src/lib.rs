@@ -34,7 +34,10 @@
 #![cfg_attr(not(test), deny(clippy::expect_used))]
 
 pub mod compile;
+pub mod diagnostic;
 pub mod error;
+pub mod inspect;
+pub mod lint;
 pub mod parse;
 pub mod schema;
 pub mod validate;
@@ -42,7 +45,13 @@ pub mod validate;
 use std::path::Path;
 
 pub use compile::{compile, CompiledCube, ModelRefs};
+pub use diagnostic::{
+    diagnostics_to_json, diagnostics_to_text, sort_diagnostics, Diagnostic, DiagnosticCode,
+    ModelPath, Severity, SCHEMA_VERSION,
+};
 pub use error::{Error, ParseError, ParseErrorKind, Span, ValidationError};
+pub use inspect::{inspect_json, inspect_text, inspect_text_with_diagnostics, ModelSummary};
+pub use lint::{lint, lint_with_file};
 pub use parse::parse;
 pub use schema::{
     ParsedDimension, ParsedElement, ParsedGoldenTest, ParsedHierarchy, ParsedHierarchyEdge,

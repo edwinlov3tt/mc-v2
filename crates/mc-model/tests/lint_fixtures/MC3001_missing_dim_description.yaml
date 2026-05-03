@@ -1,0 +1,42 @@
+# MC3001 fixture — the Time dim lacks a description.
+# Every other lint stays clean so the test asserts exactly MC3001 fires.
+model_format_version: 1
+metadata:
+  name: "MC3001Fixture"
+  description: "Triggers MC3001 — Time dim has no description."
+dimensions:
+  - name: "Time"
+    # description deliberately omitted
+    kind: "Standard"
+    elements:
+      - { name: "Jan" }
+      - { name: "Year" }
+  - name: "Measure"
+    description: "Inputs and derived outputs."
+    kind: "Measure"
+    elements: []
+hierarchies:
+  - dimension: "Time"
+    name: "Cal"
+    default: true
+    edges:
+      - { parent: "Year", child: "Jan", weight: 1.0 }
+measures:
+  - { name: "Spend", description: "Spend.", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "Doubled", description: "Doubled spend.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+rules:
+  - name: "rule_doubled"
+    description: "Doubled = Spend * 2."
+    target_measure: "Doubled"
+    scope: "AllLeaves"
+    body:
+      mul:
+        - { ref: "Spend" }
+        - { const: 2.0 }
+    declared_dependencies: ["Spend"]
+golden_tests:
+  - name: "anchor"
+    coord:
+      Time: "Jan"
+      Measure: "Doubled"
+    expect: 0.0

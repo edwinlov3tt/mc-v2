@@ -1,70 +1,573 @@
-//! `mc` — smoke-test CLI for the Acme demo.
+//! `mc` — MarketingCubes CLI.
 //!
-//! Per phase-1-rust-kernel-build-brief.md §4.6 / §15 step 19. Runs the
-//! Acme demo end-to-end and prints the values the integration test
-//! suite asserts on. CI runs the test suite, not the CLI; the CLI is
-//! a human-readable smoke check.
+//! Phase 1A: `mc demo` ran the Acme cube end-to-end (brief §4.6).
+//! Phase 3A: added `--model <path>` so the demo could route through
+//!           `mc_model::load`. Stdout is byte-for-byte identical.
+//! Phase 3B: adds the `mc model {validate, inspect, lint, test}` group
+//!           plus a `--format text|json` modifier and a
+//!           `--deny-warnings` modifier on `mc model lint` only.
 //!
-//! `cargo run --release --bin mc -- demo`
+//! Per [ADR-0005](../../../docs/decisions/0005-phase-3b-model-qa-linter-diagnostics.md)
+//! amendment #12: `mc demo --model` does **not** run goldens. Goldens
+//! are exclusively `mc model test`'s job. The two responsibilities are
+//! kept separate so a CI job that just wants "did the demo execute?"
+//! does not trip on golden-test failures unrelated to demo execution.
 
 use mc_core::{CellValue, ScalarValue, TraceNode, TraceOp, WriteIntent, WritebackRequest};
 use mc_fixtures::{build_acme_cube, coord, write_canonical_inputs, AcmeRefs};
+use mc_model::{
+    diagnostics_to_json, diagnostics_to_text, inspect_json, inspect_text_with_diagnostics,
+    lint_with_file, sort_diagnostics, Diagnostic, ModelPath, Severity, ValidatedModel,
+    ValidationError, SCHEMA_VERSION,
+};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    // Crude but sufficient arg parser. Phase 3A's only new flag is
-    // `--model <path>`; we accept it after the subcommand.
-    //   mc demo                       — Rust fixture (unchanged)
-    //   mc demo --model <path>        — YAML-loaded cube via mc-model::load
-    let mut iter = args.iter().skip(1);
-    let cmd = iter
-        .next()
-        .map(String::as_str)
-        .unwrap_or("demo")
-        .to_string();
-    let mut model_path: Option<String> = None;
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--model" => match iter.next() {
-                Some(p) => model_path = Some(p.clone()),
-                None => {
-                    eprintln!("--model requires a path argument");
-                    std::process::exit(1);
-                }
-            },
-            other => {
-                eprintln!("unknown argument: {other:?}");
-                std::process::exit(1);
-            }
-        }
+    if args.len() < 2 {
+        run_demo(None);
+        return;
     }
-    match cmd.as_str() {
-        "demo" => run_demo(model_path.as_deref()),
+    match args[1].as_str() {
+        "demo" => match parse_demo_args(&args[2..]) {
+            Ok(model_path) => run_demo(model_path.as_deref()),
+            Err(e) => fatal(&e),
+        },
+        "model" => match parse_model_args(&args[2..]) {
+            Ok(cmd) => run_model(cmd),
+            Err(e) => fatal(&e),
+        },
         "--help" | "-h" | "help" => print_help(),
         other => {
             eprintln!("unknown command: {other:?}");
             print_help();
-            std::process::exit(1);
+            std::process::exit(2);
         }
     }
+}
+
+fn fatal(msg: &str) -> ! {
+    eprintln!("error: {msg}");
+    std::process::exit(2)
 }
 
 fn print_help() {
     println!("mc — MarketingCubes CLI");
     println!();
     println!("USAGE:");
-    println!("    mc demo                          # Rust fixture (canonical)");
-    println!("    mc demo --model <path>           # YAML model via mc-model::load");
+    println!("    mc demo [--model <path>]               # Run the Acme demo");
     println!();
-    println!("Runs the Acme demo end-to-end (per brief §4.6).");
+    println!("    mc model validate <path> [--format text|json]");
+    println!("    mc model inspect  <path> [--format text|json]");
+    println!("    mc model lint     <path> [--format text|json] [--deny-warnings]");
+    println!("    mc model test     <path> [--format text|json]");
+    println!();
+    println!("Per ADR-0005: lint is advisory by default; --deny-warnings flips lint");
+    println!("warnings to a non-zero CLI exit code. mc demo --model does NOT run");
+    println!("goldens — that is exclusively mc model test's responsibility.");
 }
+
+// ---------------------------------------------------------------------------
+// Argument parsing
+// ---------------------------------------------------------------------------
+
+fn parse_demo_args(args: &[String]) -> Result<Option<String>, String> {
+    let mut model_path: Option<String> = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--model" => match iter.next() {
+                Some(p) => model_path = Some(p.clone()),
+                None => return Err("--model requires a path argument".into()),
+            },
+            other => return Err(format!("unknown argument: {other:?}")),
+        }
+    }
+    Ok(model_path)
+}
+
+#[derive(Debug)]
+struct ModelCommand {
+    verb: ModelVerb,
+    path: String,
+    format: OutputFormat,
+    deny_warnings: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModelVerb {
+    Validate,
+    Inspect,
+    Lint,
+    Test,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutputFormat {
+    Text,
+    Json,
+}
+
+fn parse_model_args(args: &[String]) -> Result<ModelCommand, String> {
+    if args.is_empty() {
+        return Err("`mc model` requires a verb (validate|inspect|lint|test)".into());
+    }
+    let verb = match args[0].as_str() {
+        "validate" => ModelVerb::Validate,
+        "inspect" => ModelVerb::Inspect,
+        "lint" => ModelVerb::Lint,
+        "test" => ModelVerb::Test,
+        other => return Err(format!("unknown model verb: {other:?}")),
+    };
+
+    let mut path: Option<String> = None;
+    let mut format = OutputFormat::Text;
+    let mut deny_warnings = false;
+    let mut iter = args[1..].iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--format" => match iter.next() {
+                Some(v) if v == "text" => format = OutputFormat::Text,
+                Some(v) if v == "json" => format = OutputFormat::Json,
+                Some(v) => return Err(format!("--format must be `text` or `json`, got {v:?}")),
+                None => return Err("--format requires an argument".into()),
+            },
+            "--deny-warnings" => {
+                if verb != ModelVerb::Lint {
+                    return Err("--deny-warnings is only valid for `mc model lint`".into());
+                }
+                deny_warnings = true;
+            }
+            other if !other.starts_with("--") && path.is_none() => {
+                path = Some(other.to_string());
+            }
+            other => return Err(format!("unknown argument: {other:?}")),
+        }
+    }
+    let path = path.ok_or_else(|| format!("`mc model {verb:?}` requires a YAML path"))?;
+    Ok(ModelCommand {
+        verb,
+        path,
+        format,
+        deny_warnings,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Model subcommand dispatch
+// ---------------------------------------------------------------------------
+
+fn run_model(cmd: ModelCommand) {
+    match cmd.verb {
+        ModelVerb::Validate => run_validate(&cmd.path, cmd.format),
+        ModelVerb::Inspect => run_inspect(&cmd.path, cmd.format),
+        ModelVerb::Lint => run_lint(&cmd.path, cmd.format, cmd.deny_warnings),
+        ModelVerb::Test => run_test(&cmd.path, cmd.format),
+    }
+}
+
+/// Load `path` as a `ValidatedModel`. Bypasses the compile stage so we
+/// don't pay kernel construction cost on the validate/inspect/lint paths.
+/// On parse or validation error, prints diagnostics in the requested
+/// format and exits non-zero.
+fn load_validated(path: &str, format: OutputFormat) -> ValidatedModel {
+    let yaml = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            print_io_error(path, &e.to_string(), format);
+            std::process::exit(1);
+        }
+    };
+    let parsed = match mc_model::parse(&yaml, Some(path.to_string())) {
+        Ok(p) => p,
+        Err(e) => {
+            print_parse_error(path, &e, format);
+            std::process::exit(1);
+        }
+    };
+    match mc_model::validate(parsed) {
+        Ok(v) => v,
+        Err(errs) => {
+            print_validation_errors(path, &errs, format);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_validate(path: &str, format: OutputFormat) {
+    let _ = load_validated(path, format);
+    if let OutputFormat::Json = format {
+        // Empty diagnostics envelope on success keeps the JSON contract
+        // uniform with lint's empty-case output.
+        print!("{}", diagnostics_to_json(&[]));
+    }
+    // Text format: silent on success per ADR-0005 Decision 3.
+}
+
+fn run_inspect(path: &str, format: OutputFormat) {
+    let model = load_validated(path, format);
+    // Inspect runs lint to populate the "Diagnostics: N errors, ..." line
+    // — purely informational; lint never blocks inspect.
+    let mut diags = lint_with_file(&model, path);
+    sort_diagnostics(&mut diags);
+    match format {
+        OutputFormat::Text => print!("{}", inspect_text_with_diagnostics(&model, &diags)),
+        OutputFormat::Json => print!("{}", inspect_json(&model, &diags)),
+    }
+}
+
+fn run_lint(path: &str, format: OutputFormat, deny_warnings: bool) {
+    let model = load_validated(path, format);
+    let mut diags = lint_with_file(&model, path);
+    sort_diagnostics(&mut diags);
+    match format {
+        OutputFormat::Text => {
+            if !diags.is_empty() {
+                print!("{}", diagnostics_to_text(&diags));
+            }
+        }
+        OutputFormat::Json => print!("{}", diagnostics_to_json(&diags)),
+    }
+    if deny_warnings && !diags.is_empty() {
+        std::process::exit(1);
+    }
+}
+
+fn run_test(path: &str, format: OutputFormat) {
+    let model = load_validated(path, format);
+    // Compile to a Cube. The validator pre-cleared every kernel surface
+    // that returns a structured error, so this should not normally fail.
+    let compiled = match mc_model::compile(model.clone()) {
+        Ok(c) => c,
+        Err(e) => {
+            print_compile_error(path, &e.to_string(), format);
+            std::process::exit(1);
+        }
+    };
+    let mut cube = compiled.cube;
+    let principal = compiled.root_principal;
+
+    // Phase 3B limitation (documented in completion report): canonical
+    // inputs are only written for the Acme model. Other YAML models test
+    // against an empty cube — goldens referencing cells that need inputs
+    // will see Null. Future phases may add an `inline_inputs:` block.
+    if model.parsed.metadata.name == "Acme_MarketingFinance" {
+        if let Some(refs) = try_build_acme_refs(&compiled.refs, principal) {
+            if let Err(e) = write_canonical_inputs(&mut cube, &refs) {
+                print_compile_error(path, &format!("write_canonical_inputs failed: {e}"), format);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    let mut results: Vec<GoldenResult> = Vec::with_capacity(model.parsed.golden_tests.len());
+    let mut any_failed = false;
+    for golden in &model.parsed.golden_tests {
+        let coord = match compiled.refs.coord_from_names(&golden.coord) {
+            Some(c) => c,
+            None => {
+                results.push(GoldenResult {
+                    name: golden.name.clone(),
+                    status: GoldenStatus::Error,
+                    expected: golden
+                        .expect
+                        .or(golden.expect_within_epsilon.as_ref().map(|e| e.value)),
+                    actual: None,
+                    delta: None,
+                    epsilon: golden.expect_within_epsilon.as_ref().map(|e| e.epsilon),
+                    note: Some(
+                        "coord_from_names failed — coord references unknown dim/element name(s)"
+                            .to_string(),
+                    ),
+                });
+                any_failed = true;
+                continue;
+            }
+        };
+        match cube.read(&coord, principal) {
+            Ok(cell) => match cell.value {
+                ScalarValue::F64(actual) => {
+                    let (expected, epsilon) = match (golden.expect, &golden.expect_within_epsilon) {
+                        (Some(v), _) => (v, 1e-9_f64),
+                        (None, Some(e)) => (e.value, e.epsilon),
+                        (None, None) => {
+                            results.push(GoldenResult {
+                                name: golden.name.clone(),
+                                status: GoldenStatus::Error,
+                                expected: None,
+                                actual: Some(actual),
+                                delta: None,
+                                epsilon: None,
+                                note: Some(
+                                    "golden has neither `expect` nor `expect_within_epsilon`"
+                                        .into(),
+                                ),
+                            });
+                            any_failed = true;
+                            continue;
+                        }
+                    };
+                    let delta = actual - expected;
+                    let passed = delta.abs() < epsilon;
+                    if !passed {
+                        any_failed = true;
+                    }
+                    results.push(GoldenResult {
+                        name: golden.name.clone(),
+                        status: if passed {
+                            GoldenStatus::Pass
+                        } else {
+                            GoldenStatus::Fail
+                        },
+                        expected: Some(expected),
+                        actual: Some(actual),
+                        delta: Some(delta),
+                        epsilon: Some(epsilon),
+                        note: None,
+                    });
+                }
+                other => {
+                    any_failed = true;
+                    results.push(GoldenResult {
+                        name: golden.name.clone(),
+                        status: GoldenStatus::Error,
+                        expected: golden
+                            .expect
+                            .or(golden.expect_within_epsilon.as_ref().map(|e| e.value)),
+                        actual: None,
+                        delta: None,
+                        epsilon: golden.expect_within_epsilon.as_ref().map(|e| e.epsilon),
+                        note: Some(format!("expected F64, got {other:?}")),
+                    });
+                }
+            },
+            Err(e) => {
+                any_failed = true;
+                results.push(GoldenResult {
+                    name: golden.name.clone(),
+                    status: GoldenStatus::Error,
+                    expected: golden
+                        .expect
+                        .or(golden.expect_within_epsilon.as_ref().map(|e| e.value)),
+                    actual: None,
+                    delta: None,
+                    epsilon: golden.expect_within_epsilon.as_ref().map(|e| e.epsilon),
+                    note: Some(format!("read error: {e}")),
+                });
+            }
+        }
+    }
+
+    match format {
+        OutputFormat::Text => print_goldens_text(&results),
+        OutputFormat::Json => print_goldens_json(&results),
+    }
+    if any_failed {
+        std::process::exit(1);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum GoldenStatus {
+    Pass,
+    Fail,
+    Error,
+}
+
+impl GoldenStatus {
+    fn label(self) -> &'static str {
+        match self {
+            GoldenStatus::Pass => "Pass",
+            GoldenStatus::Fail => "Fail",
+            GoldenStatus::Error => "Error",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct GoldenResult {
+    name: String,
+    status: GoldenStatus,
+    expected: Option<f64>,
+    actual: Option<f64>,
+    delta: Option<f64>,
+    epsilon: Option<f64>,
+    note: Option<String>,
+}
+
+fn print_goldens_text(results: &[GoldenResult]) {
+    let total = results.len();
+    let passed = results
+        .iter()
+        .filter(|r| matches!(r.status, GoldenStatus::Pass))
+        .count();
+    let failed = total - passed;
+    for r in results {
+        match r.status {
+            GoldenStatus::Pass => println!(
+                "PASS {} (expected {:?}, actual {:?})",
+                r.name, r.expected, r.actual
+            ),
+            GoldenStatus::Fail => println!(
+                "FAIL {} (expected {:?}, actual {:?}, Δ {:?}, ε {:?})",
+                r.name, r.expected, r.actual, r.delta, r.epsilon
+            ),
+            GoldenStatus::Error => println!(
+                "ERROR {} ({})",
+                r.name,
+                r.note.as_deref().unwrap_or("(no note)")
+            ),
+        }
+    }
+    println!();
+    println!("Goldens: {passed}/{total} passed, {failed} failed");
+}
+
+fn print_goldens_json(results: &[GoldenResult]) {
+    let mut out = String::new();
+    out.push_str("{\n  \"schema_version\": \"");
+    out.push_str(SCHEMA_VERSION);
+    out.push_str("\",\n  \"goldens\": [");
+    if results.is_empty() {
+        out.push_str("]\n}\n");
+        print!("{out}");
+        return;
+    }
+    out.push('\n');
+    for (i, r) in results.iter().enumerate() {
+        out.push_str("    {\"name\": ");
+        write_json_str(&mut out, &r.name);
+        out.push_str(", \"status\": ");
+        write_json_str(&mut out, r.status.label());
+        out.push_str(", \"expected\": ");
+        push_optional_number(&mut out, r.expected);
+        out.push_str(", \"actual\": ");
+        push_optional_number(&mut out, r.actual);
+        out.push_str(", \"delta\": ");
+        push_optional_number(&mut out, r.delta);
+        out.push_str(", \"epsilon\": ");
+        push_optional_number(&mut out, r.epsilon);
+        out.push_str(", \"note\": ");
+        match &r.note {
+            Some(n) => write_json_str(&mut out, n),
+            None => out.push_str("null"),
+        }
+        out.push('}');
+        if i + 1 < results.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push_str("  ]\n}\n");
+    print!("{out}");
+}
+
+fn push_optional_number(out: &mut String, v: Option<f64>) {
+    match v {
+        Some(f) if f.is_finite() => {
+            use std::fmt::Write;
+            let _ = write!(out, "{f}");
+        }
+        _ => out.push_str("null"),
+    }
+}
+
+fn write_json_str(out: &mut String, s: &str) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                use std::fmt::Write;
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+// ---------------------------------------------------------------------------
+// Error rendering for parse / validate / compile errors. Reuses the
+// Diagnostic shape so JSON output stays envelope-uniform.
+// ---------------------------------------------------------------------------
+
+fn print_io_error(path: &str, message: &str, format: OutputFormat) {
+    let diag = Diagnostic {
+        code: "MC0001",
+        severity: Severity::Error,
+        path: ModelPath::new(path, "/", "(io)"),
+        message: format!("could not read model file: {message}"),
+        suggestion: None,
+    };
+    emit_error_diags(&[diag], format);
+}
+
+fn print_parse_error(path: &str, e: &mc_model::ParseError, format: OutputFormat) {
+    let span = e.span();
+    let dpath = ModelPath {
+        file: path.into(),
+        span: Some(mc_model::diagnostic::Span::new(span.line, span.column)),
+        yaml_pointer: "/".into(),
+        model_path: "(yaml)".into(),
+    };
+    let diag = Diagnostic {
+        code: e.code(),
+        severity: Severity::Error,
+        path: dpath,
+        message: e.to_string(),
+        suggestion: None,
+    };
+    emit_error_diags(&[diag], format);
+}
+
+fn print_validation_errors(path: &str, errs: &[ValidationError], format: OutputFormat) {
+    let mut diags: Vec<Diagnostic> = errs
+        .iter()
+        .map(|v| Diagnostic {
+            code: v.code(),
+            severity: Severity::Error,
+            path: ModelPath::new(path, "/", "(model)"),
+            message: v.to_string(),
+            suggestion: None,
+        })
+        .collect();
+    sort_diagnostics(&mut diags);
+    emit_error_diags(&diags, format);
+}
+
+fn print_compile_error(path: &str, message: &str, format: OutputFormat) {
+    let diag = Diagnostic {
+        code: "MC0002",
+        severity: Severity::Error,
+        path: ModelPath::new(path, "/", "(compile)"),
+        message: message.to_string(),
+        suggestion: None,
+    };
+    emit_error_diags(&[diag], format);
+}
+
+fn emit_error_diags(diags: &[Diagnostic], format: OutputFormat) {
+    match format {
+        OutputFormat::Text => eprint!("{}", diagnostics_to_text(diags)),
+        OutputFormat::Json => print!("{}", diagnostics_to_json(diags)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Acme demo (Phase 1A / 3A path) — preserved verbatim except that the
+// `--model` flow now runs through a typed loader that doesn't touch
+// goldens (per amendment #12).
+// ---------------------------------------------------------------------------
 
 fn run_demo(model_path: Option<&str>) {
     println!("Building Acme cube...");
     let (mut cube, refs) = match model_path {
-        // Per ADR-0004 + handoff: --model routes through mc_model::load,
-        // which goes YAML → ParsedModel → ValidatedModel → Cube. Stdout
-        // is byte-for-byte identical to the Rust fixture path.
+        // Per amendment #12: --model loads + validates + compiles +
+        // runs. NEVER runs goldens. Use mc model test for goldens.
         Some(path) => load_acme_from_yaml(path),
         None => build_acme_cube().expect("acme fixture must build"),
     };
@@ -279,12 +782,6 @@ fn run_demo(model_path: Option<&str>) {
     println!("Done.");
 }
 
-/// Translate a `mc_model::CompiledCube` into the `(Cube, AcmeRefs)`
-/// pair the rest of the demo expects. Every named ID on `AcmeRefs` is
-/// resolved by name from the YAML-loaded cube's `ModelRefs`. Any name
-/// the YAML doesn't carry is a programming error in `acme.yaml` —
-/// surface via expect so the CLI fails loudly instead of producing a
-/// silently-different output (which would defeat the byte-for-byte gate).
 fn load_acme_from_yaml(path: &str) -> (mc_core::Cube, AcmeRefs) {
     let compiled = mc_model::load(path).unwrap_or_else(|errs| {
         for e in &errs {
@@ -292,107 +789,106 @@ fn load_acme_from_yaml(path: &str) -> (mc_core::Cube, AcmeRefs) {
         }
         std::process::exit(1);
     });
-    let resolve = |dim: &str, name: &str| -> mc_core::ElementId {
-        compiled
-            .refs
-            .element(dim, name)
-            .unwrap_or_else(|| panic!("acme.yaml missing element {name:?} in dim {dim:?}"))
-    };
-    let dim = |name: &str| -> mc_core::DimensionId {
-        compiled
-            .refs
-            .dimensions
-            .get(name)
-            .copied()
-            .unwrap_or_else(|| panic!("acme.yaml missing dimension {name:?}"))
-    };
-    let rule = |name: &str| -> mc_core::RuleId {
-        compiled
-            .refs
-            .rules
-            .get(name)
-            .copied()
-            .unwrap_or_else(|| panic!("acme.yaml missing rule {name:?}"))
-    };
-    let refs = AcmeRefs {
-        root_principal: compiled.root_principal,
-        scenario_dim: dim("Scenario"),
-        version_dim: dim("Version"),
-        time_dim: dim("Time"),
-        channel_dim: dim("Channel"),
-        market_dim: dim("Market"),
-        measure_dim: dim("Measure"),
-        // Hierarchies aren't named in ModelRefs (the kernel's
-        // HierarchyId isn't part of any user-visible flow path); the
-        // demo doesn't read these fields. Use HierarchyId(0) as a
-        // sentinel so AcmeRefs is constructible.
+    let refs = build_acme_refs_or_die(&compiled.refs, compiled.root_principal, path);
+    (compiled.cube, refs)
+}
+
+fn try_build_acme_refs(
+    refs: &mc_model::ModelRefs,
+    root_principal: mc_core::PrincipalId,
+) -> Option<AcmeRefs> {
+    // Gracefully attempts construction; returns None on first missing
+    // ref. The `mc model test` path uses this to skip canonical-inputs
+    // for non-Acme YAMLs that happen to share the metadata.name match.
+    use mc_core::{DimensionId, ElementId, RuleId};
+    let r = |dim: &str, name: &str| -> Option<ElementId> { refs.element(dim, name) };
+    let dim = |name: &str| -> Option<DimensionId> { refs.dimensions.get(name).copied() };
+    let rule = |name: &str| -> Option<RuleId> { refs.rules.get(name).copied() };
+    Some(AcmeRefs {
+        root_principal,
+        scenario_dim: dim("Scenario")?,
+        version_dim: dim("Version")?,
+        time_dim: dim("Time")?,
+        channel_dim: dim("Channel")?,
+        market_dim: dim("Market")?,
+        measure_dim: dim("Measure")?,
         time_hierarchy: mc_core::HierarchyId(0),
         channel_hierarchy: mc_core::HierarchyId(0),
         market_hierarchy: mc_core::HierarchyId(0),
-        scen_baseline: resolve("Scenario", "Baseline"),
-        scen_aggressive: resolve("Scenario", "Aggressive"),
-        scen_conservative: resolve("Scenario", "Conservative"),
-        ver_working: resolve("Version", "Working"),
-        ver_submitted: resolve("Version", "Submitted"),
-        ver_approved: resolve("Version", "Approved"),
-        jan_2026: resolve("Time", "Jan_2026"),
-        feb_2026: resolve("Time", "Feb_2026"),
-        mar_2026: resolve("Time", "Mar_2026"),
-        apr_2026: resolve("Time", "Apr_2026"),
-        may_2026: resolve("Time", "May_2026"),
-        jun_2026: resolve("Time", "Jun_2026"),
-        jul_2026: resolve("Time", "Jul_2026"),
-        aug_2026: resolve("Time", "Aug_2026"),
-        sep_2026: resolve("Time", "Sep_2026"),
-        oct_2026: resolve("Time", "Oct_2026"),
-        nov_2026: resolve("Time", "Nov_2026"),
-        dec_2026: resolve("Time", "Dec_2026"),
-        q1_2026: resolve("Time", "Q1_2026"),
-        q2_2026: resolve("Time", "Q2_2026"),
-        q3_2026: resolve("Time", "Q3_2026"),
-        q4_2026: resolve("Time", "Q4_2026"),
-        fy_2026: resolve("Time", "FY_2026"),
-        paid_search: resolve("Channel", "Paid_Search"),
-        paid_social: resolve("Channel", "Paid_Social"),
-        display: resolve("Channel", "Display"),
-        email: resolve("Channel", "Email"),
-        organic: resolve("Channel", "Organic"),
-        paid_media: resolve("Channel", "Paid_Media"),
-        owned_earned: resolve("Channel", "Owned_Earned"),
-        all_channels: resolve("Channel", "All_Channels"),
-        tampa: resolve("Market", "Tampa"),
-        orlando: resolve("Market", "Orlando"),
-        miami: resolve("Market", "Miami"),
-        atlanta: resolve("Market", "Atlanta"),
-        charlotte: resolve("Market", "Charlotte"),
-        new_york_city: resolve("Market", "New_York_City"),
-        boston: resolve("Market", "Boston"),
-        florida: resolve("Market", "Florida"),
-        georgia: resolve("Market", "Georgia"),
-        north_carolina: resolve("Market", "North_Carolina"),
-        new_york_state: resolve("Market", "New_York_State"),
-        massachusetts: resolve("Market", "Massachusetts"),
-        southeast: resolve("Market", "Southeast"),
-        northeast: resolve("Market", "Northeast"),
-        usa: resolve("Market", "USA"),
-        spend: resolve("Measure", "Spend"),
-        cpc: resolve("Measure", "CPC"),
-        cvr: resolve("Measure", "CVR"),
-        close_rate: resolve("Measure", "Close_Rate"),
-        aov: resolve("Measure", "AOV"),
-        cogs_rate: resolve("Measure", "COGS_Rate"),
-        clicks: resolve("Measure", "Clicks"),
-        leads: resolve("Measure", "Leads"),
-        customers: resolve("Measure", "Customers"),
-        revenue: resolve("Measure", "Revenue"),
-        gross_profit: resolve("Measure", "Gross_Profit"),
-        rule_clicks: rule("rule_clicks"),
-        rule_leads: rule("rule_leads"),
-        rule_customers: rule("rule_customers"),
-        rule_revenue: rule("rule_revenue"),
-        rule_gross_profit: rule("rule_gross_profit"),
-    };
-    (compiled.cube, refs)
+        scen_baseline: r("Scenario", "Baseline")?,
+        scen_aggressive: r("Scenario", "Aggressive")?,
+        scen_conservative: r("Scenario", "Conservative")?,
+        ver_working: r("Version", "Working")?,
+        ver_submitted: r("Version", "Submitted")?,
+        ver_approved: r("Version", "Approved")?,
+        jan_2026: r("Time", "Jan_2026")?,
+        feb_2026: r("Time", "Feb_2026")?,
+        mar_2026: r("Time", "Mar_2026")?,
+        apr_2026: r("Time", "Apr_2026")?,
+        may_2026: r("Time", "May_2026")?,
+        jun_2026: r("Time", "Jun_2026")?,
+        jul_2026: r("Time", "Jul_2026")?,
+        aug_2026: r("Time", "Aug_2026")?,
+        sep_2026: r("Time", "Sep_2026")?,
+        oct_2026: r("Time", "Oct_2026")?,
+        nov_2026: r("Time", "Nov_2026")?,
+        dec_2026: r("Time", "Dec_2026")?,
+        q1_2026: r("Time", "Q1_2026")?,
+        q2_2026: r("Time", "Q2_2026")?,
+        q3_2026: r("Time", "Q3_2026")?,
+        q4_2026: r("Time", "Q4_2026")?,
+        fy_2026: r("Time", "FY_2026")?,
+        paid_search: r("Channel", "Paid_Search")?,
+        paid_social: r("Channel", "Paid_Social")?,
+        display: r("Channel", "Display")?,
+        email: r("Channel", "Email")?,
+        organic: r("Channel", "Organic")?,
+        paid_media: r("Channel", "Paid_Media")?,
+        owned_earned: r("Channel", "Owned_Earned")?,
+        all_channels: r("Channel", "All_Channels")?,
+        tampa: r("Market", "Tampa")?,
+        orlando: r("Market", "Orlando")?,
+        miami: r("Market", "Miami")?,
+        atlanta: r("Market", "Atlanta")?,
+        charlotte: r("Market", "Charlotte")?,
+        new_york_city: r("Market", "New_York_City")?,
+        boston: r("Market", "Boston")?,
+        florida: r("Market", "Florida")?,
+        georgia: r("Market", "Georgia")?,
+        north_carolina: r("Market", "North_Carolina")?,
+        new_york_state: r("Market", "New_York_State")?,
+        massachusetts: r("Market", "Massachusetts")?,
+        southeast: r("Market", "Southeast")?,
+        northeast: r("Market", "Northeast")?,
+        usa: r("Market", "USA")?,
+        spend: r("Measure", "Spend")?,
+        cpc: r("Measure", "CPC")?,
+        cvr: r("Measure", "CVR")?,
+        close_rate: r("Measure", "Close_Rate")?,
+        aov: r("Measure", "AOV")?,
+        cogs_rate: r("Measure", "COGS_Rate")?,
+        clicks: r("Measure", "Clicks")?,
+        leads: r("Measure", "Leads")?,
+        customers: r("Measure", "Customers")?,
+        revenue: r("Measure", "Revenue")?,
+        gross_profit: r("Measure", "Gross_Profit")?,
+        rule_clicks: rule("rule_clicks")?,
+        rule_leads: rule("rule_leads")?,
+        rule_customers: rule("rule_customers")?,
+        rule_revenue: rule("rule_revenue")?,
+        rule_gross_profit: rule("rule_gross_profit")?,
+    })
+}
+
+fn build_acme_refs_or_die(
+    refs: &mc_model::ModelRefs,
+    root_principal: mc_core::PrincipalId,
+    path: &str,
+) -> AcmeRefs {
+    try_build_acme_refs(refs, root_principal).unwrap_or_else(|| {
+        eprintln!("error: {path:?} is missing one or more dimensions/elements/rules required by the Acme demo");
+        std::process::exit(1);
+    })
 }
 
 fn coord_at(
@@ -434,9 +930,6 @@ fn format_value(v: &ScalarValue, ratio: bool) -> String {
 }
 
 fn format_amount(v: f64) -> String {
-    // 2-decimal currency-style: 11_500.00. The brief uses 7-decimal
-    // form for ratio measures (CPC/CVR/Close_Rate/COGS_Rate); call
-    // sites pass `ratio=true` for those via `format_value`.
     let sign = if v < 0.0 { "-" } else { "" };
     let v = v.abs();
     let int = v.trunc() as i64;
@@ -502,9 +995,6 @@ fn trace_label(node: &TraceNode, measure_dim: &mc_core::Dimension, measure_pos: 
         .element(measure_id)
         .map(|e| e.name.as_str())
         .unwrap_or("?");
-    // Trace nodes use amount format throughout per brief §4.6; only the
-    // top-level "Reading consolidated cells" CPC line uses the 7-decimal
-    // ratio form because we want to expose its tail digits.
     let value = format_f64(&node.value);
     let op_label = match &node.operation {
         TraceOp::InputLookup { .. } => "Input".to_string(),
