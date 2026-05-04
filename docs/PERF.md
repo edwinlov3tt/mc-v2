@@ -1136,6 +1136,93 @@ forward-compat bound for hypothetical 1 G-coord cubes; if a future
 cube exceeds it, `CubeShape::new` returns `None` and the tracker
 falls back to the AHashSet path.
 
+### 6.16 Phase 5A Stream A — Tessera bulk-write baselines (per-cell, pre-WriteBatch)
+
+> **Phase 5A Stream A — first commit, baseline-only.** Per ADR-0010
+> Amendment #12 (the "baselines-first gate"), this section records
+> measured per-cell `Cube::write()` costs at the four scale points
+> ADR-0010 Decision 6 sets WriteBatch performance targets against:
+> 1K / 10K / 100K / 1M cells. Numbers below are captured BEFORE
+> `crates/mc-core/src/batch.rs` exists on this branch — they are
+> the "before" half of the before/after diff that Stream A's
+> WriteBatch implementation will be measured against.
+
+#### §6.16.1 Method
+
+| Property | Value |
+|---|---|
+| Bench file | [`crates/mc-core/benches/baseline_writebatch.rs`](../crates/mc-core/benches/baseline_writebatch.rs) |
+| Fixture | `mc_fixtures::build_scaled_acme_cube_100x` + `write_canonical_inputs_scaled` + `materialize_all_dependencies_scaled` |
+| Cube state at measurement | 100× scaled Acme: 6 dims, 707 markets, 254,520 canonical input cells loaded, dependency graph fully materialized (1.05 M derived reads cached) |
+| Operation | Sequential `Cube::write(WritebackRequest { intent: Set, … })` to N input-leaf coords |
+| Coord generation | Cartesian walk of (time × channel × market × input-measure) on the 100× cube; the prefix is repeated for N > 254,520 (1M = ~3.93 cycles) — per-cell cost is unchanged because the dirty bitset's `is_dirty` is O(1) regardless of saturation (PERF.md §6.15.1, Phase 2D bitset path) |
+| Sampling mode (1K / 10K) | Criterion default Linear sampling, sample_size = 10, warm_up_time = 1 s, measurement_time = 5 / 30 s |
+| Sampling mode (100K / 1M) | `SamplingMode::Flat` (single iter per sample), sample_size = 10, warm_up_time = 3 s, measurement_time = 120 / 300 s — Flat sampling is required because Linear sampling at sample_size=10 ramps inner-iter count to 70× the routine cost (see §6.16.5) |
+| Heavy-bench gate | 100K and 1M rows are gated behind `MC_BENCH_BASELINE_HEAVY=1` so default `cargo bench -p mc-core` stays under a few minutes; the gate is OFF by default (default run executes only 1K + 10K) |
+
+#### §6.16.2 Hardware
+
+Same machine as PERF.md §3 (Apple M4, arm64, 10 cores, 16 GiB, macOS 26.3 build 25D125, single-thread). Toolchain unchanged at Rust 1.78 per `rust-toolchain.toml`. The cube was built fresh per bench function (no shared state across the four scales).
+
+#### §6.16.3 Measured baselines
+
+| Bench | N | Mean | Median | Std-dev | 95 % CI (mean) | Per-cell (mean) | ADR-0010 extrapolation | Δ vs extrapolation |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `baseline_writebatch/per_cell/1K`   |     1,000 | **8.51 ms** | 8.52 ms | 187 µs | [8.40, 8.62] ms | **8.51 µs** | ~165 ms | **−95 %** (~19× faster) |
+| `baseline_writebatch/per_cell/10K`  |    10,000 | **89.9 ms** | 90.0 ms | 606 µs | [89.5, 90.2] ms | **8.99 µs** | ~1.65 s | **−95 %** (~18× faster) |
+| `baseline_writebatch/per_cell/100K` |   100,000 | **1.17 s** | 1.07 s  | 313 ms | [1.06, 1.37] s  | **11.70 µs** | ~16.5 s | **−93 %** (~14× faster) |
+| `baseline_writebatch/per_cell/1M`   | 1,000,000 | **9.52 s** | 9.10 s  | 759 ms | [9.10, 9.99] s  | **9.52 µs**  | ~165 s  | **−94 %** (~17× faster) |
+
+**Per-cell cost is roughly flat at ~9–12 µs/write across three orders of magnitude.** The expected scaling shape: per-write cost on a Phase 2D bitset-backed dirty tracker is dominated by the hierarchy ancestor mark walk (PERF.md §6.15.4 / §8.1), which is bounded by per-write fan-out (~216 marks at Acme; bigger on 100× because the market hierarchy walks 707 cities → 5 states → 2 regions → 1 USA, but still constant per write). The dirty bitset's `is_dirty` and `mark` are O(1) regardless of cumulative dirty-set size, so per-cell cost does not degrade as N grows.
+
+#### §6.16.4 Why the extrapolation was off
+
+ADR-0010 Decision 6's extrapolated baselines (1K ~ 165 ms, 10K ~ 1.65 s, 100K ~ 16.5 s, 1M ~ 165 s) used a per-cell rate of ~165 µs derived from PERF.md §6.12.1 `write_input_leaf` on the 1× Acme materialized cube (160 µs at the time of ADR-0010 drafting). The handoff explicitly flagged that "Phase 2D's writeback semantic correction changed the per-write cost profile" and "measured numbers override extrapolations" — which is why Amendment #12 mandated baselines-first.
+
+**Two factors closed the gap:**
+
+1. **The §6.15 Phase 2D bitset + writeback semantic correction shipped between the ADR-0010 calibration source (§6.12.1, ~160 µs) and this bench.** §6.15's table row `leaf_read_write/write_input_leaf` shows 167 µs → 10.77 µs (−93.8 %) at 1× Acme. The 1K baseline here (8.51 µs/write at 100× scaled) is consistent with the post-Phase-2D 1× write_input_leaf median of 10.77 µs.
+2. **Steady-state amortization across 1K+ writes.** The first iteration pays cold-cache costs; subsequent iterations run on a warm allocator and hot CPU caches. Criterion's reported median is the steady-state cost, which is what bulk imports actually see.
+
+**Implication for WriteBatch performance gates (ADR-0010 Decision 6):**
+
+| Scale | WriteBatch target | Per-cell baseline (this section) | Headroom on the per-cell path alone |
+|---|---:|---:|---:|
+| 1K | ≤ 10 ms | 8.51 ms | already passes by 15 % |
+| 10K | ≤ 100 ms | 89.9 ms | already passes by 10 % |
+| 100K | ≤ 1 s | 1.07 s | **misses by 7 %** — WriteBatch must amortize at least the revision-bump and listener-fire costs |
+| 1M | ≤ 5 s | 9.10 s | misses by 1.82× — WriteBatch must amortize at least the revision-bump cost (1M bumps → 1) and ideally compress the dirty-ancestor walk via deduplication |
+
+**The 100K and 1M rows are the gates Stream A must close.** WriteBatch's Tier 1 amortization (single revision bump, deduplicating ancestor union, single listener fire) is the path to closing both. Tier 2 (sorted insertion, SIMD validation) ships if Tier 1 alone misses 1M; Tier 3 (rayon) is gated behind ADR-0012 and never in Stream A scope.
+
+#### §6.16.5 Why `SamplingMode::Flat` for the heavy rows
+
+Criterion's default `Linear` sampling at `sample_size = 10` ramps the inner-iter count across samples: iter counts of 7, 14, 21, …, 70 across the 10 samples. For a routine costing ~9 s/iter at 1M, that totals (7+14+…+70) × 9 s = 385 × 9 s ≈ 58 minutes per row. The first attempt at the 1M row hit this cliff and was killed at the 14-minute mark.
+
+`SamplingMode::Flat` sets `iters = 1` for every sample, so each sample is one full pass and total wall-clock is bounded at `sample_size × routine_cost`: 10 × 9 s ≈ 90 s. This is the right shape for criterion benches whose routine cost dominates over the per-call fixed overhead (any routine costing > 1 s/iter qualifies).
+
+The 1K and 10K rows keep the default Linear sampling because their per-iter cost (~9 ms / ~90 ms) fits comfortably under criterion's default budget; Linear sampling there gives tighter slope-based estimates than Flat.
+
+#### §6.16.6 What this section does NOT contain
+
+This is the **first** Stream A commit. By Amendment #12 design, no `WriteBatch` code exists at this point. The companion `crates/mc-core/benches/tessera_writeback.rs` measuring `WriteBatch::commit()` at the same four scale points (and the §6.17 results section comparing baselines to WriteBatch) lands later in Stream A, after `crates/mc-core/src/batch.rs` is implemented and the public API is stable.
+
+The verification gate at this commit is:
+
+```bash
+git diff phase-4b-python-adapters -- crates/mc-core/src/
+# Must be EMPTY — no source changes yet.
+
+git diff phase-4b-python-adapters -- crates/mc-core/benches/
+# Must show ONLY benches/baseline_writebatch.rs (NEW).
+
+git diff phase-4b-python-adapters -- crates/mc-core/Cargo.toml
+# Must show ONLY a new [[bench]] entry for baseline_writebatch.
+
+git diff phase-4b-python-adapters -- docs/PERF.md
+# Must show ONLY this §6.16 addition.
+```
+
 ---
 
 ## 7. Interpretation — bench by bench
