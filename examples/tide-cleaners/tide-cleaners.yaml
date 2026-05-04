@@ -1,0 +1,119 @@
+model_format_version: 1
+
+metadata:
+  name: TideCleaners_Campaign_Performance
+  description: |
+    Tide Cleaners direct mail + digital campaign performance model.
+    4 markets x monthly drop periods x 11 measures (6 input + 5 derived).
+    Import actuals via Tessera; forecast future drops by editing inputs.
+
+dimensions:
+  - name: "Scenario"
+    description: "Actual performance vs forecast scenarios."
+    kind: "Scenario"
+    elements:
+      - { name: "Actual", scenario_meta: "Default" }
+      - { name: "Forecast", scenario_meta: "NonDefault" }
+
+  - name: "Version"
+    description: "Working draft vs approved plan."
+    kind: "Version"
+    elements:
+      - { name: "Working", version_state: "Draft" }
+      - { name: "Approved", version_state: "Approved" }
+
+  - name: "Drop_Period"
+    description: "Monthly campaign drop periods (2024 Q3 through 2026 H1)."
+    kind: "Standard"
+    elements:
+      - { name: "2024_08" }
+      - { name: "2024_09" }
+      - { name: "2024_10" }
+      - { name: "2024_11" }
+      - { name: "2024_12" }
+      - { name: "2024_13" }
+      - { name: "2025_01" }
+      - { name: "2025_02" }
+      - { name: "2025_03" }
+      - { name: "2025_04" }
+      - { name: "2025_05" }
+      - { name: "2025_06" }
+      - { name: "2025_07" }
+      - { name: "2025_08" }
+      - { name: "2025_09" }
+      - { name: "2025_10" }
+      - { name: "2025_11" }
+      - { name: "2025_12" }
+      - { name: "2025_13" }
+      - { name: "2026_01" }
+      - { name: "2026_02" }
+      - { name: "2026_03" }
+      - { name: "2026_04" }
+      - { name: "2026_05" }
+      - { name: "2026_06" }
+
+  - name: "Market"
+    description: "Geographic markets for Tide Cleaners campaigns."
+    kind: "Standard"
+    elements:
+      - { name: "Houston" }
+      - { name: "Austin" }
+      - { name: "Denver" }
+      - { name: "Amarillo" }
+
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+
+measures:
+  # === INPUT measures (from campaign data — imported via Tessera) ===
+  - { name: "Ad_Spend", description: "Total ad spend for the drop (direct mail + digital; USD).", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "Matched_Revenue", description: "Revenue attributed to matched customers from this drop.", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "Matched_New_Customer_Revenue", description: "Revenue from NEW matched customers specifically.", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "Matched_Client_Count", description: "Total matched clients (new + returning) from this drop.", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "Matched_New_Customers", description: "New customers acquired and matched to this drop.", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "Total_New_Customers", description: "Total new customers in the period (matched + unmatched).", role: "Input", data_type: "F64", aggregation: "Sum" }
+
+  # === DERIVED measures (Mosaic calculates — change any input, these update) ===
+  - { name: "CAC_Matched", description: "Customer acquisition cost (matched only): Ad_Spend / Matched_New_Customers.", role: "Derived", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Ad_Spend" }
+  - { name: "CAC_All", description: "Customer acquisition cost (all new): Ad_Spend / Total_New_Customers.", role: "Derived", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Ad_Spend" }
+  - { name: "ROI", description: "Return on ad spend: (Matched_Revenue - Ad_Spend) / Ad_Spend.", role: "Derived", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Ad_Spend" }
+  - { name: "Revenue_Per_Client", description: "Average revenue per matched client.", role: "Derived", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Matched_Client_Count" }
+  - { name: "Acquisition_Rate", description: "Fraction of new customers matchable to the campaign.", role: "Derived", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Total_New_Customers" }
+
+rules:
+  - name: cac_matched_rule
+    target_measure: "CAC_Matched"
+    scope: "AllLeaves"
+    body: "Ad_Spend / Matched_New_Customers"
+    declared_dependencies: ["Ad_Spend", "Matched_New_Customers"]
+
+  - name: cac_all_rule
+    target_measure: "CAC_All"
+    scope: "AllLeaves"
+    body: "Ad_Spend / Total_New_Customers"
+    declared_dependencies: ["Ad_Spend", "Total_New_Customers"]
+
+  - name: roi_rule
+    target_measure: "ROI"
+    scope: "AllLeaves"
+    body: "(Matched_Revenue - Ad_Spend) / Ad_Spend"
+    declared_dependencies: ["Matched_Revenue", "Ad_Spend"]
+
+  - name: revenue_per_client_rule
+    target_measure: "Revenue_Per_Client"
+    scope: "AllLeaves"
+    body: "Matched_Revenue / Matched_Client_Count"
+    declared_dependencies: ["Matched_Revenue", "Matched_Client_Count"]
+
+  - name: acquisition_rate_rule
+    target_measure: "Acquisition_Rate"
+    scope: "AllLeaves"
+    body: "Matched_New_Customers / Total_New_Customers"
+    declared_dependencies: ["Matched_New_Customers", "Total_New_Customers"]
+
+canonical_inputs:
+  source: "tide-cleaners-actuals.csv"
+  columns: ["Scenario", "Version", "Market", "Drop_Period", "Measure", "value"]
+
+test_fixtures: []

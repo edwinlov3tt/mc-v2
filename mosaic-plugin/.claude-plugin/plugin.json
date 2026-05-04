@@ -1,7 +1,7 @@
 {
   "name": "mosaic",
   "version": "0.1.0",
-  "description": "Author, validate, lint, test, and inspect Mosaic YAML models. Mosaic is an AI-powered Large Numbers Model platform for marketing-mix planning. Phase 4A ships the marketing-mix domain (Acme reference); additional domains are demand-driven future phases.",
+  "description": "Author, validate, lint, test, and assess Mosaic YAML models. Mosaic is an AI-powered Large Numbers Model platform. /mosaic-assess discovers your data and shows what Mosaic can do for you; /mosaic-author builds models; /mosaic-import writes ingestion recipes.",
   "author": {
     "name": "Mosaic project",
     "url": "https://github.com/edwinlov3tt/mc-v2"
@@ -23,13 +23,15 @@
     "./commands/mosaic-lint.md",
     "./commands/mosaic-test.md",
     "./commands/mosaic-author.md",
-    "./commands/mosaic-import.md"
+    "./commands/mosaic-import.md",
+    "./commands/mosaic-assess.md"
   ],
   "agents": [
     "./agents/mosaic-architect.md",
     "./agents/mosaic-author.md",
     "./agents/mosaic-debugger.md",
     "./agents/mosaic-validator.md",
-    "./agents/mosaic-importer.md"
+    "./agents/mosaic-importer.md",
+    "./agents/mosaic-consultant.md"
   ]
 }
