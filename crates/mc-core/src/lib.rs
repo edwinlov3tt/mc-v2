@@ -38,6 +38,7 @@
 // Tests, benches, and fixtures may use `expect("static reason")`.
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
+pub mod batch;
 pub mod cell;
 pub mod consolidation;
 pub mod coordinate;
@@ -62,6 +63,7 @@ pub mod value;
 
 // Selective top-level re-exports for the most-used types. Callers can also
 // use the module-qualified path; both forms work.
+pub use batch::{CommitResult, WriteBatch, WritebackContext};
 pub use cell::{CellValue, Provenance, StoredCell, Uncertainty};
 pub use consolidation::{Consolidator, LeafReadout};
 pub use coordinate::{CellCoordinate, CellCoordinateBuilder};

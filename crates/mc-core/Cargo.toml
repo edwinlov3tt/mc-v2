@@ -74,3 +74,21 @@ harness = false
 [[bench]]
 name = "combined_workflow"
 harness = false
+
+# Phase 5A Stream A — per-cell write baselines (pre-WriteBatch). Per
+# ADR-0010 amendment #12, this is the FIRST commit on the Stream A
+# branch and lands BEFORE `crates/mc-core/src/batch.rs` exists. See
+# `docs/handoffs/phase-5a-stream-a-handoff.md` and PERF.md §6.15.
+
+[[bench]]
+name = "baseline_writebatch"
+harness = false
+
+# Phase 5A Stream A — `WriteBatch::commit()` benchmarks. Companion to
+# `baseline_writebatch.rs`; measures the same four scale points (1K /
+# 10K / 100K / 1M) on the post-WriteBatch path. See ADR-0010 Decision
+# 6 for the gate table and PERF.md §6.17 for the before/after diff.
+
+[[bench]]
+name = "tessera_writeback"
+harness = false
