@@ -1,0 +1,38 @@
+# Acme CSV import — minimal recipe.
+#
+# Loads two Input measures (Spend + CPC) from a sibling CSV file. The
+# Time / Channel / Market dimensions vary per row; Scenario / Version
+# are constant via `defaults:`.
+#
+# Validation (against examples/acme.yaml): ZERO MC5xxx errors.
+
+version: 1
+name: acme_csv_minimal
+description: "Minimal CSV import — Spend + CPC into the Acme model."
+model: ../../../mc-model/examples/acme.yaml
+
+source:
+  driver: csv
+  path: ./acme.minimal.csv
+
+columns:
+  - { source: month, dimension: Time }
+  - { source: channel, dimension: Channel }
+  - { source: market, dimension: Market }
+  - { source: spend, measure: Spend, type: f64 }
+  - { source: cpc, measure: CPC, type: f64 }
+
+defaults:
+  Scenario: Baseline
+  Version: Working
+
+write_disposition: replace
+incremental: false
+
+batch:
+  size: 50000
+
+on_error: abort
+on_missing_element: error
+
+credentials: {}

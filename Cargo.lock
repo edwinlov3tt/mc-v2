@@ -274,6 +274,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mc-recipe"
+version = "0.1.0"
+dependencies = [
+ "mc-model",
+ "serde",
+ "serde_yaml",
+ "thiserror",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,47 @@
+# Acme HTTP/JSON import — REST endpoint with JSONPath row-selection.
+#
+# Demonstrates the `http_json` driver: the `url:` field carries the HTTP
+# endpoint, and `json_path:` picks rows out of a wrapped response (e.g.,
+# `{ "data": { "items": [...] }, "meta": ... }`).
+#
+# A bearer token in `credentials:` shows the Phase 5A env-only resolver
+# surface; Stream D (mc-tessera) substitutes `${env.ACME_API_TOKEN}`
+# at runtime and fires MC5013 if the variable is unset.
+#
+# Validation (against examples/acme.yaml): ZERO MC5xxx errors.
+
+version: 1
+name: acme_http_json_conservative
+description: "HTTP/JSON import — conservative scenario from REST endpoint."
+model: ../../../mc-model/examples/acme.yaml
+
+source:
+  driver: http_json
+  url: "https://api.example.com/v1/acme/marketing/monthly"
+  json_path: "$.data.items[*]"
+
+columns:
+  - { source: period, dimension: Time }
+  - { source: channel, dimension: Channel }
+  - { source: market, dimension: Market }
+  - { source: spend_usd, measure: Spend, type: f64 }
+  - { source: cpc_usd, measure: CPC, type: f64 }
+  # Source has a `campaign_id` column we don't want to map; explicit skip
+  # avoids MC5011 firing for an unmapped column.
+  - { source: campaign_id, skip: true }
+
+defaults:
+  Scenario: Conservative
+  Version: Working
+
+write_disposition: replace
+incremental: false
+
+batch:
+  size: 5000
+
+on_error: skip_row
+on_missing_element: error
+
+credentials:
+  authorization: "Bearer ${env.ACME_API_TOKEN}"
