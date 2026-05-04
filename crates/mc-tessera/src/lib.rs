@@ -81,4 +81,6 @@ pub use sidecar::{
     read_cells_jsonl, read_manifest, write_cells_jsonl, write_manifest, ActiveImports, AuditRecord,
     CellRecord, CellValueJson, QuarantineCell, QuarantineRecord, Sidecar,
 };
-pub use transform::{transform_batch, RowFailure, TesseraErrorOwned, TransformedBatch};
+pub use transform::{
+    transform_batch, transform_batch_long, RowFailure, TesseraErrorOwned, TransformedBatch,
+};

@@ -132,6 +132,46 @@ pub struct SourceConfig {
     /// JSONPath expression for selecting rows from an HTTP/JSON response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub json_path: Option<String>,
+
+    /// Source data layout format. Per ADR-0010 Amendment 2, `Wide` is
+    /// the default (each column maps to one dimension or measure); `Long`
+    /// means each row is one cell (measure name + value in dedicated
+    /// columns).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<SourceFormat>,
+
+    /// Configuration for long-format sources. Required when
+    /// `format: Long`. Specifies which columns carry the measure name
+    /// and the cell value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long_format: Option<LongFormatConfig>,
+}
+
+/// Source data layout format. Per ADR-0010 Amendment 2.
+///
+/// - `Wide` (default): each non-skipped column maps 1:1 to a dimension or
+///   measure.
+/// - `Long`: each row is one cell; a dedicated column carries the measure
+///   name and another carries the scalar value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceFormat {
+    /// Default — existing ADR-0010 behavior.
+    Wide,
+    /// Each row is one cell; measure name + value in dedicated columns.
+    Long,
+}
+
+/// Configuration for long-format source data. Per ADR-0010 Amendment 2.
+///
+/// When `source.format: long`, these two fields identify the columns that
+/// carry the measure name and the cell value for each row.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct LongFormatConfig {
+    /// Column whose values are measure names.
+    pub measure_column: String,
+    /// Column carrying the numeric value.
+    pub value_column: String,
 }
 
 /// The closed enum of source drivers Phase 5A supports. Adding a new

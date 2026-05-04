@@ -1,0 +1,34 @@
+version: 1
+name: acme-long-format-import
+description: |
+  Long-format recipe reading the actual acme.inputs.csv.
+  Per ADR-0010 Amendment 2: each row is one cell; the Measure column
+  carries the measure name, the value column carries the scalar.
+model: ../../crates/mc-model/examples/acme.yaml
+
+source:
+  driver: csv
+  path: ../../crates/mc-model/examples/acme.inputs.csv
+  format: long
+  long_format:
+    measure_column: Measure
+    value_column: value
+
+columns:
+  - source: Scenario
+    dimension: Scenario
+  - source: Version
+    dimension: Version
+  - source: Time
+    dimension: Time
+  - source: Channel
+    dimension: Channel
+  - source: Market
+    dimension: Market
+  # Note: Measure + value columns are consumed by long_format; no entries here.
+
+defaults: {}
+
+write_disposition: replace
+on_error: abort
+on_missing_element: error

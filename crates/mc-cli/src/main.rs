@@ -72,6 +72,7 @@ fn print_help() {
     println!();
     println!("    mc tessera apply    <recipe.yaml>            [--format text|json]");
     println!("    mc tessera dry-run  <recipe.yaml>            [--format text|json]");
+    println!("    mc tessera propose  --source <path> --model <path>");
     println!("    mc tessera history  <model_dir>              [--format text|json]");
     println!("    mc tessera rollback <import_id> --model-dir <path> [--format text|json]");
     println!("    mc tessera audit    <model_dir>              [--format text|json]");

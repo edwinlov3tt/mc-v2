@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use mc_core::{CellCoordinate, CommitResult, ScalarValue, WriteBatch, WritebackContext};
-use mc_recipe::{DriverKind, OnError};
+use mc_recipe::{DriverKind, OnError, SourceFormat};
 use serde::{Deserialize, Serialize};
 
 use crate::error::TesseraError;
@@ -28,7 +28,7 @@ use crate::sidecar::{
     append_audit, append_quarantine, manifest_mark_active, manifest_mark_inactive, read_audit,
     write_cells_jsonl, AuditRecord, Sidecar,
 };
-use crate::transform::{transform_batch, RowFailure, TransformedBatch};
+use crate::transform::{transform_batch, transform_batch_long, RowFailure, TransformedBatch};
 
 /// Default rows per `WriteBatch` `push_batch` chunk (per ADR-0010
 /// Decision 7 + Stream D §"batch.size").
@@ -215,13 +215,29 @@ impl Tessera {
                 None => break,
             };
 
-            // Transform.
+            // Transform: branch on wide vs. long format.
             let transform_start = Instant::now();
+            let is_long = matches!(recipe.source.format, Some(SourceFormat::Long));
             let TransformedBatch {
                 cells,
                 failures,
                 rows_processed,
-            } = transform_batch(&row_batch, &column_plan, &defaults, &refs, row_offset);
+            } = if is_long {
+                let lf = recipe.source.long_format.as_ref();
+                let mc = lf.map(|l| l.measure_column.as_str()).unwrap_or("");
+                let vc = lf.map(|l| l.value_column.as_str()).unwrap_or("");
+                transform_batch_long(
+                    &row_batch,
+                    &column_plan,
+                    &defaults,
+                    &refs,
+                    mc,
+                    vc,
+                    row_offset,
+                )
+            } else {
+                transform_batch(&row_batch, &column_plan, &defaults, &refs, row_offset)
+            };
             timing.transform_ms += elapsed_ms(transform_start);
             row_offset += rows_processed;
             total_rows_processed += rows_processed;

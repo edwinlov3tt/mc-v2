@@ -14,6 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
+use mc_drivers::SourceDriver;
 use mc_recipe::{diagnostics_to_json, sort_diagnostics, Diagnostic};
 use mc_tessera::{Tessera, TesseraError};
 
@@ -45,6 +46,10 @@ pub enum Command {
     Audit {
         model_dir: String,
         format: Format,
+    },
+    Propose {
+        source: String,
+        model: String,
     },
 }
 
@@ -113,6 +118,30 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                 format,
             })
         }
+        "propose" => {
+            // Form: `mc tessera propose --source <path> --model <path>`
+            let mut source: Option<String> = None;
+            let mut model: Option<String> = None;
+            let mut iter = rest.iter();
+            while let Some(arg) = iter.next() {
+                match arg.as_str() {
+                    "--source" => match iter.next() {
+                        Some(v) => source = Some(v.clone()),
+                        None => return Err("--source requires an argument".into()),
+                    },
+                    "--model" => match iter.next() {
+                        Some(v) => model = Some(v.clone()),
+                        None => return Err("--model requires an argument".into()),
+                    },
+                    other => return Err(format!("unknown argument for propose: {other:?}")),
+                }
+            }
+            let source = source
+                .ok_or_else(|| "`mc tessera propose` requires --source <path>".to_string())?;
+            let model =
+                model.ok_or_else(|| "`mc tessera propose` requires --model <path>".to_string())?;
+            Ok(Command::Propose { source, model })
+        }
         other => Err(format!("unknown tessera verb: {other:?}")),
     }
 }
@@ -157,6 +186,7 @@ pub fn run(cmd: Command) -> i32 {
             format,
         } => run_rollback(&import_id, &model_dir, format),
         Command::Audit { model_dir, format } => run_audit(&model_dir, format),
+        Command::Propose { source, model } => run_propose(&source, &model),
     }
 }
 
@@ -397,6 +427,143 @@ fn emit_error(err: &TesseraError, format: Format) -> i32 {
         }
     }
     2
+}
+
+fn run_propose(source_path: &str, model_path: &str) -> i32 {
+    // 1. Auto-detect driver from file extension.
+    let driver_name = match Path::new(source_path).extension().and_then(|e| e.to_str()) {
+        Some("csv") => "csv",
+        Some("db") | Some("sqlite") | Some("sqlite3") => "sqlite",
+        Some("duckdb") => "duckdb",
+        _ => "csv", // default fallback
+    };
+
+    // 2. Instantiate driver and get schema.
+    let source_abs = Path::new(source_path);
+    let schema_columns = match driver_name {
+        "csv" => match mc_drivers::csv_driver(source_abs) {
+            Ok(d) => match d.schema() {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: could not read source schema: {e}");
+                    return 2;
+                }
+            },
+            Err(e) => {
+                eprintln!("error: could not open source: {e}");
+                return 2;
+            }
+        },
+        "sqlite" => match mc_drivers::sqlite_driver(source_abs, "SELECT 1") {
+            Ok(d) => match d.schema() {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: could not read source schema: {e}");
+                    return 2;
+                }
+            },
+            Err(e) => {
+                eprintln!("error: could not open source: {e}");
+                return 2;
+            }
+        },
+        "duckdb" => match mc_drivers::duckdb_driver(source_abs, "SELECT 1") {
+            Ok(d) => match d.schema() {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: could not read source schema: {e}");
+                    return 2;
+                }
+            },
+            Err(e) => {
+                eprintln!("error: could not open source: {e}");
+                return 2;
+            }
+        },
+        _ => {
+            eprintln!("error: unsupported driver for propose: {driver_name}");
+            return 2;
+        }
+    };
+
+    // 3. Load model to enumerate dims + input measures.
+    let model_yaml = match std::fs::read_to_string(model_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: could not read model file: {e}");
+            return 2;
+        }
+    };
+    let parsed_model = match mc_model::parse(&model_yaml, Some(model_path.to_string())) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: model parse error: {e}");
+            return 2;
+        }
+    };
+    let validated_model = match mc_model::validate(parsed_model) {
+        Ok(v) => v,
+        Err(errs) => {
+            for e in &errs {
+                eprintln!("error: model validation: {e}");
+            }
+            return 2;
+        }
+    };
+
+    // Collect dimension names and input measure names from the model.
+    let dim_names: Vec<&str> = validated_model
+        .parsed
+        .dimensions
+        .iter()
+        .filter(|d| d.name != "Measure")
+        .map(|d| d.name.as_str())
+        .collect();
+    let input_measures: Vec<&str> = validated_model
+        .parsed
+        .measures
+        .iter()
+        .filter(|m| m.role == "Input")
+        .map(|m| m.name.as_str())
+        .collect();
+
+    let source_col_names: Vec<&str> = schema_columns.iter().map(|c| c.name.as_str()).collect();
+
+    // 4. Emit the template YAML to stdout.
+    println!("# Tessera recipe template — generated by `mc tessera propose`");
+    println!("# Source: {source_path}");
+    println!("# Model:  {model_path}");
+    println!("#");
+    println!("# Model dimensions: {}", dim_names.join(", "));
+    println!("# Model input measures: {}", input_measures.join(", "));
+    println!("#");
+    println!("# Source columns: {}", source_col_names.join(", "));
+    println!("#");
+    println!("# TODO: map each source column to a dimension or measure below.");
+    println!();
+    println!("version: 1");
+    println!("name: TODO-recipe-name");
+    println!("model: {model_path}");
+    println!();
+    println!("source:");
+    println!("  driver: {driver_name}");
+    println!("  path: {source_path}");
+    println!();
+    println!("columns:");
+    for col_name in &source_col_names {
+        println!("  - source: {col_name}");
+        println!("    # TODO: map to dimension or measure");
+    }
+    println!();
+    println!("defaults: {{}}");
+    println!();
+    println!("write_disposition: replace");
+    println!("on_error: abort");
+    println!("on_missing_element: error");
+    println!();
+    println!("batch:");
+    println!("  size: 50000");
+    0
 }
 
 fn truncate(s: &str, n: usize) -> String {

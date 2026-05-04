@@ -27,7 +27,7 @@ use std::path::{Component, Path, PathBuf};
 use mc_model::ValidatedModel;
 
 use crate::error::{ColumnTargetIssue, RecipeError};
-use crate::schema::{ColumnMapping, Recipe};
+use crate::schema::{ColumnMapping, Recipe, SourceFormat};
 
 /// Optional file-system context for validation. When supplied, enables
 /// MC5017 path-escape detection. When `None`, the path-escape check is
@@ -110,6 +110,24 @@ pub fn validate_recipe(
                 mapped_dimensions
                     .entry(dim)
                     .or_insert_with(|| format!("{path}/dimension"));
+            }
+        }
+    }
+
+    // Per ADR-0010 Amendment 2: MC5021 — format: long with measure: X in
+    // columns is a mutual-exclusion violation.
+    let is_long_format = matches!(recipe.source.format, Some(SourceFormat::Long));
+    if is_long_format {
+        for (idx, col) in recipe.columns.iter().enumerate() {
+            if column_is_skipped(col) {
+                continue;
+            }
+            if let Some(measure) = &col.measure {
+                errors.push(RecipeError::LongFormatMeasureColumnConflict {
+                    path: format!("/columns/{idx}/measure"),
+                    source_column: col.source.clone(),
+                    measure: measure.clone(),
+                });
             }
         }
     }

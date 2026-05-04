@@ -358,6 +358,302 @@ pub fn transform_batch(
     out
 }
 
+/// Long-format transformation: each row is one cell. Dimension columns
+/// build the coordinate prefix; `measure_column` picks the measure;
+/// `value_column` carries the scalar. Per ADR-0010 Amendment 2.
+///
+/// `row_index_offset` is the cumulative row index across all batches.
+pub fn transform_batch_long(
+    batch: &RowBatch,
+    plan: &[ResolvedColumnMapping],
+    defaults: &[ResolvedDefault],
+    refs: &ModelRefs,
+    measure_column_name: &str,
+    value_column_name: &str,
+    row_index_offset: usize,
+) -> TransformedBatch {
+    let mut out = TransformedBatch {
+        cells: Vec::with_capacity(batch.row_count),
+        failures: Vec::new(),
+        rows_processed: batch.row_count,
+    };
+
+    let n_dims = refs.dimension_order.len();
+
+    // Find the Measure dimension's slot index.
+    let measure_dim_position = refs.dimension_order.iter().position(|n| n == "Measure");
+
+    // Find the source column indices for measure_column and value_column.
+    let measure_col_idx = batch
+        .columns
+        .iter()
+        .position(|c| c.name == measure_column_name);
+    let value_col_idx = batch
+        .columns
+        .iter()
+        .position(|c| c.name == value_column_name);
+
+    let measure_col_idx = match measure_col_idx {
+        Some(i) => i,
+        None => {
+            // If the measure column is missing from the batch, every row
+            // fails. Record one failure for the batch and bail.
+            if batch.row_count > 0 {
+                record_failure(
+                    &mut out,
+                    row_index_offset,
+                    TesseraErrorOwned {
+                        code: "MC5019",
+                        message: format!(
+                            "long_format.measure_column {measure_column_name:?} not found in source schema"
+                        ),
+                        dimension: None,
+                        column: Some(measure_column_name.to_string()),
+                    },
+                    row_raw(batch, 0),
+                );
+            }
+            return out;
+        }
+    };
+    let value_col_idx = match value_col_idx {
+        Some(i) => i,
+        None => {
+            if batch.row_count > 0 {
+                record_failure(
+                    &mut out,
+                    row_index_offset,
+                    TesseraErrorOwned {
+                        code: "MC5020",
+                        message: format!(
+                            "long_format.value_column {value_column_name:?} not found in source schema"
+                        ),
+                        dimension: None,
+                        column: Some(value_column_name.to_string()),
+                    },
+                    row_raw(batch, 0),
+                );
+            }
+            return out;
+        }
+    };
+
+    // Pre-fill defaults.
+    let mut slots: Vec<Option<ElementId>> = vec![None; n_dims];
+    for d in defaults {
+        if let Some(slot) = slots.get_mut(d.dim_position) {
+            *slot = Some(d.element_id);
+        }
+    }
+
+    'rows: for row in 0..batch.row_count {
+        let row_index = row_index_offset + row;
+
+        // Reset slots: re-apply defaults.
+        for slot in slots.iter_mut() {
+            *slot = None;
+        }
+        for d in defaults {
+            if let Some(slot) = slots.get_mut(d.dim_position) {
+                *slot = Some(d.element_id);
+            }
+        }
+
+        // Step A: resolve dimension columns.
+        for entry in plan {
+            if let MappingTarget::Dimension {
+                dim_name,
+                dim_id: _,
+                dim_position,
+            } = &entry.target
+            {
+                let raw = column_value_as_string(&batch.columns[entry.source_index], row);
+                let raw = match raw {
+                    Some(s) => s,
+                    None => {
+                        record_failure(
+                            &mut out,
+                            row_index,
+                            TesseraErrorOwned {
+                                code: "unknown_element",
+                                message: format!(
+                                    "row {row_index}: missing value for dimension column {:?}",
+                                    entry.source
+                                ),
+                                dimension: Some(dim_name.clone()),
+                                column: Some(entry.source.clone()),
+                            },
+                            row_raw(batch, row),
+                        );
+                        continue 'rows;
+                    }
+                };
+                let element_id = match refs.element(dim_name, &raw) {
+                    Some(id) => id,
+                    None => {
+                        record_failure(
+                            &mut out,
+                            row_index,
+                            TesseraErrorOwned {
+                                code: "MC_unknown_element",
+                                message: format!(
+                                    "row {row_index}: unknown element {raw:?} in dimension {dim_name:?}"
+                                ),
+                                dimension: Some(dim_name.clone()),
+                                column: Some(entry.source.clone()),
+                            },
+                            row_raw(batch, row),
+                        );
+                        continue 'rows;
+                    }
+                };
+                if let Some(slot) = slots.get_mut(*dim_position) {
+                    *slot = Some(element_id);
+                }
+            }
+        }
+
+        // Step B: resolve measure from the measure_column.
+        let measure_name = match column_value_as_string(&batch.columns[measure_col_idx], row) {
+            Some(s) => s,
+            None => {
+                record_failure(
+                    &mut out,
+                    row_index,
+                    TesseraErrorOwned {
+                        code: "missing_measure",
+                        message: format!(
+                            "row {row_index}: missing value in measure column {measure_column_name:?}"
+                        ),
+                        dimension: None,
+                        column: Some(measure_column_name.to_string()),
+                    },
+                    row_raw(batch, row),
+                );
+                continue 'rows;
+            }
+        };
+
+        // Resolve the measure name to an ElementId in the Measure dim.
+        let measure_element_id = match refs.element("Measure", &measure_name) {
+            Some(id) => id,
+            None => {
+                record_failure(
+                    &mut out,
+                    row_index,
+                    TesseraErrorOwned {
+                        code: "MC5022",
+                        message: format!(
+                            "row {row_index}: measure column value {measure_name:?} is not a declared measure in the model"
+                        ),
+                        dimension: Some("Measure".to_string()),
+                        column: Some(measure_column_name.to_string()),
+                    },
+                    row_raw(batch, row),
+                );
+                continue 'rows;
+            }
+        };
+
+        // Fill the Measure dim slot.
+        if let Some(pos) = measure_dim_position {
+            if let Some(slot) = slots.get_mut(pos) {
+                *slot = Some(measure_element_id);
+            }
+        }
+
+        // Confirm every slot is filled.
+        let coord_elements: Vec<ElementId> = match slots
+            .iter()
+            .enumerate()
+            .map(|(i, s)| match s {
+                Some(id) => Ok(*id),
+                None => {
+                    let dim_name = refs
+                        .dimension_order
+                        .get(i)
+                        .cloned()
+                        .unwrap_or_else(|| "<?>".to_string());
+                    Err(TesseraErrorOwned {
+                        code: "missing_dim_value",
+                        message: format!(
+                            "row {row_index}: dimension {dim_name:?} has no source column or default"
+                        ),
+                        dimension: Some(dim_name),
+                        column: None,
+                    })
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(v) => v,
+            Err(err) => {
+                record_failure(&mut out, row_index, err, row_raw(batch, row));
+                continue 'rows;
+            }
+        };
+
+        // Step C: extract the value from the value_column.
+        let raw_f64 = match extract_f64(&batch.columns[value_col_idx], row) {
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                record_failure(
+                    &mut out,
+                    row_index,
+                    TesseraErrorOwned {
+                        code: "missing_measure",
+                        message: format!(
+                            "row {row_index}: missing value in value column {value_column_name:?}"
+                        ),
+                        dimension: None,
+                        column: Some(value_column_name.to_string()),
+                    },
+                    row_raw(batch, row),
+                );
+                continue 'rows;
+            }
+            Err(msg) => {
+                record_failure(
+                    &mut out,
+                    row_index,
+                    TesseraErrorOwned {
+                        code: "type_coercion",
+                        message: format!(
+                            "row {row_index}: type coercion failed for value column {value_column_name:?}: {msg}"
+                        ),
+                        dimension: None,
+                        column: Some(value_column_name.to_string()),
+                    },
+                    row_raw(batch, row),
+                );
+                continue 'rows;
+            }
+        };
+
+        if !raw_f64.is_finite() {
+            record_failure(
+                &mut out,
+                row_index,
+                TesseraErrorOwned {
+                    code: "type_coercion",
+                    message: format!(
+                        "row {row_index}: non-finite value in value column {value_column_name:?}"
+                    ),
+                    dimension: None,
+                    column: Some(value_column_name.to_string()),
+                },
+                row_raw(batch, row),
+            );
+            continue 'rows;
+        }
+
+        let coord = CellCoordinate::from_parts(refs.cube_id, coord_elements);
+        out.cells.push((coord, ScalarValue::F64(raw_f64)));
+    }
+
+    out
+}
+
 fn record_failure(
     out: &mut TransformedBatch,
     row_index: usize,

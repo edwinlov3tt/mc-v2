@@ -5,29 +5,17 @@
 //! recipe produces **byte-identical** cube state to the Rust-fixture
 //! reference, `mc_fixtures::write_canonical_inputs()`.
 //!
-//! ## Why a generated wide-format CSV (not the literal `acme.inputs.csv`)
+//! ## Phase 5A.1: long-format recipe reads the actual `acme.inputs.csv`
 //!
 //! `crates/mc-model/examples/acme.inputs.csv` is committed in **long
 //! format** — 7 columns (`Scenario, Version, Time, Channel, Market,
 //! Measure, value`) with the Measure dim NAME carried in a column and
-//! each row representing one cell. The Phase 5A Tessera recipe schema
-//! (ADR-0010 Decision 7) is **wide format only** — every non-skipped
-//! `ColumnMapping` must be `dimension: X` xor `measure: Y`, and a
-//! "value column" tied to a row-varying measure is unrepresentable.
+//! each row representing one cell (2,520 rows total).
 //!
-//! The user resolved the SPEC QUESTION by deferring long-format
-//! support to Phase 5A.1 (a follow-up that adds `format: long |
-//! wide` + `long_format: { measure_column, value_column }` to
-//! mc-recipe and a "melt" step to the transformation layer). Phase
-//! 5A.1 will switch this test to read the literal `acme.inputs.csv`.
-//!
-//! For Phase 5A: this test generates a wide-format CSV at test setup
-//! using `mc_fixtures::canonical_inputs_for()` — exactly the same
-//! function the Rust fixture path calls — so the inputs are
-//! bit-for-bit identical to `write_canonical_inputs()`. The CSV has
-//! 5 dim columns (Time, Channel, Market — Scenario/Version come from
-//! recipe defaults) + 6 measure columns (Spend, CPC, CVR, Close_Rate,
-//! AOV, COGS_Rate) = 8 columns × 420 rows.
+//! Per ADR-0010 Amendment 2, this test uses a `format: long` recipe that
+//! reads the actual `acme.inputs.csv` directly, with
+//! `long_format: { measure_column: Measure, value_column: value }` and
+//! dimension columns for Scenario/Version/Time/Channel/Market.
 
 use std::fs;
 use std::path::Path;
@@ -41,7 +29,7 @@ use mc_tessera::Tessera;
 fn acme_csv_equivalence() {
     // ------------------------------------------------------------------
     // 1. Workspace: a fresh tempdir under `target/` + a copy of the Acme
-    //    YAML (so the recipe's `model:` field can resolve relative).
+    //    YAML + the actual long-format `acme.inputs.csv`.
     // ------------------------------------------------------------------
     let tempdir = make_tempdir("acme_csv_equivalence");
     let model_dst = tempdir.join("acme.yaml");
@@ -51,12 +39,8 @@ fn acme_csv_equivalence() {
         .join("examples");
     let model_src = examples_dir.join("acme.yaml");
     fs::copy(model_src, &model_dst).expect("copy acme.yaml");
-    // The Acme YAML has a `canonical_inputs:` block referencing the
-    // long-format `acme.inputs.csv` sibling; `mc_model::load()` will
-    // resolve it. Copy that file too so the model loads cleanly.
-    // NB: this CSV is *not* what the Tessera recipe imports (the
-    // recipe targets `acme_inputs_wide.csv` we generate below) — it
-    // exists only to satisfy the model's canonical-inputs resolver.
+    // Copy the actual long-format CSV (used by both the model's
+    // canonical_inputs resolver AND the long-format recipe).
     fs::copy(
         examples_dir.join("acme.inputs.csv"),
         tempdir.join("acme.inputs.csv"),
@@ -64,18 +48,9 @@ fn acme_csv_equivalence() {
     .expect("copy acme.inputs.csv");
 
     // ------------------------------------------------------------------
-    // 2. Generate the wide-format CSV. The 12 × 5 × 7 cartesian product
-    //    of (time_idx, channel_idx, market_idx) yields 420 rows; each
-    //    row carries 6 input-measure values pulled directly from
-    //    `canonical_inputs_for()` so byte-equality with
-    //    `write_canonical_inputs()` is guaranteed by construction.
-    // ------------------------------------------------------------------
-    let csv_path = tempdir.join("acme_inputs_wide.csv");
-    write_wide_csv(&csv_path);
-
-    // ------------------------------------------------------------------
-    // 3. Recipe targeting the wide CSV. Scenario + Version → defaults;
-    //    Time, Channel, Market → dimension columns; six measure columns.
+    // 2. Long-format recipe targeting the actual `acme.inputs.csv`.
+    //    All 5 dimensions come from source columns; measures come from
+    //    the `Measure` column; values from the `value` column.
     // ------------------------------------------------------------------
     let recipe_path = tempdir.join("acme-import.recipe.yaml");
     fs::write(&recipe_path, ACME_RECIPE_YAML).expect("write recipe");
@@ -198,64 +173,29 @@ const MARKET_NAMES: [&str; 7] = [
 
 const ACME_RECIPE_YAML: &str = r#"version: 1
 name: acme_csv_equivalence
-description: "Phase 5A Stream D headline test recipe — wide-format Acme inputs."
+description: "Phase 5A.1 long-format test recipe — reads the actual acme.inputs.csv."
 model: ./acme.yaml
 source:
   driver: csv
-  path: ./acme_inputs_wide.csv
+  path: ./acme.inputs.csv
+  format: long
+  long_format:
+    measure_column: Measure
+    value_column: value
 columns:
+  - { source: Scenario, dimension: Scenario }
+  - { source: Version, dimension: Version }
   - { source: Time, dimension: Time }
   - { source: Channel, dimension: Channel }
   - { source: Market, dimension: Market }
-  - { source: Spend, measure: Spend, type: f64 }
-  - { source: CPC, measure: CPC, type: f64 }
-  - { source: CVR, measure: CVR, type: f64 }
-  - { source: Close_Rate, measure: Close_Rate, type: f64 }
-  - { source: AOV, measure: AOV, type: f64 }
-  - { source: COGS_Rate, measure: COGS_Rate, type: f64 }
-defaults:
-  Scenario: Baseline
-  Version: Working
+defaults: {}
 write_disposition: replace
 incremental: false
 batch:
-  size: 200
+  size: 500
 on_error: abort
 on_missing_element: error
 "#;
-
-fn write_wide_csv(path: &Path) {
-    let mut s = String::new();
-    s.push_str("Time,Channel,Market,Spend,CPC,CVR,Close_Rate,AOV,COGS_Rate\n");
-    for (time_idx, time_name) in TIME_NAMES.iter().enumerate() {
-        for (channel_idx, channel_name) in CHANNEL_NAMES.iter().enumerate() {
-            for (market_idx, market_name) in MARKET_NAMES.iter().enumerate() {
-                let v = canonical_inputs_for(
-                    (time_idx + 1) as u32,
-                    channel_idx as u32,
-                    market_idx as u32,
-                );
-                // Use Rust's default float formatting via std `{}`. The
-                // CSV driver re-parses these to f64 so any string with
-                // round-trippable precision is fine; rust's default
-                // formatter is round-trip-safe for f64.
-                s.push_str(&format!(
-                    "{},{},{},{},{},{},{},{},{}\n",
-                    time_name,
-                    channel_name,
-                    market_name,
-                    v.spend,
-                    v.cpc,
-                    v.cvr,
-                    v.close_rate,
-                    v.aov,
-                    v.cogs_rate,
-                ));
-            }
-        }
-    }
-    fs::write(path, s).expect("write wide csv");
-}
 
 #[allow(clippy::too_many_arguments)]
 fn name_coord_gold(

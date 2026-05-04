@@ -208,6 +208,16 @@ pub enum RecipeError {
         source_column: String,
         measure: String,
     },
+
+    /// **MC5021** — `format: long` used with `measure: X` in `columns:`
+    /// (mutual exclusion — in long format, measures come from the
+    /// `long_format.measure_column`, not from column mappings).
+    #[error("column {source_column:?} at {path} declares measure: {measure:?} but recipe uses format: long (measures come from long_format.measure_column in long format)")]
+    LongFormatMeasureColumnConflict {
+        path: String,
+        source_column: String,
+        measure: String,
+    },
 }
 
 /// Sub-classifier for [`RecipeError::ColumnNoSingleTarget`] — disambiguates
@@ -260,6 +270,7 @@ impl RecipeError {
             RecipeError::DimensionInColumnsAndDefaults { .. } => "MC5016",
             RecipeError::ModelPathEscapesWorkspace { .. } => "MC5017",
             RecipeError::DerivedMeasureWriteRejected { .. } => "MC5018",
+            RecipeError::LongFormatMeasureColumnConflict { .. } => "MC5021",
         }
     }
 
@@ -285,6 +296,7 @@ impl RecipeError {
             RecipeError::DimensionInColumnsAndDefaults { column_path, .. } => column_path,
             RecipeError::ModelPathEscapesWorkspace { path, .. } => path,
             RecipeError::DerivedMeasureWriteRejected { path, .. } => path,
+            RecipeError::LongFormatMeasureColumnConflict { path, .. } => path,
         }
     }
 
@@ -390,14 +402,19 @@ mod tests {
                 source_column: "x".into(),
                 measure: "x".into(),
             },
+            RecipeError::LongFormatMeasureColumnConflict {
+                path: "/columns/0/measure".into(),
+                source_column: "x".into(),
+                measure: "x".into(),
+            },
         ];
 
         let mut codes: Vec<&'static str> = variants.iter().map(|v| v.code()).collect();
         codes.sort_unstable();
         codes.dedup();
-        assert_eq!(codes.len(), 18, "expected 18 distinct MC5xxx codes");
+        assert_eq!(codes.len(), 19, "expected 19 distinct MC5xxx codes");
         assert_eq!(codes[0], "MC5001");
-        assert_eq!(codes[17], "MC5018");
+        assert_eq!(codes[18], "MC5021");
     }
 
     #[test]
