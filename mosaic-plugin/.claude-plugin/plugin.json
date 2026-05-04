@@ -22,12 +22,14 @@
     "./commands/mosaic-inspect.md",
     "./commands/mosaic-lint.md",
     "./commands/mosaic-test.md",
-    "./commands/mosaic-author.md"
+    "./commands/mosaic-author.md",
+    "./commands/mosaic-import.md"
   ],
   "agents": [
     "./agents/mosaic-architect.md",
     "./agents/mosaic-author.md",
     "./agents/mosaic-debugger.md",
-    "./agents/mosaic-validator.md"
+    "./agents/mosaic-validator.md",
+    "./agents/mosaic-importer.md"
   ]
 }

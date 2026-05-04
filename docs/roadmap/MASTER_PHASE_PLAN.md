@@ -256,11 +256,25 @@ Likely follow-ons (placeholders, do not pre-name without an ADR):
 
 ---
 
-## Phase 5 — Data Integration & Actuals
+## Phase 5 — Data Integration & Actuals (Tessera)
 
-> Connect cubes to real-world data (actuals from external systems, e.g. ad platform reporting APIs, CRM exports) so plans can be compared to reality.
+> Connect cubes to real-world data (actuals from external systems — CSV / SQL / REST) via the **Tessera** ingestion engine. The TM1 TurboIntegrator replacement: declarative YAML recipes (not scripting), schema-validated, LLM-authorable, blazing-fast bulk-write through `WriteBatch`.
 
-- **Status:** not started.
+- **Status:** in progress. Sub-phase decomposition per [ADR-0010](../decisions/0010-phase-5-tessera-architecture.md) Decision 9.
+
+### Phase 5 sub-phase status (per ADR-0010 Decision 9)
+
+| Sub-phase | Deliverable | Status |
+|---|---|---|
+| **5A — Tessera Core Engine** | `WriteBatch` (mc-core); recipe format (mc-recipe); 6 source drivers (mc-drivers); Tessera orchestrator (mc-tessera) + 5 CLI verbs; Acme CSV equivalence test; 100K-row perf gate | **Streams A+B+C merged** at `6c9950d` (502/0 tests). Stream D orchestrator + CLI verbs in-flight per [`../handoffs/phase-5a-stream-d-handoff.md`](../handoffs/phase-5a-stream-d-handoff.md). |
+| **5A.1 — Long-Format Recipe Support** | Schema extension (`format: long` + `long_format:`); Acme equivalence-test switch from generated-wide to actual `acme.inputs.csv`; MC5019–MC5022 codes | Filed per [ADR-0010 Amendment 2](../decisions/0010-amendment-2-long-format-recipe-support.md); pending implementation after 5A Stream D ships. |
+| **5B — LLM-Assisted Recipe Authoring** | Plugin skills for import mapping (csv / sql / api); `mosaic-importer` agent; `/mosaic-import` command; Phase 4B adapter `--mode propose-recipe` | **Complete pending user review** on branch `phase-5b/llm-recipe-authoring`. Best-of-3 gate: Anthropic 3/3 ✓, OpenAI 3/3 ✓. See [`../reports/phase-5b-completion-report.md`](../reports/phase-5b-completion-report.md). NOT committed. |
+| **5B.1 — `mc tessera propose` CLI verb** | Native CLI verb that wraps the LLM authoring loop (Rust-side); requires `mc-tessera` (Stream D's deliverable) | Deferred until Stream D ships. Phase 5B confined to plugin + adapter (no Rust crate modifications). |
+| **5C — Driver Expansion** | MySQL native, D1 REST, Snowflake/BigQuery via ODBC; cron scheduling; incremental loads; element auto-creation | Future ADR(s) after 5B. Demand-driven; each driver independent. |
+| **5D — Document/OCR Ingestion** | Document ingestion (open-weight OCR + vision-language models + LLM-assisted field mapping) | Placeholder. Full scope in a future ADR. |
+| **5E — Grout Proper** | Full secrets layer (vault, rotation, audit log, external secret-manager integrations) | Placeholder. Phase 5A ships the `SecretResolver` trait + `EnvVarSecretResolver` only. |
+
+
 - **Purpose:** Distinguish *plan* (forecasted Spend, Revenue, etc.) from *actual* (what the platform reported) inside the cube model. Today every cell is a single value; planning is the difference between a plan and an actual.
 - **What it proves:** The kernel can hold both plan and actual on the same coordinate (likely via a Scenario-dimension axis or a parallel cube), and that loading actuals from a real external source produces a usable variance report.
 - **Deliverables (anticipated, high-level):** an "actuals" semantic somewhere in the cube model (Scenario axis values like `Plan`, `Actual`, `Forecast`, plus a documented variance pattern); at least one external-source adapter (likely a CSV importer first, then one platform API); a CLI command that loads actuals and prints a variance summary.

@@ -1,0 +1,5 @@
+[mosaic] plugin root: /Users/edwinlovettiii/Projects/mc-v2/mosaic-plugin
+[mosaic] system prompt: 102,504 chars
+[mosaic] validation path: structural
+[mosaic] calling gpt-5.5 (initial recipe draft)...
+[mosaic][iter 1] recipe converged (structural)
