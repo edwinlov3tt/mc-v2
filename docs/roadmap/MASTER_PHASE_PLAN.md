@@ -47,7 +47,7 @@ Productization beyond the first usable product (multi-tenancy, customer-facing a
 | **3D** | Friendly formula syntax — `Revenue = Customers * AOV` strings compile to `ParsedRuleBody`'s structured tree (per ADR-0007; originally ADR-0004's Phase 3C — renamed to 3D per ADR-0006 roadmap impact) | **complete** (report at [`../reports/phase-3d-completion-report.md`](../reports/phase-3d-completion-report.md)) | `phase-3d-friendly-formula-syntax` (`d5ab355`) |
 | **3E–3N** | Further model layer extensions (TBD) | not started | — |
 | **4A** | LLM-assisted authoring — Mosaic Claude Code plugin (skills + agents + commands + MCP server + marketing-mix domain schema) per ADR-0008 | **complete** (report at [`../reports/phase-4a-completion-report.md`](../reports/phase-4a-completion-report.md)) | `phase-4a-mosaic-plugin` (`36af56c`) |
-| **4B** | Python reference adapters under `mosaic-plugin/examples/adapters/` (`anthropic-python/` + `openai-python/` ~150 lines each) | **proposed** (next-to-start) | — |
+| **4B** | Python reference adapters under `mosaic-plugin/examples/adapters/` (`anthropic-python/` + `openai-python/` ~150 lines each) | **complete** (report at [`../reports/phase-4b-completion-report.md`](../reports/phase-4b-completion-report.md); both adapters cleared best-of-3 gate — Anthropic 3/3, OpenAI 3/3) | `phase-4b-python-adapters` (`b5b6229`) |
 | **5** | Data integration & actuals | not started | — |
 | **6** | UI & internal app proofs (incl. internal Media Partner model proof) | not started | — |
 | **7** | Productization (customer-facing Media Partner App + multi-tenancy) | not started | — |
@@ -236,16 +236,19 @@ Likely follow-ons (placeholders, do not pre-name without an ADR):
 - **Phase 4A.1 candidate (small amendment):** ship the two hooks (`pre-commit-lint.json`, `post-edit-validate.json`) once the canonical Claude Code hook-spec format is verified against a live install. Plus skill-example sweep for any remaining mismatched-shape examples.
 - **Phase 4A.2 candidate (small amendment):** add `mc model trace <coord>` CLI verb + the `/mosaic-explain` slash command that consumes it (the kernel has rule-chain trace per PERF.md §6.4; surfacing as CLI requires touching `mc-model` which Phase 4A's locked-surfaces rule blocked).
 
-### 4B — Python reference adapters (proposed)
+### 4B — Python reference adapters (complete 2026-05-03)
 
-- **Status:** **proposed.** Promoted from `planned` once Phase 4A shipped.
+- **Status:** **complete** at `b5b6229` (tag `phase-4b-python-adapters`). All deliverables shipped + best-of-3 gate cleared. Committed at `b5b6229` (tag `phase-4b-python-adapters`).
 - **Purpose:** Demonstrate that the Mosaic plugin's content is portable across LLM environments by shipping working Python reference adapters that consume the same plugin and produce equivalent results.
-- **Deliverables (planned):** two Python adapters under `mosaic-plugin/examples/adapters/`:
-  - `anthropic-python/` — ~150 line reference iteration loop using the official Anthropic Python SDK
-  - `openai-python/` — ~150 line reference iteration loop using the official OpenAI Python SDK
-  Each reads the plugin's `skills/`, `agents/`, `commands/`, `examples/`; calls the provider's API; runs the iteration loop against `mc-cli`'s diagnostic JSON envelope (Phase 3B contract).
-- **Acceptance gates (planned):** `python examples/adapters/anthropic-python/author.py "marketing-mix for 5-channel B2C SaaS"` AND `python examples/adapters/openai-python/author.py "..."` both produce a YAML that passes `mc model validate/lint/test`. Same plugin content drives both adapters with no provider-specific tags in `skills/` / `agents/` / `commands/`.
-- **Out of scope (explicit):** TypeScript adapters; Codex / Gemini / Mistral / Ollama adapters; cost tracking; prompt hardening; production-quality polish (rate limit handling, network failures, partial-completion resumption); schema marketplace. All deferred to demand-driven future phases.
+- **Deliverables shipped:** two Python adapters under `mosaic-plugin/examples/adapters/`:
+  - `anthropic-python/` — 267-line reference iteration loop using the official Anthropic Python SDK; default provider per ADR-0008 amendment D; uses `claude-opus-4-7`.
+  - `openai-python/` — 263-line reference iteration loop using the official OpenAI Python SDK; cross-provider proof per amendment G; uses `gpt-5.5` via `responses.create`.
+
+  Each reads the plugin's `skills/`, `agents/`, `commands/`, and `examples/models/acme-marketing.yaml`; concatenates them into a single 138K-char system prompt with the binding ```yaml-fence response-format instruction; calls the provider's API; runs the iteration loop against `mc model {validate,lint,test} --format json` (subprocess; not MCP) up to 5 iterations.
+- **Acceptance gates cleared:** `python examples/adapters/anthropic-python/author.py "marketing-mix model for a 5-channel B2C SaaS with monthly seasonality and a Q4 lift scenario"` and the matching OpenAI invocation each ran 3 times. **Anthropic 3/3 ✓** (post-fix runs at 2 / 1 / 4 iter); **OpenAI 3/3 ✓** (1 / 1 / 1 iter). Both canonical YAMLs pass `mc model validate / lint / test` with 10/10 goldens. Both adapters use the same plugin content with no provider-specific tags. See [`reports/phase-4b-completion-report.md`](../reports/phase-4b-completion-report.md) + [`reports/phase-4b-proof/`](../reports/phase-4b-proof/) for the audit trail.
+- **In-flight bug fixes (Phase 4B-internal):** initial gate-run produced Anthropic 1/3 because of two real adapter bugs (case-insensitive severity filter mismatch + truncation-tolerant YAML extraction). Both fixed; pre-fix Anthropic artifacts archived. One plugin-doc inconsistency (envelope `severity` PascalCase in `mc-cli` vs lowercase in `skills/debugging/SKILL.md`) surfaced as **Phase 4A.1 follow-up candidate** (NOT folded into 4B per SPEC QUESTION trigger #2).
+- **Locked surfaces (vs `phase-4a-mosaic-plugin`):** `crates/` 0-line diff; `mosaic-plugin/skills/` / `agents/` / `commands/` / `.claude-plugin/` / `.mcp.json` / `examples/models/` / `hooks/` 0-line diff. Toolchain still Rust 1.78. `cargo test --workspace` still 416/0.
+- **Out of scope (held):** TypeScript adapters; Codex / Gemini / Mistral / Ollama adapters; cost tracking; prompt hardening; production-quality polish (rate limit handling, network failures, partial-completion resumption); schema marketplace. All deferred to demand-driven future phases.
 
 **Why this comes after Phase 3.** Without Phase 3 (3A schema, 3B diagnostics, 3C fixtures, 3D formula syntax), the LLM has nothing concrete to emit. Phase 3's schema + diagnostic codes (MC1xxx–MC4xxx) are the LLM's grounding rails.
 
