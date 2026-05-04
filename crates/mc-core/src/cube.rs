@@ -29,6 +29,8 @@
 
 use std::sync::Arc;
 
+use smallvec::SmallVec;
+
 use crate::cell::{CellValue, Provenance, StoredCell};
 use crate::consolidation::Consolidator;
 use crate::coordinate::{CellCoordinate, CellCoordinateBuilder};
@@ -1050,6 +1052,365 @@ impl Cube {
         out
     }
 
+    /// Tier 2 amortization variant of `compute_dirty_ancestors`: walks
+    /// the same Cartesian product but marks each ancestor directly
+    /// into `self.dirty` (the bitset) instead of building an
+    /// intermediate `Vec<CellCoordinate>`. Skips the (pure-leaf,
+    /// self-measure) entry just like its sibling. Returns the number
+    /// of marks attempted (NOT the number of cells freshly dirtied —
+    /// the bitset's `mark` is idempotent, so duplicates across the
+    /// batch are no-op bit-tests).
+    ///
+    /// Uses `SmallVec` for `per_dim_options`, the per-dim option
+    /// lists, the `indices` cursor, and the per-coord `elements`
+    /// buffer so the entire walk runs heap-free for cubes with ≤ 8
+    /// dims and ≤ 8 ancestors per dim. At Acme/100×, both bounds are
+    /// satisfied (6 dims; deepest hierarchy is Time/Channel/Market at
+    /// 4 levels each).
+    pub(crate) fn mark_dirty_ancestors_inline(
+        &mut self,
+        coord: &CellCoordinate,
+        measure_id: ElementId,
+    ) {
+        // Step 1: per-dim options. Each dim gets [self, ancestor_1,
+        // ancestor_2, ...]. SmallVec inline capacity 8 covers every
+        // realistic Phase 1/Phase 5 cube without heap.
+        let dim_count = self.dimensions.len();
+        let mut per_dim_options: SmallVec<[SmallVec<[ElementId; 8]>; 8]> =
+            SmallVec::with_capacity(dim_count);
+        for (i, dim) in self.dimensions.iter().enumerate() {
+            let element = coord.element_at(i);
+            let mut options: SmallVec<[ElementId; 8]> = SmallVec::new();
+            options.push(element);
+            if dim.kind != DimensionKind::Measure {
+                let h = dim.default_hierarchy();
+                if !h.edges.is_empty() {
+                    for (anc, _w) in h.ancestors(element) {
+                        options.push(anc);
+                    }
+                }
+            }
+            per_dim_options.push(options);
+        }
+
+        // Step 2: measures_to_mark. Includes the written measure plus
+        // every Derived measure on this cube. SmallVec inline capacity
+        // 8 covers Acme's 6 inputs + 5 derived = 11 measures cleanly
+        // (the per-walk subset is at most ~6).
+        let measure_position = self.measure_dimension_position;
+        let mut measures_to_mark: SmallVec<[ElementId; 8]> = SmallVec::new();
+        measures_to_mark.push(measure_id);
+        for element in &self.measure_dimension().elements {
+            if let Some(meta) = element.measure_meta() {
+                if meta.role == MeasureRole::Derived && element.id != measure_id {
+                    measures_to_mark.push(element.id);
+                }
+            }
+        }
+
+        // Step 3: walk + mark. No `out` Vec; no caller-side iterate-
+        // and-mark. The bitset's `mark` is O(1) and idempotent so
+        // duplicate marks across overlapping ancestor sets cost only
+        // a bit-test.
+        let mut indices: SmallVec<[usize; 8]> = SmallVec::from_elem(0usize, dim_count);
+        let mut elements: SmallVec<[ElementId; 8]> = SmallVec::with_capacity(dim_count);
+        loop {
+            elements.clear();
+            for i in 0..dim_count {
+                elements.push(per_dim_options[i][indices[i]]);
+            }
+            let is_pure_leaf = indices.iter().all(|&i| i == 0);
+            for &m in &measures_to_mark {
+                if is_pure_leaf && m == measure_id {
+                    continue;
+                }
+                let saved = elements[measure_position];
+                elements[measure_position] = m;
+                self.dirty.mark(CellCoordinate::from_parts(
+                    self.id,
+                    elements.iter().copied(),
+                ));
+                elements[measure_position] = saved;
+            }
+            // Increment indices (carry-on overflow).
+            let mut carried = true;
+            let mut i = dim_count;
+            while i > 0 {
+                i -= 1;
+                indices[i] += 1;
+                if indices[i] < per_dim_options[i].len() {
+                    carried = false;
+                    break;
+                }
+                indices[i] = 0;
+            }
+            if carried {
+                break;
+            }
+        }
+    }
+
+    // --- Batch fast path (Phase 5A Stream A — WriteBatch) ---
+    //
+    // The two `pub(crate)` helpers below are the cube-side entry points
+    // for [`crate::batch::WriteBatch`]. They split the per-cell `write()`
+    // path into a validate-first, apply-second shape so the public
+    // `WriteBatch::commit()` can:
+    //   1. Validate every staged write up-front (no mutation, no
+    //      snapshot cost on failure).
+    //   2. Snapshot once (Amendment #5: at apply time, not at stage time).
+    //   3. Apply with a single revision bump, batched store writes, and
+    //      a deduplicating dirty propagation pass.
+    //
+    // The amortization is the speedup: per-cell `write()` does N
+    // revision bumps + N dirty-set Vec allocations + N
+    // `compute_dirty_ancestors` walks; `batch_apply_validated` does 1
+    // revision bump and reuses the bitset's O(1) `is_dirty` to dedupe
+    // overlapping ancestor sets across the whole batch. See PERF.md
+    // §6.16 (per-cell baselines) and §6.17 (WriteBatch results) for
+    // the measured before/after.
+
+    /// Validate every staged write in a [`WriteBatch`] up-front. Runs
+    /// the same safety checks as [`Cube::write`] (steps 1-9: permission,
+    /// cube id, arity, consolidated, derived, version state, lock,
+    /// type, NaN/Inf reject). Does NOT mutate any visible cube state
+    /// (revision, store, dirty are unchanged); the only side effect is
+    /// `LockTable::check_write`'s incidental purge of expired locks,
+    /// which is internal bookkeeping not part of the public state.
+    ///
+    /// The optimistic-concurrency check (`expected_revision`) is
+    /// intentionally omitted: `WriteBatch` is a bulk-import path with
+    /// no per-cell revision preconditions; snapshot-and-rollback
+    /// semantics handle concurrency at the batch granularity.
+    ///
+    /// Returns one `BatchPrepared` per staged write on success;
+    /// returns the FIRST validation error on failure (consistent with
+    /// `Cube::write`'s fail-fast behavior — atomicity contract per
+    /// ADR-0010 Decision 3).
+    pub(crate) fn batch_validate_all(
+        &mut self,
+        staged: &[(CellCoordinate, ScalarValue)],
+        principal: PrincipalId,
+        now_unix_seconds: u64,
+    ) -> Result<Vec<BatchPrepared>, EngineError> {
+        let mut prepared = Vec::with_capacity(staged.len());
+        for (coord, value) in staged {
+            // Per engine-semantics.md §13 I-WB-1..I-WB-5 + I-WB-9 +
+            // §3.18 NaN-reject: full per-cell validation, mirror of
+            // `Cube::write` steps 1-9.
+            let measure_id = self.batch_validate_one(coord, value, principal, now_unix_seconds)?;
+            prepared.push(BatchPrepared {
+                coord: coord.clone(),
+                value: value.clone(),
+                measure_id,
+            });
+        }
+        Ok(prepared)
+    }
+
+    /// Per-cell validation. Mirrors `Cube::write` steps 1-9 but does
+    /// NOT mutate any visible cube state.
+    fn batch_validate_one(
+        &mut self,
+        coord: &CellCoordinate,
+        value: &ScalarValue,
+        principal: PrincipalId,
+        now_unix_seconds: u64,
+    ) -> Result<ElementId, EngineError> {
+        // Per engine-semantics.md §13 I-WB-5: permission check first.
+        if !self
+            .permissions
+            .check(principal, &self.dimensions, coord, capability::WRITE)
+        {
+            return Err(EngineError::InsufficientPermission {
+                principal,
+                coord: coord.clone(),
+            });
+        }
+        // Cube id / arity (Internal — caller bug, not user-facing).
+        if coord.cube != self.id {
+            return Err(EngineError::Internal(
+                "Cube::batch_validate_one: coordinate cube id does not match this cube",
+            ));
+        }
+        if coord.elements().len() != self.dimensions.len() {
+            return Err(EngineError::Internal(
+                "Cube::batch_validate_one: coordinate arity does not match cube dimension count",
+            ));
+        }
+        // Per engine-semantics.md §13 I-WB-1: consolidated coords are
+        // not writable.
+        if self.is_consolidated_coord(coord) {
+            return Err(EngineError::ConsolidatedCellNotWritable {
+                coord: coord.clone(),
+            });
+        }
+        // Per engine-semantics.md §13 I-WB-2: derived measures are not
+        // writable.
+        let (measure_id, measure_meta) = self.measure_at_coord(coord)?;
+        if measure_meta.role == MeasureRole::Derived {
+            return Err(EngineError::DerivedCellNotWritable {
+                coord: coord.clone(),
+            });
+        }
+        // Per engine-semantics.md §13 I-WB-3 / §9: writes to
+        // Approved/Archived versions are rejected.
+        if let Some(version_dim) = self
+            .dimensions
+            .iter()
+            .find(|d| d.kind == DimensionKind::Version)
+        {
+            let version_position = self
+                .dimensions
+                .iter()
+                .position(|d| d.id == version_dim.id)
+                .expect("version dim is in dimensions");
+            let version_element = coord.element_at(version_position);
+            if let Some(element) = version_dim.element(version_element) {
+                if let Some(state) = element.version_state() {
+                    if matches!(state, VersionState::Approved | VersionState::Archived) {
+                        return Err(EngineError::LockedVersion {
+                            version: version_element,
+                            state,
+                        });
+                    }
+                }
+            }
+        }
+        // Per engine-semantics.md §13 I-WB-4: hard locks block.
+        // `check_write` purges expired locks as a side effect; that
+        // purge is acceptable inside a validate-only path because
+        // expired locks are not part of the public state contract.
+        if let Some(blocking) =
+            self.locks
+                .check_write(principal, &self.dimensions, coord, now_unix_seconds)
+        {
+            return Err(EngineError::LockedCell {
+                coord: coord.clone(),
+                owner: blocking.owner,
+            });
+        }
+        // Per engine-semantics.md §13 I-WB-9: type check. WriteBatch
+        // implements Set semantics only (the brief's `WriteIntent::Set`
+        // case) — no Increment, no Clear — so the value is type-checked
+        // directly against the measure's declared dtype.
+        if !measure_meta.dtype.matches(value) {
+            return Err(EngineError::TypeMismatch {
+                expected: measure_meta.dtype.clone(),
+                got: value.clone(),
+            });
+        }
+        // Per engine-semantics.md §3.18 + §0.A: NaN must never appear
+        // in storage.
+        if let ScalarValue::F64(v) = value {
+            validate_finite_f64(*v)?;
+        }
+        Ok(measure_id)
+    }
+
+    /// Apply a validated batch. Bumps the cube revision ONCE, writes
+    /// every prepared cell, and propagates dirty marks across the
+    /// union of all affected ancestors with O(1) per-mark dedup via
+    /// the bitset tracker.
+    ///
+    /// **The Tier 1 amortization headline:** per-cell
+    /// [`Cube::write`](Self::write) does `N` revision bumps, `N`
+    /// `Vec<CellCoordinate>` allocations for `WritebackResult.invalidated`,
+    /// and `N` `closure_of_dependents` + `compute_dirty_ancestors`
+    /// passes. This method does **1** revision bump, **0** per-cell
+    /// invalidated-Vec allocations (the `CommitResult` reports
+    /// counts, not the full coord list), and `N`
+    /// `compute_dirty_ancestors` calls — but the per-mark cost is
+    /// O(1) on the bitset path, so duplicate marks across overlapping
+    /// ancestor sets are no-ops in the bit-test. The newly-dirtied
+    /// count is the post − pre `dirty.len()` delta, which is exactly
+    /// the marginal-set cardinality without per-coord bookkeeping.
+    ///
+    /// Caller is expected to have already snapshotted (Phase 2 of
+    /// `WriteBatch::commit`) so an `Err` return can be matched with
+    /// `Cube::rollback_to(&snapshot)`. Per Phase 5A, the per-cell
+    /// validation in `batch_validate_all` covers every write-side
+    /// failure mode, so this path returns `Ok` on every well-formed
+    /// non-empty batch; the `Result` return type is defense-in-depth
+    /// for `EngineError::Internal` invariants.
+    pub(crate) fn batch_apply_validated(
+        &mut self,
+        prepared: Vec<BatchPrepared>,
+        principal: PrincipalId,
+        now_unix_seconds: u64,
+    ) -> Result<BatchApplyOutcome, EngineError> {
+        let revision_before = self.revision;
+        let dirty_count_before = self.dirty.len();
+
+        // Empty batch: no-op. The empty case is filtered upstream by
+        // `WriteBatch::commit` to skip the snapshot, but defending in
+        // depth here lets callers (including future Tessera bench
+        // harnesses) call this directly without re-checking.
+        if prepared.is_empty() {
+            return Ok(BatchApplyOutcome {
+                revision_before,
+                revision_after: revision_before,
+                newly_dirtied_count: 0,
+                dirty_count_after: dirty_count_before,
+            });
+        }
+
+        // Single revision bump for the entire batch — the headline
+        // amortization. All cells written below carry `revision_after`
+        // as their `StoredCell.revision`.
+        self.revision = self.revision.next();
+        let revision_after = self.revision;
+
+        let provenance = Provenance::Input {
+            written_at: now_unix_seconds,
+            written_by: principal,
+        };
+
+        // Apply: write each cell, propagate dirty in aggregate. The
+        // bitset's `is_dirty`/`mark` are O(1) and idempotent — duplicate
+        // marks across overlapping ancestor sets become no-ops in the
+        // bit-test path. The newly-dirtied count falls out of
+        // `dirty.len()` deltas (no per-coord transition bookkeeping
+        // needed), which is the marginal-set semantics extended to a
+        // batch.
+        for prep in &prepared {
+            self.store.write(
+                prep.coord.clone(),
+                StoredCell {
+                    value: prep.value.clone(),
+                    provenance: provenance.clone(),
+                    uncertainty: None,
+                    revision: revision_after,
+                },
+            );
+            // Tier 1: rule dependents. `mark_closure` calls
+            // `closure_of_dependents` which still allocates an
+            // AHashSet per call — the per-Acme-leaf fan-out here is
+            // small (typically 0-5 entries via `SelfRef` rules at the
+            // leaf), so the alloc cost is negligible and we keep
+            // existing dependency-graph semantics unchanged.
+            self.dirty.mark_closure(&prep.coord, &self.deps);
+            // Tier 2: hierarchy ancestor walk inline. `mark_dirty_ancestors_inline`
+            // mirrors `compute_dirty_ancestors` but marks directly
+            // into the bitset, skipping the per-cell
+            // `Vec<CellCoordinate>` allocation that `Cube::write`
+            // pays. At ~200 ancestor coords per write × 1M cells the
+            // saved allocation cost is the load-bearing Tier 2
+            // amortization. See PERF.md §6.17 for the measured impact.
+            self.mark_dirty_ancestors_inline(&prep.coord, prep.measure_id);
+        }
+
+        let dirty_count_after = self.dirty.len();
+        let newly_dirtied_count = dirty_count_after.saturating_sub(dirty_count_before);
+
+        Ok(BatchApplyOutcome {
+            revision_before,
+            revision_after,
+            newly_dirtied_count,
+            dirty_count_after,
+        })
+    }
+
     // --- Snapshot ---
 
     pub fn snapshot(&self, label: Option<&str>) -> Snapshot {
@@ -1186,6 +1547,31 @@ pub struct WritebackResult {
     pub revision_after: Revision,
     pub invalidated: Vec<CellCoordinate>,
     pub soft_lock_notes: Vec<String>,
+}
+
+/// Internal: a write that has passed every `batch_validate_one` check
+/// and is ready to apply via `Cube::batch_apply_validated`.
+///
+/// `pub(crate)` only — the batch fast path is an internal detail
+/// shared between [`crate::cube::Cube`] and [`crate::batch::WriteBatch`].
+/// External callers use the [`crate::batch::WriteBatch`] public API.
+#[derive(Clone, Debug)]
+pub(crate) struct BatchPrepared {
+    pub(crate) coord: CellCoordinate,
+    pub(crate) value: ScalarValue,
+    pub(crate) measure_id: ElementId,
+}
+
+/// Internal: outcome of `Cube::batch_apply_validated`. Maps directly
+/// onto the public [`crate::batch::CommitResult`] minus the
+/// caller-supplied `snapshot_id`, `rows_written`, and `rows_failed`
+/// fields, which are filled in by `WriteBatch::commit`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BatchApplyOutcome {
+    pub(crate) revision_before: Revision,
+    pub(crate) revision_after: Revision,
+    pub(crate) newly_dirtied_count: usize,
+    pub(crate) dirty_count_after: usize,
 }
 
 fn dummy_check_coord(cube: CubeId, dims: &[Dimension]) -> CellCoordinate {

@@ -83,3 +83,12 @@ harness = false
 [[bench]]
 name = "baseline_writebatch"
 harness = false
+
+# Phase 5A Stream A — `WriteBatch::commit()` benchmarks. Companion to
+# `baseline_writebatch.rs`; measures the same four scale points (1K /
+# 10K / 100K / 1M) on the post-WriteBatch path. See ADR-0010 Decision
+# 6 for the gate table and PERF.md §6.17 for the before/after diff.
+
+[[bench]]
+name = "tessera_writeback"
+harness = false
