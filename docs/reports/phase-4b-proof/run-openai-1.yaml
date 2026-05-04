@@ -1,0 +1,343 @@
+model_format_version: 1
+
+canonical_inputs:
+  columns: ["Scenario", "Version", "Time", "Channel", "Market", "Measure", "value"]
+  inline:
+    rows:
+      - ["Baseline", "Working", "Jan_2027", "Paid_Search", "North_America", "Spend", 20000.0]
+      - ["Baseline", "Working", "Feb_2027", "Paid_Search", "North_America", "Spend", 22000.0]
+      - ["Baseline", "Working", "Mar_2027", "Paid_Search", "North_America", "Spend", 24000.0]
+      - ["Baseline", "Working", "Mar_2027", "Paid_Search", "North_America", "CPC", 4.0]
+      - ["Baseline", "Working", "Mar_2027", "Paid_Search", "North_America", "CVR", 0.08]
+      - ["Baseline", "Working", "Mar_2027", "Paid_Search", "North_America", "Close_Rate", 0.25]
+      - ["Baseline", "Working", "Mar_2027", "Paid_Search", "North_America", "AOV", 120.0]
+      - ["Baseline", "Working", "Mar_2027", "Paid_Search", "North_America", "COGS_Rate", 0.20]
+      - ["Q4_Lift", "Working", "Oct_2027", "Paid_Search", "North_America", "Spend", 36000.0]
+      - ["Q4_Lift", "Working", "Oct_2027", "Paid_Search", "North_America", "CPC", 3.6]
+      - ["Q4_Lift", "Working", "Oct_2027", "Paid_Search", "North_America", "CVR", 0.10]
+      - ["Q4_Lift", "Working", "Oct_2027", "Paid_Search", "North_America", "Close_Rate", 0.30]
+      - ["Q4_Lift", "Working", "Oct_2027", "Paid_Search", "North_America", "AOV", 135.0]
+      - ["Q4_Lift", "Working", "Oct_2027", "Paid_Search", "North_America", "COGS_Rate", 0.18]
+
+metadata:
+  name: "B2C_SaaS_Marketing_FY2027"
+  description: "Marketing-mix model for a 5-channel B2C SaaS business with monthly seasonality and a Q4 lift scenario."
+  author: "Mosaic Authoring Assistant"
+  created: "2026-05-04"
+
+dimensions:
+  - name: "Scenario"
+    description: "Planning scenarios for baseline operations and a holiday-quarter demand lift."
+    kind: "Scenario"
+    elements:
+      - { name: "Baseline", scenario_meta: "Default" }
+      - { name: "Q4_Lift", scenario_meta: "NonDefault" }
+      - { name: "Conservative", scenario_meta: "NonDefault" }
+
+  - name: "Version"
+    description: "Workflow state for plan revisions as they move from draft to approval."
+    kind: "Version"
+    elements:
+      - { name: "Working", version_state: "Draft" }
+      - { name: "Submitted", version_state: "Submitted" }
+      - { name: "Approved", version_state: "Approved" }
+
+  - name: "Time"
+    description: "Monthly FY2027 planning periods rolling up to quarters and the full fiscal year."
+    kind: "Standard"
+    elements:
+      - { name: "Jan_2027" }
+      - { name: "Feb_2027" }
+      - { name: "Mar_2027" }
+      - { name: "Apr_2027" }
+      - { name: "May_2027" }
+      - { name: "Jun_2027" }
+      - { name: "Jul_2027" }
+      - { name: "Aug_2027" }
+      - { name: "Sep_2027" }
+      - { name: "Oct_2027" }
+      - { name: "Nov_2027" }
+      - { name: "Dec_2027" }
+      - { name: "Q1_2027" }
+      - { name: "Q2_2027" }
+      - { name: "Q3_2027" }
+      - { name: "Q4_2027" }
+      - { name: "FY_2027" }
+
+  - name: "Channel"
+    description: "Five B2C SaaS acquisition channels grouped into paid media and owned or earned programs."
+    kind: "Standard"
+    elements:
+      - { name: "Paid_Search" }
+      - { name: "Paid_Social" }
+      - { name: "Display" }
+      - { name: "Email" }
+      - { name: "Organic" }
+      - { name: "Paid_Media" }
+      - { name: "Owned_Earned" }
+      - { name: "All_Channels" }
+
+  - name: "Market"
+    description: "Go-to-market regions for the SaaS business, consolidated to a global total."
+    kind: "Standard"
+    elements:
+      - { name: "North_America" }
+      - { name: "Europe" }
+      - { name: "Asia_Pacific" }
+      - { name: "All_Markets" }
+
+  - name: "Measure"
+    description: "Marketing spend, funnel ratios, and derived SaaS acquisition KPIs."
+    kind: "Measure"
+    elements: []
+
+hierarchies:
+  - dimension: "Time"
+    name: "Calendar"
+    default: true
+    edges:
+      - { parent: "FY_2027", child: "Q1_2027", weight: 1.0 }
+      - { parent: "FY_2027", child: "Q2_2027", weight: 1.0 }
+      - { parent: "FY_2027", child: "Q3_2027", weight: 1.0 }
+      - { parent: "FY_2027", child: "Q4_2027", weight: 1.0 }
+      - { parent: "Q1_2027", child: "Jan_2027", weight: 1.0 }
+      - { parent: "Q1_2027", child: "Feb_2027", weight: 1.0 }
+      - { parent: "Q1_2027", child: "Mar_2027", weight: 1.0 }
+      - { parent: "Q2_2027", child: "Apr_2027", weight: 1.0 }
+      - { parent: "Q2_2027", child: "May_2027", weight: 1.0 }
+      - { parent: "Q2_2027", child: "Jun_2027", weight: 1.0 }
+      - { parent: "Q3_2027", child: "Jul_2027", weight: 1.0 }
+      - { parent: "Q3_2027", child: "Aug_2027", weight: 1.0 }
+      - { parent: "Q3_2027", child: "Sep_2027", weight: 1.0 }
+      - { parent: "Q4_2027", child: "Oct_2027", weight: 1.0 }
+      - { parent: "Q4_2027", child: "Nov_2027", weight: 1.0 }
+      - { parent: "Q4_2027", child: "Dec_2027", weight: 1.0 }
+
+  - dimension: "Channel"
+    name: "Grouping"
+    default: true
+    edges:
+      - { parent: "All_Channels", child: "Paid_Media", weight: 1.0 }
+      - { parent: "All_Channels", child: "Owned_Earned", weight: 1.0 }
+      - { parent: "Paid_Media", child: "Paid_Search", weight: 1.0 }
+      - { parent: "Paid_Media", child: "Paid_Social", weight: 1.0 }
+      - { parent: "Paid_Media", child: "Display", weight: 1.0 }
+      - { parent: "Owned_Earned", child: "Email", weight: 1.0 }
+      - { parent: "Owned_Earned", child: "Organic", weight: 1.0 }
+
+  - dimension: "Market"
+    name: "Geographic"
+    default: true
+    edges:
+      - { parent: "All_Markets", child: "North_America", weight: 1.0 }
+      - { parent: "All_Markets", child: "Europe", weight: 1.0 }
+      - { parent: "All_Markets", child: "Asia_Pacific", weight: 1.0 }
+
+measures:
+  - name: "Spend"
+    description: "Marketing dollars allocated to acquire or retain B2C SaaS customers."
+    role: "Input"
+    data_type: "F64"
+    aggregation: "Sum"
+
+  - name: "CPC"
+    description: "Cost per click for acquisition media; rolls up as a Spend-weighted average."
+    role: "Input"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    weight_measure: "Spend"
+
+  - name: "CVR"
+    description: "Click-to-lead conversion rate for the SaaS funnel; rolls up as a Clicks-weighted average."
+    role: "Input"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    weight_measure: "Clicks"
+
+  - name: "Close_Rate"
+    description: "Lead-to-customer conversion rate for trial or signup flows; rolls up as a Leads-weighted average."
+    role: "Input"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    weight_measure: "Leads"
+
+  - name: "AOV"
+    description: "Average first-period order value per acquired customer; rolls up as a Customers-weighted average."
+    role: "Input"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    weight_measure: "Customers"
+
+  - name: "COGS_Rate"
+    description: "Service delivery cost rate as a fraction of revenue; rolls up as a Revenue-weighted average."
+    role: "Input"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    weight_measure: "Revenue"
+
+  - name: "Clicks"
+    description: "Derived click volume generated by marketing spend at the leaf level."
+    role: "Derived"
+    data_type: "F64"
+    aggregation: "Sum"
+
+  - name: "Leads"
+    description: "Derived lead or trial-start volume created from clicks and conversion rate."
+    role: "Derived"
+    data_type: "F64"
+    aggregation: "Sum"
+
+  - name: "Customers"
+    description: "Derived new customer count produced from leads and close rate."
+    role: "Derived"
+    data_type: "F64"
+    aggregation: "Sum"
+
+  - name: "Revenue"
+    description: "Derived first-period revenue from newly acquired SaaS customers."
+    role: "Derived"
+    data_type: "F64"
+    aggregation: "Sum"
+
+  - name: "Gross_Profit"
+    description: "Derived gross profit after applying service delivery cost rate to revenue."
+    role: "Derived"
+    data_type: "F64"
+    aggregation: "Sum"
+
+rules:
+  - name: "rule_clicks"
+    description: "Clicks = Spend / CPC — convert marketing dollars into click volume."
+    target_measure: "Clicks"
+    scope: "AllLeaves"
+    body: "Spend / CPC"
+    declared_dependencies: ["Spend", "CPC"]
+
+  - name: "rule_leads"
+    description: "Leads = Clicks * CVR — convert clicks into SaaS trial or lead starts."
+    target_measure: "Leads"
+    scope: "AllLeaves"
+    body: "Clicks * CVR"
+    declared_dependencies: ["Clicks", "CVR"]
+
+  - name: "rule_customers"
+    description: "Customers = Leads * Close_Rate — convert leads into paying customers."
+    target_measure: "Customers"
+    scope: "AllLeaves"
+    body: "Leads * Close_Rate"
+    declared_dependencies: ["Leads", "Close_Rate"]
+
+  - name: "rule_revenue"
+    description: "Revenue = Customers * AOV — compute first-period revenue from acquired customers."
+    target_measure: "Revenue"
+    scope: "AllLeaves"
+    body: "Customers * AOV"
+    declared_dependencies: ["Customers", "AOV"]
+
+  - name: "rule_gross_profit"
+    description: "Gross_Profit = Revenue * (1 - COGS_Rate) — compute revenue after delivery cost."
+    target_measure: "Gross_Profit"
+    scope: "AllLeaves"
+    body: "Revenue * (1 - COGS_Rate)"
+    declared_dependencies: ["Revenue", "COGS_Rate"]
+
+golden_tests:
+  - name: "spend_input_anchor_mar_paid_search_north_america"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2027"
+      Channel: "Paid_Search"
+      Market: "North_America"
+      Measure: "Spend"
+    expect: 24000.0
+
+  - name: "cpc_input_anchor_mar_paid_search_north_america"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2027"
+      Channel: "Paid_Search"
+      Market: "North_America"
+      Measure: "CPC"
+    expect: 4.0
+
+  - name: "clicks_derived_anchor_mar_paid_search_north_america"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2027"
+      Channel: "Paid_Search"
+      Market: "North_America"
+      Measure: "Clicks"
+    expect_within_epsilon: { value: 6000.0, epsilon: 1.0e-9 }
+
+  - name: "leads_derived_anchor_mar_paid_search_north_america"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2027"
+      Channel: "Paid_Search"
+      Market: "North_America"
+      Measure: "Leads"
+    expect_within_epsilon: { value: 480.0, epsilon: 1.0e-9 }
+
+  - name: "customers_derived_anchor_mar_paid_search_north_america"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2027"
+      Channel: "Paid_Search"
+      Market: "North_America"
+      Measure: "Customers"
+    expect_within_epsilon: { value: 120.0, epsilon: 1.0e-9 }
+
+  - name: "revenue_derived_anchor_mar_paid_search_north_america"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2027"
+      Channel: "Paid_Search"
+      Market: "North_America"
+      Measure: "Revenue"
+    expect_within_epsilon: { value: 14400.0, epsilon: 1.0e-9 }
+
+  - name: "gross_profit_derived_anchor_mar_paid_search_north_america"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2027"
+      Channel: "Paid_Search"
+      Market: "North_America"
+      Measure: "Gross_Profit"
+    expect_within_epsilon: { value: 11520.0, epsilon: 1.0e-9 }
+
+  - name: "spend_consolidated_q1_paid_search_north_america"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Q1_2027"
+      Channel: "Paid_Search"
+      Market: "North_America"
+      Measure: "Spend"
+    expect: 66000.0
+
+  - name: "q4_lift_revenue_anchor_oct_paid_search_north_america"
+    coord:
+      Scenario: "Q4_Lift"
+      Version: "Working"
+      Time: "Oct_2027"
+      Channel: "Paid_Search"
+      Market: "North_America"
+      Measure: "Revenue"
+    expect_within_epsilon: { value: 40500.0, epsilon: 1.0e-9 }
+
+  - name: "q4_lift_gross_profit_anchor_oct_paid_search_north_america"
+    coord:
+      Scenario: "Q4_Lift"
+      Version: "Working"
+      Time: "Oct_2027"
+      Channel: "Paid_Search"
+      Market: "North_America"
+      Measure: "Gross_Profit"
+    expect_within_epsilon: { value: 33210.0, epsilon: 1.0e-9 }

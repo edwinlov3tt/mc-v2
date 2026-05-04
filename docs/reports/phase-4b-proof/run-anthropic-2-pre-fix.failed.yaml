@@ -1,0 +1,322 @@
+model_format_version: 1
+
+canonical_inputs:
+  columns: ["Scenario", "Version", "Time", "Channel", "Market", "Measure", "value"]
+  inline:
+    rows:
+      # Baseline / Working — Jan_2026 / Paid_Search / All_Markets
+      ["Baseline", "Working", "Jan_2026", "Paid_Search", "All_Markets", "Spend", 50000.0]
+      ["Baseline", "Working", "Jan_2026", "Paid_Search", "All_Markets", "CPC", 2.00]
+      ["Baseline", "Working", "Jan_2026", "Paid_Search", "All_Markets", "CVR", 0.040]
+      ["Baseline", "Working", "Jan_2026", "Paid_Search", "All_Markets", "Trial_Rate", 0.50]
+      ["Baseline", "Working", "Jan_2026", "Paid_Search", "All_Markets", "ARPU", 99.0]
+      ["Baseline", "Working", "Jan_2026", "Paid_Search", "All_Markets", "COGS_Rate", 0.25]
+
+      # Baseline / Working — Jan_2026 / Paid_Social / All_Markets
+      ["Baseline", "Working", "Jan_2026", "Paid_Social", "All_Markets", "Spend", 40000.0]
+      ["Baseline", "Working", "Jan_2026", "Paid_Social", "All_Markets", "CPC", 1.20]
+      ["Baseline", "Working", "Jan_2026", "Paid_Social", "All_Markets", "CVR", 0.025]
+      ["Baseline", "Working", "Jan_2026", "Paid_Social", "All_Markets", "Trial_Rate", 0.40]
+      ["Baseline", "Working", "Jan_2026", "Paid_Social", "All_Markets", "ARPU", 99.0]
+      ["Baseline", "Working", "Jan_2026", "Paid_Social", "All_Markets", "COGS_Rate", 0.25]
+
+      # Baseline / Working — Jan_2026 / Display / All_Markets
+      ["Baseline", "Working", "Jan_2026", "Display", "All_Markets", "Spend", 20000.0]
+      ["Baseline", "Working", "Jan_2026", "Display", "All_Markets", "CPC", 0.80]
+      ["Baseline", "Working", "Jan_2026", "Display", "All_Markets", "CVR", 0.015]
+      ["Baseline", "Working", "Jan_2026", "Display", "All_Markets", "Trial_Rate", 0.30]
+      ["Baseline", "Working", "Jan_2026", "Display", "All_Markets", "ARPU", 99.0]
+      ["Baseline", "Working", "Jan_2026", "Display", "All_Markets", "COGS_Rate", 0.25]
+
+      # Baseline / Working — Jan_2026 / Email / All_Markets
+      ["Baseline", "Working", "Jan_2026", "Email", "All_Markets", "Spend", 10000.0]
+      ["Baseline", "Working", "Jan_2026", "Email", "All_Markets", "CPC", 0.50]
+      ["Baseline", "Working", "Jan_2026", "Email", "All_Markets", "CVR", 0.060]
+      ["Baseline", "Working", "Jan_2026", "Email", "All_Markets", "Trial_Rate", 0.55]
+      ["Baseline", "Working", "Jan_2026", "Email", "All_Markets", "ARPU", 99.0]
+      ["Baseline", "Working", "Jan_2026", "Email", "All_Markets", "COGS_Rate", 0.25]
+
+      # Baseline / Working — Jan_2026 / Affiliate / All_Markets
+      ["Baseline", "Working", "Jan_2026", "Affiliate", "All_Markets", "Spend", 15000.0]
+      ["Baseline", "Working", "Jan_2026", "Affiliate", "All_Markets", "CPC", 1.50]
+      ["Baseline", "Working", "Jan_2026", "Affiliate", "All_Markets", "CVR", 0.030]
+      ["Baseline", "Working", "Jan_2026", "Affiliate", "All_Markets", "Trial_Rate", 0.45]
+      ["Baseline", "Working", "Jan_2026", "Affiliate", "All_Markets", "ARPU", 99.0]
+      ["Baseline", "Working", "Jan_2026", "Affiliate", "All_Markets", "COGS_Rate", 0.25]
+
+test_fixtures:
+  - name: "q4_lift"
+    columns: ["Scenario", "Version", "Time", "Channel", "Market", "Measure", "value"]
+    inline:
+      rows:
+        # Q4 lift: increase Paid_Search Spend in Oct (50% lift over Jan baseline)
+        ["Baseline", "Working", "Jan_2026", "Paid_Search", "All_Markets", "Spend", 75000.0]
+
+metadata:
+  name: "B2C_SaaS_Marketing_FY26"
+  description: "5-channel B2C SaaS marketing-mix model with monthly seasonality and Q4 lift planning"
+  author: "Mosaic Authoring Assistant"
+  created: "2026-01-15"
+
+dimensions:
+  - name: "Scenario"
+    description: "Plan branches: Baseline, Aggressive (Q4 lift), and Conservative."
+    kind: "Scenario"
+    elements:
+      - { name: "Baseline", scenario_meta: "Default" }
+      - { name: "Aggressive", scenario_meta: "NonDefault" }
+      - { name: "Conservative", scenario_meta: "NonDefault" }
+
+  - name: "Version"
+    description: "Workflow state of a plan revision (draft → submitted → approved)."
+    kind: "Version"
+    elements:
+      - { name: "Working", version_state: "Draft" }
+      - { name: "Submitted", version_state: "Submitted" }
+      - { name: "Approved", version_state: "Approved" }
+
+  - name: "Time"
+    description: "Calendar time periods used for monthly seasonality (months → quarters → year)."
+    kind: "Standard"
+    elements:
+      - { name: "Jan_2026" }
+      - { name: "Feb_2026" }
+      - { name: "Mar_2026" }
+      - { name: "Apr_2026" }
+      - { name: "May_2026" }
+      - { name: "Jun_2026" }
+      - { name: "Jul_2026" }
+      - { name: "Aug_2026" }
+      - { name: "Sep_2026" }
+      - { name: "Oct_2026" }
+      - { name: "Nov_2026" }
+      - { name: "Dec_2026" }
+      - { name: "Q1_2026" }
+      - { name: "Q2_2026" }
+      - { name: "Q3_2026" }
+      - { name: "Q4_2026" }
+      - { name: "FY_2026" }
+
+  - name: "Channel"
+    description: "5 acquisition channels grouped into Paid_Media and Owned_Earned families."
+    kind: "Standard"
+    elements:
+      - { name: "Paid_Search" }
+      - { name: "Paid_Social" }
+      - { name: "Display" }
+      - { name: "Email" }
+      - { name: "Affiliate" }
+      - { name: "Paid_Media" }
+      - { name: "Owned_Earned" }
+      - { name: "All_Channels" }
+
+  - name: "Market"
+    description: "Market scope — single global market for B2C SaaS (placeholder dim)."
+    kind: "Standard"
+    elements:
+      - { name: "All_Markets" }
+
+  - name: "Measure"
+    description: "Inputs (Spend, CPC, CVR, Trial_Rate, ARPU, COGS_Rate) and derived KPIs (Clicks, Trials, Subscribers, MRR, Gross_Profit)."
+    kind: "Measure"
+    elements: []
+
+hierarchies:
+  - dimension: "Time"
+    name: "Calendar"
+    default: true
+    edges:
+      - { parent: "FY_2026", child: "Q1_2026", weight: 1.0 }
+      - { parent: "FY_2026", child: "Q2_2026", weight: 1.0 }
+      - { parent: "FY_2026", child: "Q3_2026", weight: 1.0 }
+      - { parent: "FY_2026", child: "Q4_2026", weight: 1.0 }
+      - { parent: "Q1_2026", child: "Jan_2026", weight: 1.0 }
+      - { parent: "Q1_2026", child: "Feb_2026", weight: 1.0 }
+      - { parent: "Q1_2026", child: "Mar_2026", weight: 1.0 }
+      - { parent: "Q2_2026", child: "Apr_2026", weight: 1.0 }
+      - { parent: "Q2_2026", child: "May_2026", weight: 1.0 }
+      - { parent: "Q2_2026", child: "Jun_2026", weight: 1.0 }
+      - { parent: "Q3_2026", child: "Jul_2026", weight: 1.0 }
+      - { parent: "Q3_2026", child: "Aug_2026", weight: 1.0 }
+      - { parent: "Q3_2026", child: "Sep_2026", weight: 1.0 }
+      - { parent: "Q4_2026", child: "Oct_2026", weight: 1.0 }
+      - { parent: "Q4_2026", child: "Nov_2026", weight: 1.0 }
+      - { parent: "Q4_2026", child: "Dec_2026", weight: 1.0 }
+
+  - dimension: "Channel"
+    name: "Grouping"
+    default: true
+    edges:
+      - { parent: "All_Channels", child: "Paid_Media", weight: 1.0 }
+      - { parent: "All_Channels", child: "Owned_Earned", weight: 1.0 }
+      - { parent: "Paid_Media", child: "Paid_Search", weight: 1.0 }
+      - { parent: "Paid_Media", child: "Paid_Social", weight: 1.0 }
+      - { parent: "Paid_Media", child: "Display", weight: 1.0 }
+      - { parent: "Paid_Media", child: "Affiliate", weight: 1.0 }
+      - { parent: "Owned_Earned", child: "Email", weight: 1.0 }
+
+measures:
+  - { name: "Spend", description: "Marketing dollars allocated to a channel/period (USD).", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "CPC", description: "Cost per click (USD/click); rolls up as a Spend-weighted average.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Spend" }
+  - { name: "CVR", description: "Click-to-trial conversion rate (trials/click); rolls up as a Clicks-weighted average.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Clicks" }
+  - { name: "Trial_Rate", description: "Trial-to-subscriber conversion rate (subscribers/trial); rolls up as a Trials-weighted average.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Trials" }
+  - { name: "ARPU", description: "Average revenue per user per month (USD/subscriber); rolls up as a Subscribers-weighted average.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Subscribers" }
+  - { name: "COGS_Rate", description: "Cost-of-goods-sold rate (fraction of MRR); rolls up as an MRR-weighted average.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "MRR" }
+  - { name: "Clicks", description: "Derived click volume; computed as Spend / CPC at the leaf level.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "Trials", description: "Derived trial signups; computed as Clicks * CVR at the leaf level.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "Subscribers", description: "Derived paying subscribers; computed as Trials * Trial_Rate at the leaf level.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "MRR", description: "Derived monthly recurring revenue (USD); Subscribers * ARPU at the leaf level.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "Gross_Profit", description: "Derived gross profit (USD); MRR * (1 - COGS_Rate) at the leaf level.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+
+rules:
+  - name: "rule_clicks"
+    description: "Clicks = Spend / CPC — translate marketing dollars into click volume."
+    target_measure: "Clicks"
+    scope: "AllLeaves"
+    body: "Spend / CPC"
+    declared_dependencies: ["Spend", "CPC"]
+
+  - name: "rule_trials"
+    description: "Trials = Clicks * CVR — apply click-to-trial conversion rate."
+    target_measure: "Trials"
+    scope: "AllLeaves"
+    body: "Clicks * CVR"
+    declared_dependencies: ["Clicks", "CVR"]
+
+  - name: "rule_subscribers"
+    description: "Subscribers = Trials * Trial_Rate — apply trial-to-paid conversion rate."
+    target_measure: "Subscribers"
+    scope: "AllLeaves"
+    body: "Trials * Trial_Rate"
+    declared_dependencies: ["Trials", "Trial_Rate"]
+
+  - name: "rule_mrr"
+    description: "MRR = Subscribers * ARPU — monthly recurring revenue."
+    target_measure: "MRR"
+    scope: "AllLeaves"
+    body: "Subscribers * ARPU"
+    declared_dependencies: ["Subscribers", "ARPU"]
+
+  - name: "rule_gross_profit"
+    description: "Gross_Profit = MRR * (1 - COGS_Rate) — MRR net of cost of goods sold."
+    target_measure: "Gross_Profit"
+    scope: "AllLeaves"
+    body: "MRR * (1 - COGS_Rate)"
+    declared_dependencies: ["MRR", "COGS_Rate"]
+
+golden_tests:
+  # Input anchors at Jan_2026 / Paid_Search / All_Markets
+  - name: "spend_input_anchor_jan_paid_search"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Jan_2026"
+      Channel: "Paid_Search"
+      Market: "All_Markets"
+      Measure: "Spend"
+    expect: 50000.0
+
+  - name: "cpc_input_anchor_jan_paid_search"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Jan_2026"
+      Channel: "Paid_Search"
+      Market: "All_Markets"
+      Measure: "CPC"
+    expect: 2.00
+
+  - name: "arpu_input_anchor_jan_paid_search"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Jan_2026"
+      Channel: "Paid_Search"
+      Market: "All_Markets"
+      Measure: "ARPU"
+    expect: 99.0
+
+  # Derived anchors at Jan_2026 / Paid_Search / All_Markets
+  # Spend=50_000, CPC=2.00, CVR=0.040, Trial_Rate=0.50, ARPU=99.0, COGS_Rate=0.25
+  #   Clicks      = 50_000 / 2.00 = 25_000
+  #   Trials      = 25_000 * 0.040 = 1_000
+  #   Subscribers = 1_000 * 0.50 = 500
+  #   MRR         = 500 * 99.0 = 49_500
+  #   Gross_Profit= 49_500 * (1 - 0.25) = 37_125
+  - name: "clicks_derived_anchor_jan_paid_search"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Jan_2026"
+      Channel: "Paid_Search"
+      Market: "All_Markets"
+      Measure: "Clicks"
+    expect_within_epsilon: { value: 25000.0, epsilon: 1.0e-9 }
+
+  - name: "trials_derived_anchor_jan_paid_search"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Jan_2026"
+      Channel: "Paid_Search"
+      Market: "All_Markets"
+      Measure: "Trials"
+    expect_within_epsilon: { value: 1000.0, epsilon: 1.0e-9 }
+
+  - name: "subscribers_derived_anchor_jan_paid_search"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Jan_2026"
+      Channel: "Paid_Search"
+      Market: "All_Markets"
+      Measure: "Subscribers"
+    expect_within_epsilon: { value: 500.0, epsilon: 1.0e-9 }
+
+  - name: "mrr_derived_anchor_jan_paid_search"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Jan_2026"
+      Channel: "Paid_Search"
+      Market: "All_Markets"
+      Measure: "MRR"
+    expect_within_epsilon: { value: 49500.0, epsilon: 1.0e-9 }
+
+  - name: "gross_profit_derived_anchor_jan_paid_search"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Jan_2026"
+      Channel: "Paid_Search"
+      Market: "All_Markets"
+      Measure: "Gross_Profit"
+    expect_within_epsilon: { value: 37125.0, epsilon: 1.0e-9 }
+
+  # Consolidation rollup: Paid_Media Spend at Jan_2026 = sum of Paid_Search + Paid_Social + Display + Affiliate
+  # 50_000 + 40_000 + 20_000 + 15_000 = 125_000
+  - name: "spend_consolidated_jan_paid_media"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Jan_2026"
+      Channel: "Paid_Media"
+      Market: "All_Markets"
+      Measure: "Spend"
+    expect: 125000.0
+
+  # Q4 lift fixture: Paid_Search Spend at Jan_2026 increases to 75_000
+  # Clicks = 75_000 / 2.00 = 37_500
+  # Trials = 37_500 * 0.040 = 1_500
+  # Subscribers = 1_500 * 0.50 = 750
+  # MRR = 750 * 99.0 = 74_250
+  - name: "mrr_q4_lift_paid_search"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Jan_2026"
+      Channel: "Paid_Search"
+      Market: "All_Markets"
+      Measure: "MRR"
+    expect_within_epsilon: { value: 74250.0, epsilon: 1.0e-9 }
+    fixture: "q4_lift"

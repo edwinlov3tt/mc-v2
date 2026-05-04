@@ -1,0 +1,15 @@
+# Python build / install artifacts.
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+.eggs/
+build/
+dist/
+
+# Default adapter outputs (per README usage example). Persisted canonical
+# outputs live under docs/reports/phase-4b-proof/output-openai.yaml.
+output.yaml
+output.failed.yaml

@@ -1,0 +1,9 @@
+[mosaic] plugin root: /Users/edwinlovettiii/Projects/mc-v2/mosaic-plugin
+[mosaic] system prompt: 138,162 chars
+[mosaic] calling claude-opus-4-7 (initial draft)...
+[mosaic][iter 1] validate: 1 error(s)
+[mosaic][iter 2] validate: 1 error(s)
+[mosaic][iter 3] validate: 1 error(s)
+[mosaic][iter 4] converged: validate/lint/test all pass
+
+[mosaic] Converged in 4 iteration(s). YAML written to run-anthropic-3.yaml

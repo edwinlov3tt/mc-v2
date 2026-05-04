@@ -1,0 +1,326 @@
+model_format_version: 1
+
+canonical_inputs:
+  columns: ["Scenario", "Version", "Time", "Channel", "Market", "Measure", "value"]
+  inline:
+    rows:
+      # Baseline / Working — Jan_2026 / Paid_Search / USA_Direct (seasonality index 0.85)
+      - ["Baseline", "Working", "Jan_2026", "Paid_Search", "USA_Direct", "Spend", 8500.0]
+      - ["Baseline", "Working", "Jan_2026", "Paid_Search", "USA_Direct", "CPC", 2.00]
+      - ["Baseline", "Working", "Jan_2026", "Paid_Search", "USA_Direct", "Visit_To_Trial", 0.080]
+      - ["Baseline", "Working", "Jan_2026", "Paid_Search", "USA_Direct", "Trial_To_Paid", 0.250]
+      - ["Baseline", "Working", "Jan_2026", "Paid_Search", "USA_Direct", "ARPU_Monthly", 49.0]
+      - ["Baseline", "Working", "Jan_2026", "Paid_Search", "USA_Direct", "Gross_Margin_Rate", 0.78]
+
+      # Baseline / Working — Mar_2026 / Paid_Search / USA_Direct (seasonality index 1.00)
+      - ["Baseline", "Working", "Mar_2026", "Paid_Search", "USA_Direct", "Spend", 10000.0]
+      - ["Baseline", "Working", "Mar_2026", "Paid_Search", "USA_Direct", "CPC", 2.00]
+      - ["Baseline", "Working", "Mar_2026", "Paid_Search", "USA_Direct", "Visit_To_Trial", 0.080]
+      - ["Baseline", "Working", "Mar_2026", "Paid_Search", "USA_Direct", "Trial_To_Paid", 0.250]
+      - ["Baseline", "Working", "Mar_2026", "Paid_Search", "USA_Direct", "ARPU_Monthly", 49.0]
+      - ["Baseline", "Working", "Mar_2026", "Paid_Search", "USA_Direct", "Gross_Margin_Rate", 0.78]
+
+      # Baseline / Working — Nov_2026 / Paid_Search / USA_Direct (seasonality index 1.30, Q4 peak)
+      - ["Baseline", "Working", "Nov_2026", "Paid_Search", "USA_Direct", "Spend", 13000.0]
+      - ["Baseline", "Working", "Nov_2026", "Paid_Search", "USA_Direct", "CPC", 2.20]
+      - ["Baseline", "Working", "Nov_2026", "Paid_Search", "USA_Direct", "Visit_To_Trial", 0.080]
+      - ["Baseline", "Working", "Nov_2026", "Paid_Search", "USA_Direct", "Trial_To_Paid", 0.250]
+      - ["Baseline", "Working", "Nov_2026", "Paid_Search", "USA_Direct", "ARPU_Monthly", 49.0]
+      - ["Baseline", "Working", "Nov_2026", "Paid_Search", "USA_Direct", "Gross_Margin_Rate", 0.78]
+
+metadata:
+  name: "BeeFlow_SaaS_Marketing_FY26"
+  description: "B2C SaaS marketing-mix plan: 5 channels, monthly seasonality, Q4 lift scenario."
+  author: "Mosaic Authoring Pipeline"
+  created: "2026-01-15"
+
+dimensions:
+  - name: "Scenario"
+    description: "Plan branches: Baseline plan, Q4_Lift (extra paid spend in Oct-Dec), Conservative cutback."
+    kind: "Scenario"
+    elements:
+      - { name: "Baseline", scenario_meta: "Default" }
+      - { name: "Q4_Lift", scenario_meta: "NonDefault" }
+      - { name: "Conservative", scenario_meta: "NonDefault" }
+
+  - name: "Version"
+    description: "Workflow state of a plan revision (draft → submitted → approved)."
+    kind: "Version"
+    elements:
+      - { name: "Working", version_state: "Draft" }
+      - { name: "Submitted", version_state: "Submitted" }
+      - { name: "Approved", version_state: "Approved" }
+
+  - name: "Time"
+    description: "Calendar months of FY2026 rolling up through quarters to FY total; supports monthly seasonality."
+    kind: "Standard"
+    elements:
+      - { name: "Jan_2026" }
+      - { name: "Feb_2026" }
+      - { name: "Mar_2026" }
+      - { name: "Apr_2026" }
+      - { name: "May_2026" }
+      - { name: "Jun_2026" }
+      - { name: "Jul_2026" }
+      - { name: "Aug_2026" }
+      - { name: "Sep_2026" }
+      - { name: "Oct_2026" }
+      - { name: "Nov_2026" }
+      - { name: "Dec_2026" }
+      - { name: "Q1_2026" }
+      - { name: "Q2_2026" }
+      - { name: "Q3_2026" }
+      - { name: "Q4_2026" }
+      - { name: "FY_2026" }
+
+  - name: "Channel"
+    description: "Five marketing channels grouped into Paid_Acquisition and Owned_Earned families."
+    kind: "Standard"
+    elements:
+      - { name: "Paid_Search" }
+      - { name: "Paid_Social" }
+      - { name: "Display" }
+      - { name: "Content_SEO" }
+      - { name: "Email" }
+      - { name: "Paid_Acquisition" }
+      - { name: "Owned_Earned" }
+      - { name: "All_Channels" }
+
+  - name: "Market"
+    description: "Geographic markets — direct-customer regions rolling up to a single Global total."
+    kind: "Standard"
+    elements:
+      - { name: "USA_Direct" }
+      - { name: "EU_Direct" }
+      - { name: "APAC_Direct" }
+      - { name: "Global" }
+
+  - name: "Measure"
+    description: "Inputs (Spend, CPC, funnel rates, ARPU, margin) and derived KPIs (Visits, Trials, Paid_Customers, MRR, Gross_Profit, CAC)."
+    kind: "Measure"
+    elements: []
+
+hierarchies:
+  - dimension: "Time"
+    name: "Calendar"
+    default: true
+    edges:
+      - { parent: "FY_2026", child: "Q1_2026", weight: 1.0 }
+      - { parent: "FY_2026", child: "Q2_2026", weight: 1.0 }
+      - { parent: "FY_2026", child: "Q3_2026", weight: 1.0 }
+      - { parent: "FY_2026", child: "Q4_2026", weight: 1.0 }
+      - { parent: "Q1_2026", child: "Jan_2026", weight: 1.0 }
+      - { parent: "Q1_2026", child: "Feb_2026", weight: 1.0 }
+      - { parent: "Q1_2026", child: "Mar_2026", weight: 1.0 }
+      - { parent: "Q2_2026", child: "Apr_2026", weight: 1.0 }
+      - { parent: "Q2_2026", child: "May_2026", weight: 1.0 }
+      - { parent: "Q2_2026", child: "Jun_2026", weight: 1.0 }
+      - { parent: "Q3_2026", child: "Jul_2026", weight: 1.0 }
+      - { parent: "Q3_2026", child: "Aug_2026", weight: 1.0 }
+      - { parent: "Q3_2026", child: "Sep_2026", weight: 1.0 }
+      - { parent: "Q4_2026", child: "Oct_2026", weight: 1.0 }
+      - { parent: "Q4_2026", child: "Nov_2026", weight: 1.0 }
+      - { parent: "Q4_2026", child: "Dec_2026", weight: 1.0 }
+
+  - dimension: "Channel"
+    name: "Grouping"
+    default: true
+    edges:
+      - { parent: "All_Channels", child: "Paid_Acquisition", weight: 1.0 }
+      - { parent: "All_Channels", child: "Owned_Earned", weight: 1.0 }
+      - { parent: "Paid_Acquisition", child: "Paid_Search", weight: 1.0 }
+      - { parent: "Paid_Acquisition", child: "Paid_Social", weight: 1.0 }
+      - { parent: "Paid_Acquisition", child: "Display", weight: 1.0 }
+      - { parent: "Owned_Earned", child: "Content_SEO", weight: 1.0 }
+      - { parent: "Owned_Earned", child: "Email", weight: 1.0 }
+
+  - dimension: "Market"
+    name: "Geographic"
+    default: true
+    edges:
+      - { parent: "Global", child: "USA_Direct", weight: 1.0 }
+      - { parent: "Global", child: "EU_Direct", weight: 1.0 }
+      - { parent: "Global", child: "APAC_Direct", weight: 1.0 }
+
+measures:
+  - { name: "Spend", description: "Marketing dollars allocated to a channel/market/period (USD).", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "CPC", description: "Cost per click/visit (USD); rolls up as a Spend-weighted average.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Spend" }
+  - { name: "Visit_To_Trial", description: "Visit-to-trial conversion rate (trials/visit); rolls up as a Visits-weighted average.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Visits" }
+  - { name: "Trial_To_Paid", description: "Trial-to-paid conversion rate (paid customers/trial); rolls up as a Trials-weighted average.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Trials" }
+  - { name: "ARPU_Monthly", description: "Average revenue per user per month (USD); rolls up as a Paid_Customers-weighted average.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Paid_Customers" }
+  - { name: "Gross_Margin_Rate", description: "Gross margin rate (1 - cost-of-service fraction); rolls up as an MRR-weighted average.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "MRR" }
+  - { name: "Visits", description: "Derived visit volume; computed as Spend / CPC at the leaf level.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "Trials", description: "Derived trial signups; computed as Visits * Visit_To_Trial at the leaf level.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "Paid_Customers", description: "Derived paid customer count; computed as Trials * Trial_To_Paid at the leaf level.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "MRR", description: "Derived monthly recurring revenue (USD); computed as Paid_Customers * ARPU_Monthly at the leaf level.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "Gross_Profit", description: "Derived gross profit (USD); computed as MRR * Gross_Margin_Rate at the leaf level.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "CAC", description: "Derived customer acquisition cost (USD per paid customer); Spend / Paid_Customers; rolls up Spend-weighted.", role: "Derived", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Spend" }
+
+rules:
+  - name: "rule_visits"
+    description: "Visits = Spend / CPC — translate marketing dollars into site visit volume."
+    target_measure: "Visits"
+    scope: "AllLeaves"
+    body: "Spend / CPC"
+    declared_dependencies: ["Spend", "CPC"]
+
+  - name: "rule_trials"
+    description: "Trials = Visits * Visit_To_Trial — apply the visit-to-trial conversion rate."
+    target_measure: "Trials"
+    scope: "AllLeaves"
+    body: "Visits * Visit_To_Trial"
+    declared_dependencies: ["Visits", "Visit_To_Trial"]
+
+  - name: "rule_paid_customers"
+    description: "Paid_Customers = Trials * Trial_To_Paid — apply the trial-to-paid conversion rate."
+    target_measure: "Paid_Customers"
+    scope: "AllLeaves"
+    body: "Trials * Trial_To_Paid"
+    declared_dependencies: ["Trials", "Trial_To_Paid"]
+
+  - name: "rule_mrr"
+    description: "MRR = Paid_Customers * ARPU_Monthly — monthly recurring revenue."
+    target_measure: "MRR"
+    scope: "AllLeaves"
+    body: "Paid_Customers * ARPU_Monthly"
+    declared_dependencies: ["Paid_Customers", "ARPU_Monthly"]
+
+  - name: "rule_gross_profit"
+    description: "Gross_Profit = MRR * Gross_Margin_Rate — MRR net of cost of service."
+    target_measure: "Gross_Profit"
+    scope: "AllLeaves"
+    body: "MRR * Gross_Margin_Rate"
+    declared_dependencies: ["MRR", "Gross_Margin_Rate"]
+
+  - name: "rule_cac"
+    description: "CAC = Spend / Paid_Customers — cost to acquire one paid customer."
+    target_measure: "CAC"
+    scope: "AllLeaves"
+    body: "Spend / Paid_Customers"
+    declared_dependencies: ["Spend", "Paid_Customers"]
+
+test_fixtures:
+  - name: "q4_lift_nov_paid_search_usa"
+    columns: ["Scenario", "Version", "Time", "Channel", "Market", "Measure", "value"]
+    inline:
+      rows:
+        # Q4 lift: 50% extra Nov spend on Paid_Search / USA_Direct under the Q4_Lift scenario;
+        # other inputs stay the same (CPC, conversion rates, ARPU, margin held).
+        - ["Q4_Lift", "Working", "Nov_2026", "Paid_Search", "USA_Direct", "Spend", 19500.0]
+        - ["Q4_Lift", "Working", "Nov_2026", "Paid_Search", "USA_Direct", "CPC", 2.20]
+        - ["Q4_Lift", "Working", "Nov_2026", "Paid_Search", "USA_Direct", "Visit_To_Trial", 0.080]
+        - ["Q4_Lift", "Working", "Nov_2026", "Paid_Search", "USA_Direct", "Trial_To_Paid", 0.250]
+        - ["Q4_Lift", "Working", "Nov_2026", "Paid_Search", "USA_Direct", "ARPU_Monthly", 49.0]
+        - ["Q4_Lift", "Working", "Nov_2026", "Paid_Search", "USA_Direct", "Gross_Margin_Rate", 0.78]
+
+golden_tests:
+  # Input anchors — exact match.
+  - name: "spend_input_anchor_mar_paid_search_usa"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2026"
+      Channel: "Paid_Search"
+      Market: "USA_Direct"
+      Measure: "Spend"
+    expect: 10000.0
+
+  - name: "cpc_input_anchor_mar_paid_search_usa"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2026"
+      Channel: "Paid_Search"
+      Market: "USA_Direct"
+      Measure: "CPC"
+    expect: 2.0
+
+  - name: "arpu_input_anchor_mar_paid_search_usa"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2026"
+      Channel: "Paid_Search"
+      Market: "USA_Direct"
+      Measure: "ARPU_Monthly"
+    expect: 49.0
+
+  # Derived anchors — Mar_2026 / Paid_Search / USA_Direct chain.
+  #   Visits         = 10000 / 2.0           = 5000
+  #   Trials         = 5000 * 0.080          = 400
+  #   Paid_Customers = 400 * 0.250           = 100
+  #   MRR            = 100 * 49.0            = 4900
+  #   Gross_Profit   = 4900 * 0.78           = 3822
+  #   CAC            = 10000 / 100           = 100
+  - name: "visits_derived_anchor_mar_paid_search_usa"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2026"
+      Channel: "Paid_Search"
+      Market: "USA_Direct"
+      Measure: "Visits"
+    expect_within_epsilon: { value: 5000.0, epsilon: 1.0e-9 }
+
+  - name: "trials_derived_anchor_mar_paid_search_usa"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2026"
+      Channel: "Paid_Search"
+      Market: "USA_Direct"
+      Measure: "Trials"
+    expect_within_epsilon: { value: 400.0, epsilon: 1.0e-9 }
+
+  - name: "paid_customers_derived_anchor_mar_paid_search_usa"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2026"
+      Channel: "Paid_Search"
+      Market: "USA_Direct"
+      Measure: "Paid_Customers"
+    expect_within_epsilon: { value: 100.0, epsilon: 1.0e-9 }
+
+  - name: "mrr_derived_anchor_mar_paid_search_usa"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2026"
+      Channel: "Paid_Search"
+      Market: "USA_Direct"
+      Measure: "MRR"
+    expect_within_epsilon: { value: 4900.0, epsilon: 1.0e-9 }
+
+  - name: "gross_profit_derived_anchor_mar_paid_search_usa"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2026"
+      Channel: "Paid_Search"
+      Market: "USA_Direct"
+      Measure: "Gross_Profit"
+    expect_within_epsilon: { value: 3822.0, epsilon: 1.0e-9 }
+
+  - name: "cac_derived_anchor_mar_paid_search_usa"
+    coord:
+      Scenario: "Baseline"
+      Version: "Working"
+      Time: "Mar_2026"
+      Channel: "Paid_Search"
+      Market: "USA_Direct"
+      Measure: "CAC"
+    expect_within_epsilon: { value: 100.0, epsilon: 1.0e-9 }
+
+  # Q4 lift fixture: Nov_2026 spend goes from 13000 to 19500 (+50%).
+  #   Visits = 19500 / 2.20 = 8863.6363636...
+  - name: "q4_lift_visits_nov_paid_search_usa"
+    coord:
+      Scenario: "Q4_Lift"
+      Version: "Working"
+      Time: "Nov_2026"
+      Channel: "Paid_Search"
+      Market: "USA_Direct"
+      Measure: "Visits"
+    expect_within_epsilon: { value: 8863.636363636364, epsilon: 1.0e-9 }
+    fixture: "q4_lift_nov_paid_search_usa"
