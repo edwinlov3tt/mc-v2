@@ -1118,8 +1118,12 @@ name = "mc-cli"
 version = "0.1.0"
 dependencies = [
  "mc-core",
+ "mc-drivers",
  "mc-fixtures",
  "mc-model",
+ "mc-recipe",
+ "mc-tessera",
+ "serde_json",
 ]
 
 [[package]]
@@ -1183,6 +1187,21 @@ dependencies = [
  "mc-model",
  "serde",
  "serde_yaml",
+ "thiserror",
+]
+
+[[package]]
+name = "mc-tessera"
+version = "0.1.0"
+dependencies = [
+ "mc-core",
+ "mc-drivers",
+ "mc-fixtures",
+ "mc-model",
+ "mc-recipe",
+ "rusqlite",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
