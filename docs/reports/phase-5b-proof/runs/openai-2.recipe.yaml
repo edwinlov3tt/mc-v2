@@ -1,0 +1,32 @@
+version: 1
+name: hubspot_monthly_spend_cpc
+description: "Monthly Spend + CPC import from HubSpot SQLite campaign metrics into the Acme marketing-mix model."
+model: ../models/acme.yaml
+
+source:
+  driver: sqlite
+  path: ./hubspot.sqlite
+  query: |
+    SELECT month, channel, market, spend, cpc
+    FROM campaign_metrics
+    WHERE scenario = 'Baseline'
+      AND version = 'Working'
+
+columns:
+  - { source: month, dimension: Time }
+  - { source: channel, dimension: Channel }
+  - { source: market, dimension: Market }
+  - { source: spend, measure: Spend, type: f64 }
+  - { source: cpc, measure: CPC, type: f64 }
+
+defaults:
+  Scenario: Baseline
+  Version: Working
+
+write_disposition: replace
+incremental: false
+batch:
+  size: 50000
+on_error: abort
+on_missing_element: error
+credentials: {}

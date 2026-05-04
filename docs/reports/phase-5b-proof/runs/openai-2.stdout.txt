@@ -1,0 +1,2 @@
+
+[mosaic] Recipe converged in 1 iteration(s) (structural validation). Written to /Users/edwinlovettiii/Projects/mc-v2/docs/reports/phase-5b-proof/runs/openai-2.recipe.yaml
