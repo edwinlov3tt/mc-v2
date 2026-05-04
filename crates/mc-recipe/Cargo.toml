@@ -1,0 +1,25 @@
+[package]
+name = "mc-recipe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Mosaic Tessera recipe format parser and validator (Phase 5A Stream B)."
+
+# Per ADR-0010 Decision 10: mc-recipe is a parser + validator library only.
+# It depends on `mc-model` to validate recipes against a `ValidatedModel`,
+# but performs NO runtime execution (no source connections, no WriteBatch
+# emission, no network). Runtime is mc-tessera's responsibility (Stream D).
+#
+# Dependency selection mirrors the existing mc-model crate (the only other
+# YAML-touching crate in the workspace): direct version pins for `serde`
+# and `serde_yaml` because those are not declared at the workspace level
+# (only `thiserror` is). This avoids touching the workspace
+# `[workspace.dependencies]` table, which is out of scope per the Stream B
+# handoff's Cargo governance rule.
+[dependencies]
+mc-model = { path = "../mc-model" }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9.34"
+thiserror = { workspace = true }

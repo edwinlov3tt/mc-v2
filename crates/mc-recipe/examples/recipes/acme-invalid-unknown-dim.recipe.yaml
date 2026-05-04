@@ -1,0 +1,37 @@
+# INTENTIONALLY INVALID — fires MC5004.
+#
+# A column maps to `Region`, which is not a declared dimension in the
+# Acme model. (Acme has `Market`; `Region` is a common author-side
+# typo.) The validator emits MC5004 with the source column name and
+# the unrecognized dimension, pointing at `/columns/2/dimension`.
+
+version: 1
+name: acme_invalid_unknown_dim
+description: "Invalid recipe — column references unknown dimension."
+model: ../../../mc-model/examples/acme.yaml
+
+source:
+  driver: csv
+  path: ./acme.minimal.csv
+
+columns:
+  - { source: month, dimension: Time }
+  - { source: channel, dimension: Channel }
+  # `Region` is not a dimension in Acme — MC5004 fires here.
+  - { source: market_region, dimension: Region }
+  - { source: spend, measure: Spend, type: f64 }
+
+defaults:
+  Scenario: Baseline
+  Version: Working
+
+write_disposition: replace
+incremental: false
+
+batch:
+  size: 50000
+
+on_error: abort
+on_missing_element: error
+
+credentials: {}

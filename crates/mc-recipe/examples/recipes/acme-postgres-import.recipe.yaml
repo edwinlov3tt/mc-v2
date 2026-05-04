@@ -1,0 +1,50 @@
+# Acme Postgres import — credentials via `${env.PG_DSN}`.
+#
+# Demonstrates the Phase 5A credential-interpolation surface: the
+# `credentials:` block carries `${env.VAR_NAME}` references that
+# Stream D resolves at runtime. mc-recipe does not read the
+# environment itself; an unset env var fires MC5013 at runtime.
+#
+# Validation (against examples/acme.yaml, no env touch): ZERO MC5xxx
+# errors. MC5013 / MC5015 are runtime-stage codes — Stream D fires
+# them when the recipe actually executes.
+
+version: 1
+name: acme_postgres_aggressive
+description: "Postgres import with DSN supplied via env interpolation."
+model: ../../../mc-model/examples/acme.yaml
+
+source:
+  driver: postgres
+  query: |
+    SELECT month, channel, market, spend, cpc, cvr,
+           close_rate, aov, cogs_rate
+    FROM analytics.acme_monthly
+    WHERE plan = 'Aggressive'
+
+columns:
+  - { source: month, dimension: Time }
+  - { source: channel, dimension: Channel }
+  - { source: market, dimension: Market }
+  - { source: spend, measure: Spend, type: f64 }
+  - { source: cpc, measure: CPC, type: f64 }
+  - { source: cvr, measure: CVR, type: f64 }
+  - { source: close_rate, measure: Close_Rate, type: f64 }
+  - { source: aov, measure: AOV, type: f64 }
+  - { source: cogs_rate, measure: COGS_Rate, type: f64 }
+
+defaults:
+  Scenario: Aggressive
+  Version: Working
+
+write_disposition: replace
+incremental: false
+
+batch:
+  size: 50000
+
+on_error: abort
+on_missing_element: error
+
+credentials:
+  dsn: "${env.PG_DSN}"

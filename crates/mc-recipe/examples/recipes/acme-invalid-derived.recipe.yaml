@@ -1,0 +1,37 @@
+# INTENTIONALLY INVALID — fires MC5018.
+#
+# Maps a source column to the Acme model's `Clicks` measure. `Clicks` is
+# Derived (Clicks = Spend / CPC), and Phase 5A writes to Input measures
+# only. The validator emits MC5018 with a remediation hint pointing at
+# the Spend / CPC inputs that drive the derived value.
+
+version: 1
+name: acme_invalid_derived
+description: "Invalid recipe — attempts to write a Derived measure."
+model: ../../../mc-model/examples/acme.yaml
+
+source:
+  driver: csv
+  path: ./acme.minimal.csv
+
+columns:
+  - { source: month, dimension: Time }
+  - { source: channel, dimension: Channel }
+  - { source: market, dimension: Market }
+  # Clicks is Derived in Acme — MC5018 fires here.
+  - { source: clicks, measure: Clicks, type: f64 }
+
+defaults:
+  Scenario: Baseline
+  Version: Working
+
+write_disposition: replace
+incremental: false
+
+batch:
+  size: 50000
+
+on_error: abort
+on_missing_element: error
+
+credentials: {}

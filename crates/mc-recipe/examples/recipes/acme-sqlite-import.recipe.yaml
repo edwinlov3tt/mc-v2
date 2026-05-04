@@ -1,0 +1,49 @@
+# Acme SQLite import — all 6 Input measures.
+#
+# Uses a SQL query against a sibling SQLite database. Demonstrates:
+#   - the `query:` field (mutually exclusive with `table:`)
+#   - mapping all 6 Input measures to Acme: Spend, CPC, CVR, Close_Rate,
+#     AOV, COGS_Rate.
+#   - typing every measure column as `f64` (matches Acme's F64 measure
+#     declarations).
+#
+# Validation (against examples/acme.yaml): ZERO MC5xxx errors.
+
+version: 1
+name: acme_sqlite_full
+description: "Full Input-measure import from a SQLite database."
+model: ../../../mc-model/examples/acme.yaml
+
+source:
+  driver: sqlite
+  path: ./acme.sqlite
+  query: |
+    SELECT month, channel, market, spend, cpc, cvr, close_rate, aov, cogs_rate
+    FROM monthly_metrics
+    WHERE scenario = 'Baseline' AND version = 'Working'
+
+columns:
+  - { source: month, dimension: Time }
+  - { source: channel, dimension: Channel }
+  - { source: market, dimension: Market }
+  - { source: spend, measure: Spend, type: f64 }
+  - { source: cpc, measure: CPC, type: f64 }
+  - { source: cvr, measure: CVR, type: f64 }
+  - { source: close_rate, measure: Close_Rate, type: f64 }
+  - { source: aov, measure: AOV, type: f64 }
+  - { source: cogs_rate, measure: COGS_Rate, type: f64 }
+
+defaults:
+  Scenario: Baseline
+  Version: Working
+
+write_disposition: replace
+incremental: false
+
+batch:
+  size: 25000
+
+on_error: skip_row
+on_missing_element: error
+
+credentials: {}

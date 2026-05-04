@@ -1,0 +1,38 @@
+# INTENTIONALLY INVALID — fires MC5016.
+#
+# `Scenario` appears in BOTH a column mapping (via `dimension: Scenario`)
+# AND the `defaults:` block. Per ADR-0010 amendment #8, a dimension is
+# either varying-per-row (columns) or constant (defaults), never both.
+# The validator emits MC5016 naming the conflicting dimension and the
+# two YAML pointers.
+
+version: 1
+name: acme_invalid_mutual_exclusion
+description: "Invalid recipe — Scenario in both columns and defaults."
+model: ../../../mc-model/examples/acme.yaml
+
+source:
+  driver: csv
+  path: ./acme.minimal.csv
+
+columns:
+  - { source: scen, dimension: Scenario }   # Scenario varies per row …
+  - { source: month, dimension: Time }
+  - { source: channel, dimension: Channel }
+  - { source: market, dimension: Market }
+  - { source: spend, measure: Spend, type: f64 }
+
+defaults:
+  Scenario: Baseline    # … but ALSO declared constant. MC5016 fires.
+  Version: Working
+
+write_disposition: replace
+incremental: false
+
+batch:
+  size: 50000
+
+on_error: abort
+on_missing_element: error
+
+credentials: {}
