@@ -7,6 +7,7 @@ members = [
     "crates/mc-model",
     "crates/mc-recipe",
     "crates/mc-drivers",
+    "crates/mc-tessera",
 ]
 
 [workspace.package]

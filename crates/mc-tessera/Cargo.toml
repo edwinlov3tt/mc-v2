@@ -1,0 +1,27 @@
+[package]
+name = "mc-tessera"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Mosaic Tessera orchestrator — recipe + driver + WriteBatch end-to-end pipeline (Phase 5A Stream D)."
+
+# Per ADR-0010 Decision 10 + the Stream D handoff: mc-tessera is the
+# orchestrator. It depends on mc-core (WriteBatch + Cube), mc-recipe
+# (Recipe + validate), mc-drivers (SourceDriver), mc-model (load + refs),
+# and uses thiserror for errors + serde_json for JSONL audit persistence.
+# It introduces NO new top-level dependencies (serde / serde_json are
+# already pulled in transitively via mc-model and mc-recipe).
+[dependencies]
+mc-core = { path = "../mc-core" }
+mc-recipe = { path = "../mc-recipe" }
+mc-drivers = { path = "../mc-drivers" }
+mc-model = { path = "../mc-model" }
+thiserror = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+mc-fixtures = { path = "../mc-fixtures" }
+rusqlite = { workspace = true }

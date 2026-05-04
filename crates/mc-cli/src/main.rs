@@ -23,6 +23,7 @@ use mc_model::{
 };
 
 mod mcp;
+mod tessera;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -37,6 +38,10 @@ fn main() {
         },
         "model" => match parse_model_args(&args[2..]) {
             Ok(cmd) => run_model(cmd),
+            Err(e) => fatal(&e),
+        },
+        "tessera" => match tessera::parse(&args[2..]) {
+            Ok(cmd) => std::process::exit(tessera::run(cmd)),
             Err(e) => fatal(&e),
         },
         "mcp" => mcp::run(),
@@ -64,6 +69,12 @@ fn print_help() {
     println!("    mc model inspect  <path> [--format text|json]");
     println!("    mc model lint     <path> [--format text|json] [--deny-warnings]");
     println!("    mc model test     <path> [--format text|json] [--fixture <name>]");
+    println!();
+    println!("    mc tessera apply    <recipe.yaml>            [--format text|json]");
+    println!("    mc tessera dry-run  <recipe.yaml>            [--format text|json]");
+    println!("    mc tessera history  <model_dir>              [--format text|json]");
+    println!("    mc tessera rollback <import_id> --model-dir <path> [--format text|json]");
+    println!("    mc tessera audit    <model_dir>              [--format text|json]");
     println!();
     println!("    mc mcp                                  # Phase 4A MCP server (stdio JSON-RPC)");
     println!();
