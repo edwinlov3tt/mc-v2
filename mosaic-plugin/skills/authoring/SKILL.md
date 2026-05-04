@@ -250,7 +250,7 @@ The `--format json` flag emits the Phase 3B envelope:
 {
   "schema_version": "1.0",
   "diagnostics": [
-    { "code": "MC2001", "severity": "error", "path": "/dimensions/0", "message": "...", "suggestion": "..." }
+    { "code": "MC2001", "severity": "Error", "path": "/dimensions/0", "message": "...", "suggestion": "..." }
   ]
 }
 ```

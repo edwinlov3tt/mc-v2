@@ -19,7 +19,7 @@ Every `mc model` verb supports `--format json`:
   "diagnostics": [
     {
       "code": "MC2001",
-      "severity": "error",
+      "severity": "Error",
       "path": {
         "file": "acme.yaml",
         "yaml_pointer": "/dimensions/0",
@@ -36,7 +36,7 @@ Every `mc model` verb supports `--format json`:
 **Stable fields (`schema_version: "1.0"` contract):**
 
 - `code` — the MC code (string, always 6 chars: `MC` + 4 digits).
-- `severity` — `"error"`, `"warning"`, or `"info"`.
+- `severity` — `"Error"`, `"Warning"`, or `"Info"` (PascalCase in the JSON envelope; `mc-cli`'s `--format json` emission uses Rust enum variant names verbatim). Adapter consumers iterating against this envelope MUST compare case-insensitively OR match the PascalCase exactly — never assume lowercase.
 - `path` — `ModelPath { file, yaml_pointer, model_path, span? }`. The `yaml_pointer` is RFC 6901-style (`/dimensions/0/elements/2`); `model_path` is human-friendly (`dimensions[0].elements[2]`).
 - `message` — the human-readable description.
 - `suggestion` — optional fix hint; absent for codes whose fix is implicit in the message.
@@ -47,11 +47,11 @@ Every `mc model` verb supports `--format json`:
 
 ## Severity taxonomy
 
-| Severity | Behavior | Codes |
+| Severity (envelope value) | Behavior | Codes |
 |---|---|---|
-| `error` | Blocks `mc model validate/lint/test`; non-zero exit; cannot proceed to compile | MC0001, MC0002, MC1xxx, MC2xxx |
-| `warning` | Advisory; does NOT block by default; non-zero exit only with `mc model lint --deny-warnings` | MC3xxx |
-| `info` | Informational; never blocks | MC3xxx (currently MC3010 only) |
+| `"Error"` | Blocks `mc model validate/lint/test`; non-zero exit; cannot proceed to compile | MC0001, MC0002, MC1xxx, MC2xxx |
+| `"Warning"` | Advisory; does NOT block by default; non-zero exit only with `mc model lint --deny-warnings` | MC3xxx |
+| `"Info"` | Informational; never blocks | MC3xxx (currently MC3010 only) |
 
 The Acme reference lints at **zero warnings, zero info, zero errors** at HEAD. New models should target the same.
 
