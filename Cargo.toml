@@ -6,6 +6,7 @@ members = [
     "crates/mc-cli",
     "crates/mc-model",
     "crates/mc-recipe",
+    "crates/mc-drivers",
 ]
 
 [workspace.package]
@@ -25,6 +26,22 @@ once_cell = "1"
 criterion = { version = "0.5", default-features = false }
 proptest = "1"
 insta = { version = "1", features = ["yaml"] }
+
+# === Phase 5A Stream C additions (mc-drivers) ===
+# Pins per ADR-0010 Decision 4 + Amendment 1
+# (docs/decisions/0010-amendment-1-stream-c-pin-corrections.md).
+# Amendment 1 corrected the original `duckdb = "=1.3.2"` to `=1.1.1`:
+# `libduckdb-sys 1.2+` uses `bindgen ^0.71.1` which emits Rust-1.82+
+# `unsafe extern "C"` block syntax incompatible with the 1.78 toolchain
+# pin. `duckdb 1.1.1` + `libduckdb-sys 1.1.1` (bindgen ^0.69) is the
+# last 1.78-compatible pair; capability-equivalent for Phase 5A's
+# reference-implementation workload. `postgres_scanner` (used by the
+# DuckDB-federated-Postgres driver) has been GA since DuckDB 0.5.
+csv = "1"
+rusqlite = { version = "=0.31.0", features = ["bundled", "column_decltype"] }
+duckdb = { version = "=1.1.1", features = ["bundled", "column_decltype"] }
+postgres = "=0.19.9"
+ureq = "2"
 
 [profile.release]
 opt-level = 3
