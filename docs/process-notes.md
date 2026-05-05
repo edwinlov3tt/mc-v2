@@ -136,6 +136,45 @@ When a new process rule emerges (e.g., handoff-first parallel flow), it lands he
 
 Future readers should be able to start from `CLAUDE.md` (kernel rules) → `MASTER_PHASE_PLAN.md` (what's been built and what's next) → `CURRENT_STATE.md` (current snapshot) → this file (operational conventions) → ADRs (specific decisions) and reconstruct the full operating model.
 
+### 9. Four-source cube state model (write-log replay rule)
+
+Cube state has four sources of cell values:
+
+```
+Cube state = compile(YAML)
+           + apply(canonical_inputs from YAML)
+           + apply(Tessera imports from .tessera/audit.jsonl)
+           + apply(post-hoc writes from .tessera/writes.jsonl)
+```
+
+CLI verbs split into two categories based on which sources they replay:
+
+**Replay all four sources (show current operational reality):**
+- `mc model query` — shows what the cube currently contains
+- `mc model whatif` — hypothetical over current state
+- `mc model trace` — explains current computed values
+- `mc model query --output` — exports current state to file
+- `mc model diff` (current side) — compares current vs. prior
+
+**Replay only the first three (verify reproducibility / experiment with hypotheticals):**
+- `mc model test` — verifies the version-controlled model is correct
+- `mc model sweep` — experiments with parameter values in pristine state
+- `mc tessera apply` — clean import without post-hoc patch interference
+
+**The rule:** post-hoc writes (`.tessera/writes.jsonl`) are real-time patches applied outside the version-controlled model definition. They represent "a line just moved" or "an agent patched one cell" — operational reality that isn't part of the reproducible model. Tests verify the model; queries show reality. Future verbs inherit this rule by asking: "does this verb show current reality or verify reproducibility?"
+
+### 10. Completion report self-audit pattern
+
+Completion reports SHOULD include an explicit **"what I would have done with more time / known debt"** section. This surfaces technical debt that would otherwise be invisible to future maintainers.
+
+The pattern (established by the Phase 6A implementer):
+- Name the debt explicitly (what's unfinished or fragile)
+- Distinguish bugs from design tensions
+- Prioritize the fixes (P0/P1/P2)
+- Surface trade-offs made deliberately ("took the simpler but slower path")
+
+This is the same discipline as SPEC QUESTIONs (surface ambiguity rather than guessing), applied to completion reports. The SHIPPED list is the achievement; the DEBT list is the maintenance roadmap. Both belong in the report.
+
 ---
 
 ## Open process questions

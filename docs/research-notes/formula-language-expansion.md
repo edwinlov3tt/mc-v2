@@ -714,6 +714,25 @@ Growth models (compound interest, NPV), gambling mathematics (Kelly criterion), 
 - Rounded display values for reporting
 - Modular arithmetic for cyclic patterns (seasons, weeks)
 
+### 7I.8 Phase 3I also includes: string literals + filter-parser unification
+
+**Committed (per GPT + Desktop review of Phase 6A, 2026-05-05):**
+
+Phase 3I adds **string literal support** to the formula parser (`ParsedRuleBody` gains a `StrLiteral` variant; the parser recognizes `"quoted strings"` as values). This is a natural fit alongside the other math primitives because:
+
+1. String comparisons in formulas (`Game == "LAL_at_BOS"`) are a common need for conditional logic.
+2. The formula parser is the project's canonical expression parser — having a separate filter parser in mc-cli is architectural debt.
+
+**Deliverables (binding commitment):**
+
+- `ParsedRuleBody::StrLiteral(String)` AST variant in mc-model
+- String comparison support: `==` and `!=` work between StrLiteral and dimension-element values
+- **Refactor mc-cli's filter parser** (`crates/mc-cli/src/query.rs` filter logic) to use the unified formula parser from mc-model instead of the custom Phase 6A line-scanner
+- The two-parser state (formula parser in mc-model + filter parser in mc-cli) ends; one parser becomes the source of truth
+- Delete or retire the separate CLI filter parser
+
+**Why Phase 3I (not earlier):** Phase 6A locked mc-model (0-line-diff rule). The pragmatic choice was a custom filter parser in mc-cli. Phase 3I naturally touches mc-model for math primitives; adding string literals at the same time is zero marginal architectural cost. The two-parser state is explicitly temporary.
+
 ---
 
 ## 8. Phase 3J — Distributional Cells
