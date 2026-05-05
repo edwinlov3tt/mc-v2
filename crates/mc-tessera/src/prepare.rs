@@ -407,6 +407,115 @@ fn construct_driver(
                 http_json_driver(url, source.json_path.as_deref()).map_err(TesseraError::Driver)?;
             Ok(Box::new(driver))
         }
+        // Phase 5C drivers — each gated behind a feature flag in mc-drivers.
+        // Construction follows the same pattern as existing drivers above.
+        DriverKind::Mysql => {
+            let dsn = credentials
+                .get("MYSQL_DSN")
+                .or_else(|| credentials.get("dsn"))
+                .or_else(|| {
+                    if credentials.len() == 1 {
+                        credentials.values().next()
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(|| {
+                    TesseraError::Driver(DriverError::ConnectionFailed {
+                        target: "<unknown mysql dsn>".to_string(),
+                        message: "mysql driver requires MYSQL_DSN credential".to_string(),
+                    })
+                })?;
+            let query = effective_query(source)?;
+            let driver = mc_drivers::mysql_driver(dsn, &query).map_err(TesseraError::Driver)?;
+            Ok(Box::new(driver))
+        }
+        DriverKind::D1 => {
+            let account_id = credentials.get("D1_ACCOUNT_ID").ok_or_else(|| {
+                TesseraError::Driver(DriverError::ConnectionFailed {
+                    target: "<d1>".to_string(),
+                    message: "d1 driver requires D1_ACCOUNT_ID credential".to_string(),
+                })
+            })?;
+            let database_id = credentials.get("D1_DATABASE_ID").ok_or_else(|| {
+                TesseraError::Driver(DriverError::ConnectionFailed {
+                    target: "<d1>".to_string(),
+                    message: "d1 driver requires D1_DATABASE_ID credential".to_string(),
+                })
+            })?;
+            let api_token = credentials.get("D1_API_TOKEN").ok_or_else(|| {
+                TesseraError::Driver(DriverError::ConnectionFailed {
+                    target: "<d1>".to_string(),
+                    message: "d1 driver requires D1_API_TOKEN credential".to_string(),
+                })
+            })?;
+            let query = effective_query(source)?;
+            let driver = mc_drivers::d1_driver(account_id, database_id, api_token, &query)
+                .map_err(TesseraError::Driver)?;
+            Ok(Box::new(driver))
+        }
+        DriverKind::Snowflake => {
+            let conn_str = credentials
+                .get("SNOWFLAKE_DSN")
+                .or_else(|| credentials.get("dsn"))
+                .or_else(|| {
+                    if credentials.len() == 1 {
+                        credentials.values().next()
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(|| {
+                    TesseraError::Driver(DriverError::ConnectionFailed {
+                        target: "<snowflake>".to_string(),
+                        message: "snowflake driver requires SNOWFLAKE_DSN credential".to_string(),
+                    })
+                })?;
+            let query = effective_query(source)?;
+            let driver =
+                mc_drivers::snowflake_driver(conn_str, &query).map_err(TesseraError::Driver)?;
+            Ok(Box::new(driver))
+        }
+        DriverKind::Sqlserver => {
+            let conn_str = credentials
+                .get("SQLSERVER_DSN")
+                .or_else(|| credentials.get("dsn"))
+                .or_else(|| {
+                    if credentials.len() == 1 {
+                        credentials.values().next()
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(|| {
+                    TesseraError::Driver(DriverError::ConnectionFailed {
+                        target: "<sqlserver>".to_string(),
+                        message: "sqlserver driver requires SQLSERVER_DSN credential".to_string(),
+                    })
+                })?;
+            let query = effective_query(source)?;
+            let driver =
+                mc_drivers::sqlserver_driver(conn_str, &query).map_err(TesseraError::Driver)?;
+            Ok(Box::new(driver))
+        }
+        DriverKind::Bigquery => {
+            let project_id = credentials.get("BQ_PROJECT_ID").ok_or_else(|| {
+                TesseraError::Driver(DriverError::ConnectionFailed {
+                    target: "<bigquery>".to_string(),
+                    message: "bigquery driver requires BQ_PROJECT_ID credential".to_string(),
+                })
+            })?;
+            let creds_json = credentials.get("BQ_CREDENTIALS_JSON").ok_or_else(|| {
+                TesseraError::Driver(DriverError::ConnectionFailed {
+                    target: "<bigquery>".to_string(),
+                    message: "bigquery driver requires BQ_CREDENTIALS_JSON credential".to_string(),
+                })
+            })?;
+            let query = effective_query(source)?;
+            let driver = mc_drivers::bigquery_driver(project_id, creds_json, &query)
+                .map_err(TesseraError::Driver)?;
+            Ok(Box::new(driver))
+        }
     }
 }
 

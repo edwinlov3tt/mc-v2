@@ -176,13 +176,13 @@ columns: []
 version: 1
 name: x
 model: ./m.yaml
-source: { driver: mysql, path: ./d.csv }
+source: { driver: oracle, path: ./d.csv }
 columns: []
 "#;
         let err = parse(yaml).unwrap_err();
         assert_eq!(err.code(), "MC5002");
         if let RecipeError::UnknownDriver { driver, .. } = err {
-            assert_eq!(driver, "mysql");
+            assert_eq!(driver, "oracle");
         } else {
             panic!("expected UnknownDriver");
         }

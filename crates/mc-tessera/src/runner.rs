@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use mc_core::{CellCoordinate, CommitResult, ScalarValue, WriteBatch, WritebackContext};
-use mc_recipe::{DriverKind, OnError, SourceFormat};
+use mc_recipe::{DriverKind, OnError, SourceFormat, WriteDisposition};
 use serde::{Deserialize, Serialize};
 
 use crate::error::TesseraError;
@@ -28,7 +28,9 @@ use crate::sidecar::{
     append_audit, append_quarantine, manifest_mark_active, manifest_mark_inactive, read_audit,
     write_cells_jsonl, AuditRecord, Sidecar,
 };
-use crate::transform::{transform_batch, transform_batch_long, RowFailure, TransformedBatch};
+use crate::transform::{
+    transform_batch_long_with_policy, transform_batch_with_policy, RowFailure, TransformedBatch,
+};
 
 /// Default rows per `WriteBatch` `push_batch` chunk (per ADR-0010
 /// Decision 7 + Stream D §"batch.size").
@@ -168,7 +170,7 @@ impl Tessera {
             model_path,
             mut cube,
             principal,
-            refs,
+            mut refs,
             mut driver,
             column_plan,
             defaults,
@@ -200,14 +202,6 @@ impl Tessera {
             .filter(|&s| s > 0)
             .unwrap_or(DEFAULT_BATCH_SIZE);
 
-        let write_ctx = WritebackContext {
-            source_name: source_summary(&recipe.source.driver, &recipe.source.path),
-            import_id: import_id.clone(),
-            principal,
-        };
-
-        let mut write_batch = WriteBatch::new(&mut cube, write_ctx);
-
         let mut timing = TimingBreakdown::default();
         let mut row_failures: Vec<RowFailure> = Vec::new();
         let mut total_rows_processed = 0usize;
@@ -215,6 +209,23 @@ impl Tessera {
         let mut all_cells: Vec<(CellCoordinate, ScalarValue)> = Vec::new();
         let mut row_offset = 0usize;
         let mut aborted: Option<RowFailure> = None;
+        let disposition = recipe.write_disposition;
+
+        // Phase 5C: for `append` disposition, we collect cells first and
+        // filter against the cube BEFORE creating the WriteBatch (since
+        // WriteBatch borrows &mut cube). For `replace`/`merge`, we create
+        // the batch up front and push as we go (original Phase 5A path).
+        let mut write_batch_opt: Option<WriteBatch<'_>> = if disposition == WriteDisposition::Append
+        {
+            None
+        } else {
+            let write_ctx = WritebackContext {
+                source_name: source_summary(&recipe.source.driver, &recipe.source.path),
+                import_id: import_id.clone(),
+                principal,
+            };
+            Some(WriteBatch::new(&mut cube, write_ctx))
+        };
 
         loop {
             let fetch_start = Instant::now();
@@ -228,6 +239,7 @@ impl Tessera {
             // Transform: branch on wide vs. long format.
             let transform_start = Instant::now();
             let is_long = matches!(recipe.source.format, Some(SourceFormat::Long));
+            let on_missing = recipe.on_missing_element;
             let TransformedBatch {
                 cells,
                 failures,
@@ -236,17 +248,25 @@ impl Tessera {
                 let lf = recipe.source.long_format.as_ref();
                 let mc = lf.map(|l| l.measure_column.as_str()).unwrap_or("");
                 let vc = lf.map(|l| l.value_column.as_str()).unwrap_or("");
-                transform_batch_long(
+                transform_batch_long_with_policy(
                     &row_batch,
                     &column_plan,
                     &defaults,
-                    &refs,
+                    &mut refs,
                     mc,
                     vc,
                     row_offset,
+                    on_missing,
                 )
             } else {
-                transform_batch(&row_batch, &column_plan, &defaults, &refs, row_offset)
+                transform_batch_with_policy(
+                    &row_batch,
+                    &column_plan,
+                    &defaults,
+                    &mut refs,
+                    row_offset,
+                    on_missing,
+                )
             };
             timing.transform_ms += elapsed_ms(transform_start);
             row_offset += rows_processed;
@@ -265,8 +285,6 @@ impl Tessera {
                     }
                     OnError::SkipRow => {
                         total_rows_failed += failures.len();
-                        // Captured for the audit / completion report;
-                        // not persisted to a separate file in Phase 5A.
                         row_failures.extend(failures);
                     }
                     OnError::Quarantine => {
@@ -279,14 +297,14 @@ impl Tessera {
                 }
             }
 
-            // Stage successful cells.
+            // Stage successful cells (replace/merge push immediately;
+            // append defers to post-loop filtering).
             if !cells.is_empty() {
-                write_batch.push_batch(&cells)?;
+                if let Some(ref mut wb) = write_batch_opt {
+                    wb.push_batch(&cells)?;
+                }
                 all_cells.extend(cells);
             }
-
-            // Drivers signal end-of-stream by returning Ok(None) on the
-            // next fetch — keep looping.
         }
 
         // If aborted, bail before commit. The dropped WriteBatch has
@@ -295,7 +313,7 @@ impl Tessera {
             // Cancel the driver explicitly (idempotent).
             driver.cancel();
             // Drop the write batch; this is a no-op for the cube.
-            drop(write_batch);
+            drop(write_batch_opt);
             timing.total_ms = elapsed_ms(total_start);
             return Err(TesseraError::AbortedImport {
                 row_index: failure.row_index,
@@ -306,6 +324,50 @@ impl Tessera {
                 }),
             });
         }
+
+        // For `append` disposition: filter cells that already have a
+        // non-Null value in the cube, then create the WriteBatch with
+        // only the new cells. The write_batch_opt is None in this path.
+        let write_batch = if disposition == WriteDisposition::Append {
+            // Drop the None write_batch_opt so we can borrow cube.
+            drop(write_batch_opt);
+
+            // Filter out cells where the cube already has a non-Null value.
+            let filtered: Vec<(CellCoordinate, ScalarValue)> = all_cells
+                .into_iter()
+                .filter(|(coord, _)| {
+                    match cube.read(coord, principal) {
+                        Ok(cv) => matches!(cv.value, ScalarValue::Null),
+                        Err(_) => true, // coord doesn't exist → insert
+                    }
+                })
+                .collect();
+            all_cells = filtered;
+
+            // Create a fresh WriteBatch and push the filtered cells.
+            let write_ctx = WritebackContext {
+                source_name: source_summary(&recipe.source.driver, &recipe.source.path),
+                import_id: import_id.clone(),
+                principal,
+            };
+            let mut wb = WriteBatch::new(&mut cube, write_ctx);
+            if !all_cells.is_empty() {
+                wb.push_batch(&all_cells)?;
+            }
+            wb
+        } else {
+            // replace / merge: batch was already populated during the loop.
+            // Safety: write_batch_opt is always Some for non-append paths.
+            match write_batch_opt {
+                Some(wb) => wb,
+                None => {
+                    // Unreachable: we only set None for append.
+                    return Err(TesseraError::DimensionNotInCube {
+                        dimension: "<internal: write batch missing>".to_string(),
+                    });
+                }
+            }
+        };
 
         // Commit.
         let commit_start = Instant::now();
@@ -561,6 +623,11 @@ fn source_summary(driver: &DriverKind, path: &Option<String>) -> String {
         DriverKind::Postgres => "postgres",
         DriverKind::DuckdbPostgres => "duckdb_postgres",
         DriverKind::HttpJson => "http_json",
+        DriverKind::Mysql => "mysql",
+        DriverKind::D1 => "d1",
+        DriverKind::Snowflake => "snowflake",
+        DriverKind::Sqlserver => "sqlserver",
+        DriverKind::Bigquery => "bigquery",
     };
     match path {
         Some(p) => format!("{kind}: {p}"),

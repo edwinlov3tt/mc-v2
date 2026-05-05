@@ -1,0 +1,51 @@
+# DuckDB Federation: Postgres via postgres_scanner
+#
+# DuckDB supports federated queries against remote Postgres databases using
+# the `postgres_scanner` extension. The extension is installed at runtime:
+#
+#   INSTALL postgres; LOAD postgres;
+#   ATTACH 'postgres:dsn=host=localhost dbname=mydb' AS pg;
+#   SELECT * FROM pg.public.marketing_data;
+#
+# This recipe shows how to use the existing `duckdb` driver with a query
+# that leverages postgres_scanner. The DuckDB file stores the extension
+# cache; the actual data comes from Postgres at query time.
+#
+# Alternatively, use `duckdb_postgres` driver which handles ATTACH setup
+# automatically (see acme-postgres-import.recipe.yaml for comparison).
+#
+# Requirements:
+# - DuckDB >= 0.5 (postgres_scanner GA)
+# - Network access to the Postgres instance
+# - No system-installed extensions needed (DuckDB auto-downloads)
+
+version: 1
+name: acme_duckdb_federated_postgres
+description: "Federated query from DuckDB into Postgres via postgres_scanner extension."
+model: ../../crates/mc-model/examples/acme.yaml
+
+source:
+  driver: duckdb
+  path: ./federation-cache.duckdb
+  query: |
+    INSTALL postgres;
+    LOAD postgres;
+    ATTACH 'postgres:host=localhost dbname=acme_marketing' AS pg;
+    SELECT month, channel, market, spend, cpc
+    FROM pg.public.marketing_data
+    WHERE month >= '2025_M01';
+
+columns:
+  - { source: month, dimension: Time }
+  - { source: channel, dimension: Channel }
+  - { source: market, dimension: Market }
+  - { source: spend, measure: Spend, type: f64 }
+  - { source: cpc, measure: CPC, type: f64 }
+
+defaults:
+  Scenario: Baseline
+  Version: Working
+
+batch:
+  size: 10000
+on_error: abort

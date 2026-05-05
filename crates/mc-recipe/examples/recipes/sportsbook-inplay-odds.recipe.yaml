@@ -1,0 +1,55 @@
+# Sports Betting: In-Play Odds (every 30 seconds)
+#
+# This recipe demonstrates the core Phase 5C use case: live sports data
+# ingested on a sub-minute cadence via the cron scheduler.
+#
+# Schedule with: mc tessera schedule ./sportsbook-inplay-odds.recipe.yaml --cron "@every 30s"
+# Then run:      mc tessera daemon .
+
+version: 1
+name: inplay_odds_live
+description: "Live in-play odds from the sportsbook API. Runs every 30s during game windows."
+model: ../sportsbook.yaml
+
+source:
+  driver: http_json
+  url: "https://api.sportsbook.example/v2/odds/live"
+  json_path: "$.events[*]"
+
+columns:
+  - source: event_id
+    dimension: Event
+  - source: market_type
+    dimension: Market
+  - source: selection
+    dimension: Selection
+  - source: odds_decimal
+    measure: Odds
+    type: f64
+  - source: implied_prob
+    measure: ImpliedProbability
+    type: f64
+  - source: volume
+    measure: Volume
+    type: f64
+
+defaults:
+  Scenario: Live
+  Version: Working
+  Time: Current
+
+write_disposition: merge
+incremental: true
+incremental_config:
+  strategy: watermark
+  column: last_updated
+  format: iso8601
+
+batch:
+  size: 10000
+
+on_error: skip_row
+on_missing_element: create
+
+credentials:
+  api_key: "${env.SPORTSBOOK_API_KEY}"

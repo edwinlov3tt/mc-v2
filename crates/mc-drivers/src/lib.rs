@@ -26,12 +26,27 @@ mod http_json_driver;
 mod postgres_driver;
 mod sqlite_driver;
 
+// Phase 5C drivers (feature-gated constructors, always compiled for
+// trait-object compatibility).
+mod bigquery_driver;
+mod d1_driver;
+mod mysql_driver;
+mod snowflake_driver;
+mod sqlserver_driver;
+
 pub use csv_driver::csv_driver;
 pub use duckdb_driver::duckdb_driver;
 pub use duckdb_postgres_driver::duckdb_postgres_driver;
 pub use http_json_driver::http_json_driver;
 pub use postgres_driver::postgres_driver;
 pub use sqlite_driver::sqlite_driver;
+
+// Phase 5C driver constructors.
+pub use bigquery_driver::bigquery_driver;
+pub use d1_driver::d1_driver;
+pub use mysql_driver::mysql_driver;
+pub use snowflake_driver::snowflake_driver;
+pub use sqlserver_driver::sqlserver_driver;
 
 // ============================================================================
 // SourceDriver trait + supporting types (frozen by ADR-0010 Appendix C).

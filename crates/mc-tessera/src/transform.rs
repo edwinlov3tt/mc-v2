@@ -38,8 +38,13 @@
 use mc_core::{CellCoordinate, ElementId, ScalarValue};
 use mc_drivers::{Column, ColumnData, RowBatch};
 use mc_model::ModelRefs;
+use mc_recipe::OnMissingElement;
 
 use crate::prepare::{MappingTarget, ResolvedColumnMapping, ResolvedDefault};
+
+/// Base value for dynamically-created element IDs (on_missing_element: create).
+/// High enough to avoid collisions with model-defined elements.
+const DYNAMIC_ELEMENT_BASE: u64 = 10_000_000;
 
 /// Output of [`transform_batch`]: per-cell write requests + per-row
 /// failures.
@@ -96,8 +101,38 @@ pub fn transform_batch(
     batch: &RowBatch,
     plan: &[ResolvedColumnMapping],
     defaults: &[ResolvedDefault],
-    refs: &ModelRefs,
+    refs: &mut ModelRefs,
     row_index_offset: usize,
+) -> TransformedBatch {
+    transform_batch_inner(
+        batch,
+        plan,
+        defaults,
+        refs,
+        row_index_offset,
+        OnMissingElement::Error,
+    )
+}
+
+/// Like [`transform_batch`] but with explicit `on_missing_element` policy.
+pub fn transform_batch_with_policy(
+    batch: &RowBatch,
+    plan: &[ResolvedColumnMapping],
+    defaults: &[ResolvedDefault],
+    refs: &mut ModelRefs,
+    row_index_offset: usize,
+    on_missing: OnMissingElement,
+) -> TransformedBatch {
+    transform_batch_inner(batch, plan, defaults, refs, row_index_offset, on_missing)
+}
+
+fn transform_batch_inner(
+    batch: &RowBatch,
+    plan: &[ResolvedColumnMapping],
+    defaults: &[ResolvedDefault],
+    refs: &mut ModelRefs,
+    row_index_offset: usize,
+    on_missing: OnMissingElement,
 ) -> TransformedBatch {
     let mut out = TransformedBatch {
         cells: Vec::with_capacity(batch.row_count.saturating_mul(plan.len())),
@@ -179,22 +214,31 @@ pub fn transform_batch(
                 };
                 let element_id = match refs.element(dim_name, &raw) {
                     Some(id) => id,
-                    None => {
-                        record_failure(
-                            &mut out,
-                            row_index,
-                            TesseraErrorOwned {
-                                code: "MC_unknown_element",
-                                message: format!(
-                                    "row {row_index}: unknown element {raw:?} in dimension {dim_name:?}"
-                                ),
-                                dimension: Some(dim_name.clone()),
-                                column: Some(entry.source.clone()),
-                            },
-                            row_raw(batch, row),
-                        );
-                        continue 'rows;
-                    }
+                    None => match on_missing {
+                        OnMissingElement::Create => {
+                            let new_id =
+                                ElementId(DYNAMIC_ELEMENT_BASE + refs.elements.len() as u64);
+                            refs.elements
+                                .insert((dim_name.clone(), raw.clone()), new_id);
+                            new_id
+                        }
+                        OnMissingElement::Error => {
+                            record_failure(
+                                    &mut out,
+                                    row_index,
+                                    TesseraErrorOwned {
+                                        code: "MC_unknown_element",
+                                        message: format!(
+                                            "row {row_index}: unknown element {raw:?} in dimension {dim_name:?}"
+                                        ),
+                                        dimension: Some(dim_name.clone()),
+                                        column: Some(entry.source.clone()),
+                                    },
+                                    row_raw(batch, row),
+                                );
+                            continue 'rows;
+                        }
+                    },
                 };
                 if let Some(slot) = slots.get_mut(*dim_position) {
                     *slot = Some(element_id);
@@ -367,10 +411,57 @@ pub fn transform_batch_long(
     batch: &RowBatch,
     plan: &[ResolvedColumnMapping],
     defaults: &[ResolvedDefault],
-    refs: &ModelRefs,
+    refs: &mut ModelRefs,
     measure_column_name: &str,
     value_column_name: &str,
     row_index_offset: usize,
+) -> TransformedBatch {
+    transform_batch_long_inner(
+        batch,
+        plan,
+        defaults,
+        refs,
+        measure_column_name,
+        value_column_name,
+        row_index_offset,
+        OnMissingElement::Error,
+    )
+}
+
+/// Like [`transform_batch_long`] but with explicit `on_missing_element` policy.
+#[allow(clippy::too_many_arguments)]
+pub fn transform_batch_long_with_policy(
+    batch: &RowBatch,
+    plan: &[ResolvedColumnMapping],
+    defaults: &[ResolvedDefault],
+    refs: &mut ModelRefs,
+    measure_column_name: &str,
+    value_column_name: &str,
+    row_index_offset: usize,
+    on_missing: OnMissingElement,
+) -> TransformedBatch {
+    transform_batch_long_inner(
+        batch,
+        plan,
+        defaults,
+        refs,
+        measure_column_name,
+        value_column_name,
+        row_index_offset,
+        on_missing,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn transform_batch_long_inner(
+    batch: &RowBatch,
+    plan: &[ResolvedColumnMapping],
+    defaults: &[ResolvedDefault],
+    refs: &mut ModelRefs,
+    measure_column_name: &str,
+    value_column_name: &str,
+    row_index_offset: usize,
+    on_missing: OnMissingElement,
 ) -> TransformedBatch {
     let mut out = TransformedBatch {
         cells: Vec::with_capacity(batch.row_count),
@@ -490,22 +581,31 @@ pub fn transform_batch_long(
                 };
                 let element_id = match refs.element(dim_name, &raw) {
                     Some(id) => id,
-                    None => {
-                        record_failure(
-                            &mut out,
-                            row_index,
-                            TesseraErrorOwned {
-                                code: "MC_unknown_element",
-                                message: format!(
-                                    "row {row_index}: unknown element {raw:?} in dimension {dim_name:?}"
-                                ),
-                                dimension: Some(dim_name.clone()),
-                                column: Some(entry.source.clone()),
-                            },
-                            row_raw(batch, row),
-                        );
-                        continue 'rows;
-                    }
+                    None => match on_missing {
+                        OnMissingElement::Create => {
+                            let new_id =
+                                ElementId(DYNAMIC_ELEMENT_BASE + refs.elements.len() as u64);
+                            refs.elements
+                                .insert((dim_name.clone(), raw.clone()), new_id);
+                            new_id
+                        }
+                        OnMissingElement::Error => {
+                            record_failure(
+                                    &mut out,
+                                    row_index,
+                                    TesseraErrorOwned {
+                                        code: "MC_unknown_element",
+                                        message: format!(
+                                            "row {row_index}: unknown element {raw:?} in dimension {dim_name:?}"
+                                        ),
+                                        dimension: Some(dim_name.clone()),
+                                        column: Some(entry.source.clone()),
+                                    },
+                                    row_raw(batch, row),
+                                );
+                            continue 'rows;
+                        }
+                    },
                 };
                 if let Some(slot) = slots.get_mut(*dim_position) {
                     *slot = Some(element_id);
