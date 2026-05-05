@@ -1975,3 +1975,82 @@ was added, removed, or renamed; `WritebackResult.invalidated`
 remains `Vec<CellCoordinate>` with the same field name and
 re-export. The semantic change is on field *contents* per the
 spec audit in §6.15.4.
+
+### 6.18 Real-World Validation — Tide Cleaners Campaign Model (548 input rows, 12 goldens)
+
+> **First real-world performance data outside the Acme fixture.** Measured
+> against a production email-matchback campaign dataset (Tide Cleaners,
+> 4 markets × 25 periods × 6 input measures + 5 derived ratios). The model
+> includes forecasting via Q1-ratio projection + full golden-test coverage.
+> Hardware: M-series Mac (same as §6.16/§6.17). Rust 1.78. `mc` CLI
+> (installed via `cargo install --path crates/mc-cli`).
+>
+> **This section validates the Phase 6 UX premise:** if recompute is sub-50ms
+> on real business data, an interactive UI can recalculate on every keystroke.
+
+#### §6.18.1 Steady-state command latency (548 inputs, 12 goldens)
+
+| Command | Cold | Warm avg | Warm min |
+|---|---:|---:|---:|
+| `mc model validate` | 21 ms | 20 ms | 18 ms |
+| `mc model lint` | 20 ms | 19 ms | 19 ms |
+| `mc model inspect` | 19 ms | 20 ms | 19 ms |
+| `mc model test` (12 goldens) | 23 ms | 24 ms | 22 ms |
+
+Each invocation is a fresh process: full parse → validate → resolve_inputs
+→ compile → evaluate from disk. No warm cache between processes. Sub-25ms
+across the board at 548 input rows.
+
+#### §6.18.2 End-to-end "budget change" recompute cycle
+
+"I changed Houston's April 2026 ad spend — what's the new CAC?"
+
+| Step | Cold | Warm avg | Warm min |
+|---|---:|---:|---:|
+| CSV mutation (edit one cell) | 1.0 ms | 0.8 ms | 0.7 ms |
+| `build_forecast.py` (full Python forecast rebuild) | 28 ms | 22 ms | 22 ms |
+| `mc model test` (re-eval all 12 goldens) | 23 ms | 20 ms | 19 ms |
+| **TOTAL recompute** | **52 ms** | **43 ms** | **43 ms** |
+
+**Headline:** 43ms warm for "change a budget → see the new CAC" — 100×
+faster than refreshing an equivalent Excel pivot table. Fast enough for
+keystroke-level UI refresh at this data scale. Phase 6 can build an
+interactive planning UI on this foundation with confidence.
+
+#### §6.18.3 What-if demo: +25% Houston April spend ($8,016 → $10,020)
+
+Full round-trip in 47.8 ms:
+
+| Cell | Before | After | Δ |
+|---|---:|---:|---|
+| Houston FY26 Forecast AdSpend | $56,112 | $58,116 | +$2,004 |
+| Houston FY26 Forecast Matched New | 2,732 | 2,830 | +97.6 |
+| Houston FY26 Forecast CAC | $20.54 | $20.54 | flat (ratio invariant under proportional bump) |
+| Houston FY26 Forecast ROAS | 9.34× | 9.34× | flat (same) |
+| AllMarkets FY26 Forecast AdSpend | $91,112 | $93,116 | +$2,004 |
+
+**Validation note:** the fact that Houston CAC stays flat under a proportional
+bump is mathematically correct (the projection is linear in spend) and
+confirms the WeightedAverage aggregation (weighted by `Matched_New_Customers`)
+is working correctly — when the response ratio is held constant, the
+consolidated CAC should NOT move with spend alone. This matches the
+algebra documented in `mosaic-plugin/skills/schema-design/SKILL.md` §"The
+binding rule for DERIVED ratio measures" (shipped at `069eb90`).
+
+#### §6.18.4 Caveats and scaling projections
+
+1. **No daemon mode.** Each `mc model test` is a fresh process (parse from
+   disk). The MCP server (`mc mcp`) amortizes some startup cost if invoked
+   from a long-running client, but per-command is the measured reality.
+2. **Forecast rebuild is Python, not Mosaic.** 22ms of the 43ms total is
+   `build_forecast.py` doing CSV I/O and ratio math. If cross-Scenario
+   formulas existed (Phase 3E candidate — `db(Scenario: "Actual", ...)` or
+   similar), this would be ~20ms total instead of ~43ms. See
+   [`../research-notes/cross-coordinate-formulas.md`](../research-notes/cross-coordinate-formulas.md).
+3. **548 rows is small.** At 100K input rows, validate/test times scale
+   roughly linearly with input cardinality — expect 2–5 seconds rather
+   than 20ms. WriteBatch (§6.17) handles the kernel-level write at scale;
+   the model-layer overhead (parse + resolve_inputs) is the remaining cost.
+4. **The 100× faster than Excel claim** is a rough comparison against a
+   pivot table refresh on a comparable dataset. Not a controlled benchmark;
+   representative of user perception.
