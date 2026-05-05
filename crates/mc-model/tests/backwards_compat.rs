@@ -57,6 +57,9 @@ fn structured_form_fixture_validates_to_flat_body() {
             | ParsedRuleBody::Mul(_)
             | ParsedRuleBody::Div(_)
             | ParsedRuleBody::IfNull(_) => {}
+            // Phase 3E+ variants: Acme fixture uses only the above 7,
+            // but the match must be exhaustive.
+            _ => {}
         }
     }
 }

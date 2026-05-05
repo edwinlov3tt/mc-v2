@@ -322,7 +322,7 @@ fn compute_chain_depths(model: &ValidatedModel) -> BTreeMap<String, usize> {
 
 fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
     match body {
-        ParsedRuleBody::Const(_) => {}
+        ParsedRuleBody::Const(_) | ParsedRuleBody::PeriodIndex(_) => {}
         ParsedRuleBody::Ref(r) => {
             out.insert(r.measure.clone());
         }
@@ -331,6 +331,58 @@ fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
         ParsedRuleBody::Mul(b) => walk_args(&b.mul, out),
         ParsedRuleBody::Div(b) => walk_args(&b.div, out),
         ParsedRuleBody::IfNull(b) => walk_args(&b.if_null, out),
+        ParsedRuleBody::Gt(b)
+        | ParsedRuleBody::Lt(b)
+        | ParsedRuleBody::Gte(b)
+        | ParsedRuleBody::Lte(b)
+        | ParsedRuleBody::Eq(b)
+        | ParsedRuleBody::Neq(b)
+        | ParsedRuleBody::And(b)
+        | ParsedRuleBody::Or(b) => {
+            collect_body_refs(&b.left, out);
+            collect_body_refs(&b.right, out);
+        }
+        ParsedRuleBody::Not(b) | ParsedRuleBody::Abs(b) => collect_body_refs(&b.operand, out),
+        ParsedRuleBody::If(b) => {
+            collect_body_refs(&b.condition, out);
+            collect_body_refs(&b.then_branch, out);
+            collect_body_refs(&b.else_branch, out);
+        }
+        ParsedRuleBody::Min(b) | ParsedRuleBody::Max(b) | ParsedRuleBody::Coalesce(b) => {
+            for a in &b.args {
+                collect_body_refs(a, out);
+            }
+        }
+        ParsedRuleBody::SafeDiv(b) => {
+            collect_body_refs(&b.numerator, out);
+            collect_body_refs(&b.denominator, out);
+            collect_body_refs(&b.default, out);
+        }
+        ParsedRuleBody::Clamp(b) => {
+            collect_body_refs(&b.value, out);
+            collect_body_refs(&b.lo, out);
+            collect_body_refs(&b.hi, out);
+        }
+        ParsedRuleBody::ActualRef(b) => {
+            out.insert(b.measure.clone());
+        }
+        ParsedRuleBody::Prev(b) | ParsedRuleBody::Cumulative(b) => {
+            out.insert(b.measure.clone());
+        }
+        ParsedRuleBody::Lag(b) => {
+            out.insert(b.measure.clone());
+            collect_body_refs(&b.periods, out);
+        }
+        ParsedRuleBody::RollingAvg(b) => {
+            out.insert(b.measure.clone());
+            collect_body_refs(&b.window, out);
+        }
+        ParsedRuleBody::Benchmark(b) => collect_body_refs(&b.key_expr, out),
+        ParsedRuleBody::Lookup(b) => collect_body_refs(&b.key_expr, out),
+        ParsedRuleBody::Bucket(b) => collect_body_refs(&b.value, out),
+        ParsedRuleBody::SumOver(b) => {
+            out.insert(b.measure.clone());
+        }
     }
 }
 
@@ -438,27 +490,7 @@ fn find_rule_body_formula(model: &ValidatedModel, measure_name: &str) -> Option<
 
 /// Best-effort formula rendering from a ParsedRuleBody node.
 fn body_to_formula(body: &ParsedRuleBody) -> String {
-    use crate::schema::ParsedScalar;
-    match body {
-        ParsedRuleBody::Const(c) => match &c.value {
-            ParsedScalar::Float(f) => format!("{f}"),
-            ParsedScalar::Int(i) => format!("{i}"),
-            ParsedScalar::Bool(b) => format!("{b}"),
-        },
-        ParsedRuleBody::Ref(r) => r.measure.clone(),
-        ParsedRuleBody::Add(b) => binary_formula(&b.add, " + "),
-        ParsedRuleBody::Sub(b) => binary_formula(&b.sub, " - "),
-        ParsedRuleBody::Mul(b) => binary_formula(&b.mul, " * "),
-        ParsedRuleBody::Div(b) => binary_formula(&b.div, " / "),
-        ParsedRuleBody::IfNull(b) => binary_formula(&b.if_null, " ?? "),
-    }
-}
-
-fn binary_formula(args: &[ParsedRuleBody], op: &str) -> String {
-    args.iter()
-        .map(body_to_formula)
-        .collect::<Vec<_>>()
-        .join(op)
+    crate::formula::serialize(body)
 }
 
 /// Per handoff §B: case-insensitive match on `*_rate`, `*_ratio`, `*_pct`,

@@ -30,6 +30,16 @@ pub struct ParsedModel {
     pub hierarchies: Vec<ParsedHierarchy>,
     pub measures: Vec<ParsedMeasure>,
     pub rules: Vec<ParsedRule>,
+    // -- Phase 3G: Reference-data blocks (optional) --
+    /// Industry benchmarks with source attribution.
+    #[serde(default)]
+    pub benchmarks: Vec<ParsedBenchmark>,
+    /// Lookup tables keyed by dimension element.
+    #[serde(default)]
+    pub lookup_tables: Vec<ParsedLookupTable>,
+    /// Status threshold bands for bucket() evaluation.
+    #[serde(default)]
+    pub status_thresholds: Vec<ParsedStatusThreshold>,
     #[serde(default)]
     pub golden_tests: Vec<ParsedGoldenTest>,
     /// Phase 3C: optional always-load input set (sibling CSV or inline
@@ -59,7 +69,7 @@ pub struct ParsedMetadata {
 #[serde(deny_unknown_fields)]
 pub struct ParsedDimension {
     pub name: String,
-    /// `"Standard"` | `"Measure"` | `"Scenario"` | `"Version"`.
+    /// `"Standard"` | `"Measure"` | `"Scenario"` | `"Version"` | `"Time"`.
     pub kind: String,
     /// Optional human-readable description. Phase 3B's MC3001 lint fires
     /// when this is missing on a Standard / Measure / Scenario / Version
@@ -67,6 +77,10 @@ pub struct ParsedDimension {
     /// models with no descriptions still parse cleanly.
     #[serde(default)]
     pub description: Option<String>,
+    /// Phase 3E: for `kind: "Scenario"` dims, declares which element
+    /// `actual_ref()` reads from. E.g., `actuals_element: "Actual"`.
+    #[serde(default)]
+    pub actuals_element: Option<String>,
     pub elements: Vec<ParsedElement>,
 }
 
@@ -87,6 +101,10 @@ pub struct ParsedElement {
     pub version_state: Option<String>,
     #[serde(default)]
     pub scenario_meta: Option<String>,
+    /// Phase 3F: optional ISO date metadata for Time-kind dimensions.
+    /// Used by lint MC3010 (non-chronological order warning).
+    #[serde(default)]
+    pub date: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -187,6 +205,10 @@ pub enum ParsedRuleBodyForm {
 /// field name so the YAML stays JSON-shaped (per ADR-0004 Decision 1's
 /// safe subset bans on YAML tags). Serde's `untagged` enum dispatch
 /// picks the variant by which field name is present.
+///
+/// Phase 3E adds comparison, logical, and function variants (17 new).
+/// Phase 3F adds time-series variants (5 new).
+/// Phase 3G adds reference-data variants (4 new).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
 pub enum ParsedRuleBody {
@@ -204,6 +226,70 @@ pub enum ParsedRuleBody {
     Div(ParsedDivBody),
     /// `{ if_null: [primary, fallback] }`
     IfNull(ParsedIfNullBody),
+
+    // -- Phase 3E: Comparisons (6) --
+    /// `a > b`
+    Gt(ParsedBinopBody),
+    /// `a < b`
+    Lt(ParsedBinopBody),
+    /// `a >= b`
+    Gte(ParsedBinopBody),
+    /// `a <= b`
+    Lte(ParsedBinopBody),
+    /// `a == b`
+    Eq(ParsedBinopBody),
+    /// `a != b`
+    Neq(ParsedBinopBody),
+
+    // -- Phase 3E: Logical operators (3) --
+    /// `a and b`
+    And(ParsedBinopBody),
+    /// `a or b`
+    Or(ParsedBinopBody),
+    /// `not x`
+    Not(ParsedUnaryBody),
+
+    // -- Phase 3E: Functions (8) --
+    /// `if(condition, then_branch, else_branch)`
+    If(ParsedIfBody),
+    /// `min(a, b, ...)` — variadic, 2+ args
+    Min(ParsedVarargBody),
+    /// `max(a, b, ...)` — variadic, 2+ args
+    Max(ParsedVarargBody),
+    /// `abs(x)`
+    Abs(ParsedUnaryBody),
+    /// `safe_div(numerator, denominator, default)`
+    SafeDiv(ParsedSafeDivBody),
+    /// `clamp(value, lo, hi)`
+    Clamp(ParsedClampBody),
+    /// `coalesce(a, b, ...)` — variadic, 1+ args
+    Coalesce(ParsedVarargBody),
+    /// `actual_ref(Measure_Name)` — cross-coordinate read (Scenario shift)
+    ActualRef(ParsedActualRefBody),
+
+    // -- Phase 3F: Time-series (5) --
+    /// `prev(measure)` — previous time-period value
+    Prev(ParsedMeasureRefBody),
+    /// `lag(measure, periods)` — n periods ago
+    Lag(ParsedLagBody),
+    /// `cumulative(measure)` — running sum
+    Cumulative(ParsedMeasureRefBody),
+    /// `rolling_avg(measure, window)` — moving average
+    RollingAvg(ParsedRollingAvgBody),
+    /// `period_index()` — 0-based position in Time dim.
+    /// Wrapped in a struct to prevent serde's untagged dispatch from
+    /// matching YAML null as this unit variant.
+    PeriodIndex(ParsedPeriodIndexBody),
+
+    // -- Phase 3G: Reference-data (4) --
+    /// `benchmark("name", key_expr)`
+    Benchmark(ParsedBenchmarkRefBody),
+    /// `lookup("table", key_expr)`
+    Lookup(ParsedLookupRefBody),
+    /// `bucket(value, "threshold_name")`
+    Bucket(ParsedBucketBody),
+    /// `sum_over(dimension, measure)`
+    SumOver(ParsedSumOverBody),
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -250,15 +336,145 @@ pub struct ParsedIfNullBody {
     pub if_null: Vec<ParsedRuleBody>,
 }
 
+// ---------------------------------------------------------------------------
+// Phase 3E body structs
+// ---------------------------------------------------------------------------
+
+/// Shared body for binary operators (comparisons + logical and/or).
+/// The two children are boxed to allow recursive nesting.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedBinopBody {
+    pub left: Box<ParsedRuleBody>,
+    pub right: Box<ParsedRuleBody>,
+}
+
+/// Shared body for unary operators (not, abs).
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedUnaryBody {
+    pub operand: Box<ParsedRuleBody>,
+}
+
+/// `if(condition, then_branch, else_branch)`
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedIfBody {
+    pub condition: Box<ParsedRuleBody>,
+    pub then_branch: Box<ParsedRuleBody>,
+    pub else_branch: Box<ParsedRuleBody>,
+}
+
+/// Variadic function body (min, max, coalesce).
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedVarargBody {
+    pub args: Vec<ParsedRuleBody>,
+}
+
+/// `safe_div(numerator, denominator, default)`
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedSafeDivBody {
+    pub numerator: Box<ParsedRuleBody>,
+    pub denominator: Box<ParsedRuleBody>,
+    pub default: Box<ParsedRuleBody>,
+}
+
+/// `clamp(value, lo, hi)`
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedClampBody {
+    pub value: Box<ParsedRuleBody>,
+    pub lo: Box<ParsedRuleBody>,
+    pub hi: Box<ParsedRuleBody>,
+}
+
+/// `actual_ref(Measure_Name)` — cross-coordinate read (Scenario shift).
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedActualRefBody {
+    pub measure: String,
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3F body structs
+// ---------------------------------------------------------------------------
+
+/// Shared body for time-series functions that take a bare measure name.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedMeasureRefBody {
+    pub measure: String,
+}
+
+/// `lag(measure, periods)` — the periods argument is an expression.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedLagBody {
+    pub measure: String,
+    pub periods: Box<ParsedRuleBody>,
+}
+
+/// `rolling_avg(measure, window)` — the window argument is an expression.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedRollingAvgBody {
+    pub measure: String,
+    pub window: Box<ParsedRuleBody>,
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3G body structs
+// ---------------------------------------------------------------------------
+
+/// Marker body for `period_index()` — a zero-field struct so the serde
+/// untagged dispatch doesn't match YAML null as a unit variant.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ParsedPeriodIndexBody {
+    // Intentionally empty — exists to prevent serde null matching.
+    #[serde(skip)]
+    _marker: (),
+}
+
+impl ParsedPeriodIndexBody {
+    /// Construct the marker body (used by the formula parser).
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// `benchmark("name", key_expr)`
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedBenchmarkRefBody {
+    pub name: String,
+    pub key_expr: Box<ParsedRuleBody>,
+}
+
+/// `lookup("table", key_expr)`
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedLookupRefBody {
+    pub table: String,
+    pub key_expr: Box<ParsedRuleBody>,
+}
+
+/// `bucket(value, "threshold_name")`
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedBucketBody {
+    pub value: Box<ParsedRuleBody>,
+    pub threshold_name: String,
+}
+
+/// `sum_over(dimension, measure)`
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedSumOverBody {
+    pub dimension: String,
+    pub measure: String,
+}
+
 /// `Const` payload. `f64` and `i64` are the common shapes; `bool` is
-/// included for forward-compat. We deliberately do NOT support `Null` as
-/// a constant value — that would conflict with §7's null-poison policy.
+/// included for forward-compat. Phase 3E adds `Null` so formulas can
+/// reference it explicitly (e.g., `if(cond, value, Null)`).
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum ParsedScalar {
     Float(f64),
     Int(i64),
     Bool(bool),
+    /// Explicit Null literal, parsed from formula text `Null`.
+    /// Not reachable via serde deserialization (YAML null is not a scalar).
+    #[serde(skip)]
+    Null,
 }
 
 /// Inline golden test entry. `coord` is a flat map of dim-name → element-name.
@@ -288,6 +504,54 @@ pub struct ParsedGoldenTest {
 pub struct ParsedEpsilonExpect {
     pub value: f64,
     pub epsilon: f64,
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3G: reference-data block schema types
+// ---------------------------------------------------------------------------
+
+/// Industry benchmark with source attribution (Phase 3G).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedBenchmark {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub source: String,
+    pub last_updated: String,
+    pub key_dimension: String,
+    pub values: BTreeMap<String, f64>,
+}
+
+/// Lookup table keyed by dimension element (Phase 3G).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedLookupTable {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub key_dimension: String,
+    pub values: BTreeMap<String, f64>,
+}
+
+/// Status threshold configuration with ordered bands (Phase 3G).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedStatusThreshold {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub bands: Vec<ParsedThresholdBand>,
+}
+
+/// One band within a status threshold. The last band must have `max: None`
+/// (unbounded above).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedThresholdBand {
+    pub label: String,
+    #[serde(default)]
+    pub max: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------

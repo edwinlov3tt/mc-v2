@@ -289,7 +289,7 @@ pub fn compile(validated: ValidatedModel) -> Result<CompiledCube, EngineError> {
 
 fn parse_dim_kind(s: &str) -> Result<DimensionKind, EngineError> {
     match s {
-        "Standard" => Ok(DimensionKind::Standard),
+        "Standard" | "Time" => Ok(DimensionKind::Standard),
         "Measure" => Ok(DimensionKind::Measure),
         "Scenario" => Ok(DimensionKind::Scenario),
         "Version" => Ok(DimensionKind::Version),
@@ -421,6 +421,7 @@ fn compile_expr(
             ParsedScalar::Float(v) => ScalarValue::F64(*v),
             ParsedScalar::Int(v) => ScalarValue::I64(*v),
             ParsedScalar::Bool(v) => ScalarValue::Bool(*v),
+            ParsedScalar::Null => ScalarValue::Null,
         })),
         ParsedRuleBody::Ref(r) => Ok(Expr::SelfRef(lookup_measure_id(
             refs, validated, &r.measure,
@@ -430,7 +431,129 @@ fn compile_expr(
         ParsedRuleBody::Mul(b) => binop(&b.mul, refs, validated, Expr::Mul),
         ParsedRuleBody::Div(b) => binop(&b.div, refs, validated, Expr::Div),
         ParsedRuleBody::IfNull(b) => binop(&b.if_null, refs, validated, Expr::IfNull),
+        // Phase 3E: comparisons
+        ParsedRuleBody::Gt(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Gt),
+        ParsedRuleBody::Lt(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Lt),
+        ParsedRuleBody::Gte(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Gte),
+        ParsedRuleBody::Lte(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Lte),
+        ParsedRuleBody::Eq(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Eq),
+        ParsedRuleBody::Neq(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Neq),
+        // Phase 3E: logical
+        ParsedRuleBody::And(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::And),
+        ParsedRuleBody::Or(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Or),
+        ParsedRuleBody::Not(b) => {
+            let inner = compile_expr(&b.operand, refs, validated)?;
+            Ok(Expr::Not(Box::new(inner)))
+        }
+        // Phase 3E: functions
+        ParsedRuleBody::If(b) => {
+            let cond = compile_expr(&b.condition, refs, validated)?;
+            let then_b = compile_expr(&b.then_branch, refs, validated)?;
+            let else_b = compile_expr(&b.else_branch, refs, validated)?;
+            Ok(Expr::If(Box::new(cond), Box::new(then_b), Box::new(else_b)))
+        }
+        ParsedRuleBody::Min(b) => {
+            let args = b
+                .args
+                .iter()
+                .map(|a| compile_expr(a, refs, validated).map(Box::new))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Expr::Min(args))
+        }
+        ParsedRuleBody::Max(b) => {
+            let args = b
+                .args
+                .iter()
+                .map(|a| compile_expr(a, refs, validated).map(Box::new))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Expr::Max(args))
+        }
+        ParsedRuleBody::Abs(b) => {
+            let inner = compile_expr(&b.operand, refs, validated)?;
+            Ok(Expr::Abs(Box::new(inner)))
+        }
+        ParsedRuleBody::SafeDiv(b) => {
+            let n = compile_expr(&b.numerator, refs, validated)?;
+            let d = compile_expr(&b.denominator, refs, validated)?;
+            let def = compile_expr(&b.default, refs, validated)?;
+            Ok(Expr::SafeDiv(Box::new(n), Box::new(d), Box::new(def)))
+        }
+        ParsedRuleBody::Clamp(b) => {
+            let v = compile_expr(&b.value, refs, validated)?;
+            let lo = compile_expr(&b.lo, refs, validated)?;
+            let hi = compile_expr(&b.hi, refs, validated)?;
+            Ok(Expr::Clamp(Box::new(v), Box::new(lo), Box::new(hi)))
+        }
+        ParsedRuleBody::Coalesce(b) => {
+            let args = b
+                .args
+                .iter()
+                .map(|a| compile_expr(a, refs, validated).map(Box::new))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Expr::Coalesce(args))
+        }
+        ParsedRuleBody::ActualRef(b) => {
+            let measure = lookup_measure_id(refs, validated, &b.measure)?;
+            Ok(Expr::ActualRef(measure))
+        }
+        // Phase 3F: time-series
+        ParsedRuleBody::Prev(b) => {
+            let measure = lookup_measure_id(refs, validated, &b.measure)?;
+            Ok(Expr::Prev(measure))
+        }
+        ParsedRuleBody::Lag(b) => {
+            let measure = lookup_measure_id(refs, validated, &b.measure)?;
+            let periods = compile_expr(&b.periods, refs, validated)?;
+            Ok(Expr::Lag(measure, Box::new(periods)))
+        }
+        ParsedRuleBody::Cumulative(b) => {
+            let measure = lookup_measure_id(refs, validated, &b.measure)?;
+            Ok(Expr::Cumulative(measure))
+        }
+        ParsedRuleBody::RollingAvg(b) => {
+            let measure = lookup_measure_id(refs, validated, &b.measure)?;
+            let window = compile_expr(&b.window, refs, validated)?;
+            Ok(Expr::RollingAvg(measure, Box::new(window)))
+        }
+        ParsedRuleBody::PeriodIndex(_) => Ok(Expr::PeriodIndex),
+        // Phase 3G: reference-data
+        ParsedRuleBody::Benchmark(b) => {
+            let key = compile_expr(&b.key_expr, refs, validated)?;
+            Ok(Expr::Benchmark(b.name.clone(), Box::new(key)))
+        }
+        ParsedRuleBody::Lookup(b) => {
+            let key = compile_expr(&b.key_expr, refs, validated)?;
+            Ok(Expr::Lookup(b.table.clone(), Box::new(key)))
+        }
+        ParsedRuleBody::Bucket(b) => {
+            let v = compile_expr(&b.value, refs, validated)?;
+            Ok(Expr::Bucket(Box::new(v), b.threshold_name.clone()))
+        }
+        ParsedRuleBody::SumOver(b) => {
+            // Resolve dimension name to DimensionId
+            let dim_id =
+                refs.dimensions
+                    .get(&b.dimension)
+                    .copied()
+                    .ok_or(EngineError::Internal(
+                        "compile: sum_over references unknown dimension",
+                    ))?;
+            let measure = lookup_measure_id(refs, validated, &b.measure)?;
+            Ok(Expr::SumOver(dim_id, measure))
+        }
     }
+}
+
+fn compile_binop_pair(
+    left: &ParsedRuleBody,
+    right: &ParsedRuleBody,
+    refs: &ModelRefs,
+    validated: &ValidatedModel,
+    ctor: fn(Box<Expr>, Box<Expr>) -> Expr,
+) -> Result<Expr, EngineError> {
+    let lhs = compile_expr(left, refs, validated)?;
+    let rhs = compile_expr(right, refs, validated)?;
+    Ok(ctor(Box::new(lhs), Box::new(rhs)))
 }
 
 fn binop(

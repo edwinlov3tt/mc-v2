@@ -57,9 +57,44 @@ pub enum Expr {
     Mul(Box<Expr>, Box<Expr>),
     Div(Box<Expr>, Box<Expr>),
     /// `IfNull(primary, fallback)`: returns `primary` if non-null, else
-    /// `fallback`. Per spec §7's null-poison policy this is the only
-    /// branching primitive in Phase 1.
+    /// `fallback`.
     IfNull(Box<Expr>, Box<Expr>),
+
+    // -- Phase 3E: Comparisons --
+    Gt(Box<Expr>, Box<Expr>),
+    Lt(Box<Expr>, Box<Expr>),
+    Gte(Box<Expr>, Box<Expr>),
+    Lte(Box<Expr>, Box<Expr>),
+    Eq(Box<Expr>, Box<Expr>),
+    Neq(Box<Expr>, Box<Expr>),
+
+    // -- Phase 3E: Logical --
+    And(Box<Expr>, Box<Expr>),
+    Or(Box<Expr>, Box<Expr>),
+    Not(Box<Expr>),
+
+    // -- Phase 3E: Functions --
+    If(Box<Expr>, Box<Expr>, Box<Expr>),
+    Min(Vec<Box<Expr>>),
+    Max(Vec<Box<Expr>>),
+    Abs(Box<Expr>),
+    SafeDiv(Box<Expr>, Box<Expr>, Box<Expr>),
+    Clamp(Box<Expr>, Box<Expr>, Box<Expr>),
+    Coalesce(Vec<Box<Expr>>),
+    ActualRef(ElementId),
+
+    // -- Phase 3F: Time-series --
+    Prev(ElementId),
+    Lag(ElementId, Box<Expr>),
+    Cumulative(ElementId),
+    RollingAvg(ElementId, Box<Expr>),
+    PeriodIndex,
+
+    // -- Phase 3G: Reference-data --
+    Benchmark(String, Box<Expr>),
+    Lookup(String, Box<Expr>),
+    Bucket(Box<Expr>, String),
+    SumOver(crate::id::DimensionId, ElementId),
 }
 
 #[derive(Debug)]
@@ -210,17 +245,49 @@ fn collect_self_refs(expr: &Expr) -> AHashSet<ElementId> {
     let mut out = AHashSet::new();
     fn walk(expr: &Expr, out: &mut AHashSet<ElementId>) {
         match expr {
-            Expr::Const(_) => {}
-            Expr::SelfRef(m) => {
+            Expr::Const(_) | Expr::PeriodIndex => {}
+            Expr::SelfRef(m) | Expr::ActualRef(m) | Expr::Prev(m) | Expr::Cumulative(m) => {
                 out.insert(*m);
             }
             Expr::Add(a, b)
             | Expr::Sub(a, b)
             | Expr::Mul(a, b)
             | Expr::Div(a, b)
-            | Expr::IfNull(a, b) => {
+            | Expr::IfNull(a, b)
+            | Expr::Gt(a, b)
+            | Expr::Lt(a, b)
+            | Expr::Gte(a, b)
+            | Expr::Lte(a, b)
+            | Expr::Eq(a, b)
+            | Expr::Neq(a, b)
+            | Expr::And(a, b)
+            | Expr::Or(a, b) => {
                 walk(a, out);
                 walk(b, out);
+            }
+            Expr::Not(a) | Expr::Abs(a) => walk(a, out),
+            Expr::If(a, b, c) | Expr::SafeDiv(a, b, c) | Expr::Clamp(a, b, c) => {
+                walk(a, out);
+                walk(b, out);
+                walk(c, out);
+            }
+            Expr::Min(args) | Expr::Max(args) | Expr::Coalesce(args) => {
+                for a in args {
+                    walk(a, out);
+                }
+            }
+            Expr::Lag(m, periods) => {
+                out.insert(*m);
+                walk(periods, out);
+            }
+            Expr::RollingAvg(m, window) => {
+                out.insert(*m);
+                walk(window, out);
+            }
+            Expr::Benchmark(_, key) | Expr::Lookup(_, key) => walk(key, out),
+            Expr::Bucket(v, _) => walk(v, out),
+            Expr::SumOver(_, m) => {
+                out.insert(*m);
             }
         }
     }
@@ -233,12 +300,35 @@ fn collect_self_refs(expr: &Expr) -> AHashSet<ElementId> {
 /// the module level so `cube.rs` and tests can share the helper.
 pub fn expr_depth(expr: &Expr) -> u32 {
     match expr {
-        Expr::Const(_) | Expr::SelfRef(_) => 1,
+        Expr::Const(_)
+        | Expr::SelfRef(_)
+        | Expr::ActualRef(_)
+        | Expr::Prev(_)
+        | Expr::Cumulative(_)
+        | Expr::PeriodIndex
+        | Expr::SumOver(_, _) => 1,
         Expr::Add(a, b)
         | Expr::Sub(a, b)
         | Expr::Mul(a, b)
         | Expr::Div(a, b)
-        | Expr::IfNull(a, b) => 1 + expr_depth(a).max(expr_depth(b)),
+        | Expr::IfNull(a, b)
+        | Expr::Gt(a, b)
+        | Expr::Lt(a, b)
+        | Expr::Gte(a, b)
+        | Expr::Lte(a, b)
+        | Expr::Eq(a, b)
+        | Expr::Neq(a, b)
+        | Expr::And(a, b)
+        | Expr::Or(a, b) => 1 + expr_depth(a).max(expr_depth(b)),
+        Expr::Not(a) | Expr::Abs(a) | Expr::Bucket(a, _) => 1 + expr_depth(a),
+        Expr::If(a, b, c) | Expr::SafeDiv(a, b, c) | Expr::Clamp(a, b, c) => {
+            1 + expr_depth(a).max(expr_depth(b)).max(expr_depth(c))
+        }
+        Expr::Min(args) | Expr::Max(args) | Expr::Coalesce(args) => {
+            1 + args.iter().map(|a| expr_depth(a)).max().unwrap_or(0)
+        }
+        Expr::Lag(_, periods) | Expr::RollingAvg(_, periods) => 1 + expr_depth(periods),
+        Expr::Benchmark(_, key) | Expr::Lookup(_, key) => 1 + expr_depth(key),
     }
 }
 
@@ -337,60 +427,289 @@ fn detect_cycle_in_rule_graph(
 // Rule body evaluation primitive
 // ===========================================================================
 
-/// Evaluate an `Expr` body. The caller supplies `lookup_self`, a closure
-/// that resolves a `SelfRef(measure)` to its current `ScalarValue` at
-/// the rule's target coordinate. The closure is `&mut` so it can record
-/// the measures actually read for `doctrine_no_silent_dependency_miss`
-/// validation in `cube.rs`.
+/// Evaluate an `Expr` body. The caller supplies:
+/// - `lookup_self`: resolves a `SelfRef(measure)` to its current `ScalarValue`
+/// - `lookup_cross`: resolves cross-coordinate reads (actual_ref, prev, lag,
+///   cumulative, rolling_avg, sum_over, benchmark, lookup, bucket, period_index)
 ///
-/// Null arithmetic follows spec §7 verbatim:
-///
-/// - `Add`: Null + Null = Null; Null + x = x; x + Null = x.
-/// - `Sub`: Null - Null = Null; Null - x = -x; x - Null = x.
-/// - `Mul`: any operand Null → Null.
-/// - `Div`: any operand Null → Null. Division by 0 (or |y| < 1e-300)
-///   → Null.
-/// - `IfNull(primary, fallback)`: primary unless primary is Null.
-///
-/// NaN and ±Inf must never be produced. Each helper returns Null on any
-/// non-finite intermediate so a downstream `validate_finite_f64` is never
-/// strictly necessary for rule output.
-pub fn eval_expr<F>(expr: &Expr, lookup_self: &mut F) -> Result<ScalarValue, EngineError>
+/// Phase 3E extends the signature with `lookup_cross` for cross-coordinate reads.
+/// Callers that don't use cross-coord functions pass a no-op closure.
+pub fn eval_expr<F, G>(
+    expr: &Expr,
+    lookup_self: &mut F,
+    lookup_cross: &mut G,
+) -> Result<ScalarValue, EngineError>
 where
     F: FnMut(ElementId) -> Result<ScalarValue, EngineError>,
+    G: FnMut(&CrossCoordRead) -> Result<ScalarValue, EngineError>,
 {
     match expr {
         Expr::Const(v) => Ok(v.clone()),
         Expr::SelfRef(measure) => lookup_self(*measure),
         Expr::Add(a, b) => {
-            let lhs = eval_expr(a, lookup_self)?;
-            let rhs = eval_expr(b, lookup_self)?;
+            let lhs = eval_expr(a, lookup_self, lookup_cross)?;
+            let rhs = eval_expr(b, lookup_self, lookup_cross)?;
             Ok(null_add(lhs, rhs))
         }
         Expr::Sub(a, b) => {
-            let lhs = eval_expr(a, lookup_self)?;
-            let rhs = eval_expr(b, lookup_self)?;
+            let lhs = eval_expr(a, lookup_self, lookup_cross)?;
+            let rhs = eval_expr(b, lookup_self, lookup_cross)?;
             Ok(null_sub(lhs, rhs))
         }
         Expr::Mul(a, b) => {
-            let lhs = eval_expr(a, lookup_self)?;
-            let rhs = eval_expr(b, lookup_self)?;
+            let lhs = eval_expr(a, lookup_self, lookup_cross)?;
+            let rhs = eval_expr(b, lookup_self, lookup_cross)?;
             Ok(null_mul(lhs, rhs))
         }
         Expr::Div(a, b) => {
-            let lhs = eval_expr(a, lookup_self)?;
-            let rhs = eval_expr(b, lookup_self)?;
+            let lhs = eval_expr(a, lookup_self, lookup_cross)?;
+            let rhs = eval_expr(b, lookup_self, lookup_cross)?;
             Ok(null_div(lhs, rhs))
         }
         Expr::IfNull(primary, fallback) => {
-            let p = eval_expr(primary, lookup_self)?;
+            let p = eval_expr(primary, lookup_self, lookup_cross)?;
             if p.is_null() {
-                eval_expr(fallback, lookup_self)
+                eval_expr(fallback, lookup_self, lookup_cross)
             } else {
                 Ok(p)
             }
         }
+        // -- Phase 3E: Comparisons (Null propagation per ADR-0011 Decision 3) --
+        Expr::Gt(a, b) => eval_comparison(a, b, lookup_self, lookup_cross, |l, r| l > r),
+        Expr::Lt(a, b) => eval_comparison(a, b, lookup_self, lookup_cross, |l, r| l < r),
+        Expr::Gte(a, b) => eval_comparison(a, b, lookup_self, lookup_cross, |l, r| l >= r),
+        Expr::Lte(a, b) => eval_comparison(a, b, lookup_self, lookup_cross, |l, r| l <= r),
+        Expr::Eq(a, b) => {
+            eval_comparison(a, b, lookup_self, lookup_cross, |l, r| (l - r).abs() < 1e-9)
+        }
+        Expr::Neq(a, b) => eval_comparison(a, b, lookup_self, lookup_cross, |l, r| {
+            (l - r).abs() >= 1e-9
+        }),
+        // -- Phase 3E: Logical --
+        Expr::And(a, b) => {
+            let lhs = eval_expr(a, lookup_self, lookup_cross)?;
+            let rhs = eval_expr(b, lookup_self, lookup_cross)?;
+            match (to_f64_opt(&lhs), to_f64_opt(&rhs)) {
+                (None, _) | (_, None) => Ok(ScalarValue::Null),
+                (Some(l), Some(r)) => Ok(bool_to_scalar(l != 0.0 && r != 0.0)),
+            }
+        }
+        Expr::Or(a, b) => {
+            let lhs = eval_expr(a, lookup_self, lookup_cross)?;
+            let rhs = eval_expr(b, lookup_self, lookup_cross)?;
+            match (to_f64_opt(&lhs), to_f64_opt(&rhs)) {
+                (None, _) | (_, None) => Ok(ScalarValue::Null),
+                (Some(l), Some(r)) => Ok(bool_to_scalar(l != 0.0 || r != 0.0)),
+            }
+        }
+        Expr::Not(a) => {
+            let v = eval_expr(a, lookup_self, lookup_cross)?;
+            match to_f64_opt(&v) {
+                None => Ok(ScalarValue::Null),
+                Some(x) => Ok(bool_to_scalar(x == 0.0)),
+            }
+        }
+        // -- Phase 3E: Functions --
+        Expr::If(cond, then_b, else_b) => {
+            let c = eval_expr(cond, lookup_self, lookup_cross)?;
+            match to_f64_opt(&c) {
+                None => eval_expr(else_b, lookup_self, lookup_cross), // Null → else
+                Some(x) if x == 0.0 => eval_expr(else_b, lookup_self, lookup_cross), // falsy
+                Some(_) => eval_expr(then_b, lookup_self, lookup_cross), // truthy
+            }
+        }
+        Expr::Min(args) => {
+            let mut result: Option<f64> = None;
+            for arg in args {
+                match eval_expr(arg, lookup_self, lookup_cross)? {
+                    ScalarValue::Null => return Ok(ScalarValue::Null),
+                    ScalarValue::F64(v) => {
+                        result = Some(match result {
+                            None => v,
+                            Some(curr) => curr.min(v),
+                        });
+                    }
+                    _ => return Ok(ScalarValue::Null),
+                }
+            }
+            Ok(result.map_or(ScalarValue::Null, ScalarValue::F64))
+        }
+        Expr::Max(args) => {
+            let mut result: Option<f64> = None;
+            for arg in args {
+                match eval_expr(arg, lookup_self, lookup_cross)? {
+                    ScalarValue::Null => return Ok(ScalarValue::Null),
+                    ScalarValue::F64(v) => {
+                        result = Some(match result {
+                            None => v,
+                            Some(curr) => curr.max(v),
+                        });
+                    }
+                    _ => return Ok(ScalarValue::Null),
+                }
+            }
+            Ok(result.map_or(ScalarValue::Null, ScalarValue::F64))
+        }
+        Expr::Abs(a) => match eval_expr(a, lookup_self, lookup_cross)? {
+            ScalarValue::Null => Ok(ScalarValue::Null),
+            ScalarValue::F64(v) => Ok(finite_or_null(v.abs())),
+            _ => Ok(ScalarValue::Null),
+        },
+        Expr::SafeDiv(n, d, def) => {
+            let nv = eval_expr(n, lookup_self, lookup_cross)?;
+            let dv = eval_expr(d, lookup_self, lookup_cross)?;
+            match (nv, dv) {
+                (ScalarValue::Null, _) | (_, ScalarValue::Null) => {
+                    eval_expr(def, lookup_self, lookup_cross)
+                }
+                (ScalarValue::F64(_), ScalarValue::F64(y)) if y.abs() < 1e-300 => {
+                    eval_expr(def, lookup_self, lookup_cross)
+                }
+                (ScalarValue::F64(x), ScalarValue::F64(y)) => Ok(finite_or_null(x / y)),
+                _ => eval_expr(def, lookup_self, lookup_cross),
+            }
+        }
+        Expr::Clamp(v, lo, hi) => {
+            let vv = eval_expr(v, lookup_self, lookup_cross)?;
+            let lov = eval_expr(lo, lookup_self, lookup_cross)?;
+            let hiv = eval_expr(hi, lookup_self, lookup_cross)?;
+            match (to_f64_opt(&vv), to_f64_opt(&lov), to_f64_opt(&hiv)) {
+                (Some(x), Some(l), Some(h)) => Ok(ScalarValue::F64(x.max(l).min(h))),
+                _ => Ok(ScalarValue::Null),
+            }
+        }
+        Expr::Coalesce(args) => {
+            for arg in args {
+                let v = eval_expr(arg, lookup_self, lookup_cross)?;
+                if !v.is_null() {
+                    return Ok(v);
+                }
+            }
+            Ok(ScalarValue::Null)
+        }
+        // -- Cross-coordinate reads: delegate to lookup_cross --
+        Expr::ActualRef(measure) => {
+            lookup_cross(&CrossCoordRead::ScenarioShift { measure: *measure })
+        }
+        Expr::Prev(measure) => lookup_cross(&CrossCoordRead::TimeOffset {
+            offset: -1,
+            measure: *measure,
+        }),
+        Expr::Lag(measure, periods_expr) => {
+            let periods_val = eval_expr(periods_expr, lookup_self, lookup_cross)?;
+            match to_f64_opt(&periods_val) {
+                Some(n) => {
+                    let offset = -(n as i32);
+                    lookup_cross(&CrossCoordRead::TimeOffset {
+                        offset,
+                        measure: *measure,
+                    })
+                }
+                None => Ok(ScalarValue::Null),
+            }
+        }
+        Expr::Cumulative(measure) => {
+            lookup_cross(&CrossCoordRead::Cumulative { measure: *measure })
+        }
+        Expr::RollingAvg(measure, window_expr) => {
+            let window_val = eval_expr(window_expr, lookup_self, lookup_cross)?;
+            match to_f64_opt(&window_val) {
+                Some(w) if w >= 1.0 => lookup_cross(&CrossCoordRead::RollingAvg {
+                    measure: *measure,
+                    window: w as u32,
+                }),
+                _ => Ok(ScalarValue::Null),
+            }
+        }
+        Expr::PeriodIndex => lookup_cross(&CrossCoordRead::PeriodIndex),
+        Expr::Benchmark(name, key_expr) => {
+            let key = eval_expr(key_expr, lookup_self, lookup_cross)?;
+            lookup_cross(&CrossCoordRead::BenchmarkLookup {
+                name: name.clone(),
+                key,
+            })
+        }
+        Expr::Lookup(table, key_expr) => {
+            let key = eval_expr(key_expr, lookup_self, lookup_cross)?;
+            lookup_cross(&CrossCoordRead::TableLookup {
+                table: table.clone(),
+                key,
+            })
+        }
+        Expr::Bucket(value_expr, threshold_name) => {
+            let v = eval_expr(value_expr, lookup_self, lookup_cross)?;
+            lookup_cross(&CrossCoordRead::BucketLookup {
+                threshold: threshold_name.clone(),
+                value: v,
+            })
+        }
+        Expr::SumOver(dim, measure) => lookup_cross(&CrossCoordRead::DimensionScan {
+            dimension: *dim,
+            measure: *measure,
+        }),
     }
+}
+
+/// Cross-coordinate read specification, passed to the `lookup_cross` closure.
+/// The caller (typically `Cube::read`) resolves these against the full
+/// coordinate context.
+#[derive(Clone, Debug)]
+pub enum CrossCoordRead {
+    /// Shift Scenario dim to actuals_element, read measure there.
+    ScenarioShift { measure: ElementId },
+    /// Shift Time dim by offset positions, read measure there.
+    TimeOffset { offset: i32, measure: ElementId },
+    /// Running sum of measure up to current time position.
+    Cumulative { measure: ElementId },
+    /// Moving average of measure over a window of periods.
+    RollingAvg { measure: ElementId, window: u32 },
+    /// Current element's 0-based position in Time dim.
+    PeriodIndex,
+    /// Lookup a benchmark value by name and key.
+    BenchmarkLookup { name: String, key: ScalarValue },
+    /// Lookup a table value by name and key.
+    TableLookup { table: String, key: ScalarValue },
+    /// Lookup bucket band index by threshold name and value.
+    BucketLookup {
+        threshold: String,
+        value: ScalarValue,
+    },
+    /// Sum across all leaf elements of a dimension for a measure.
+    DimensionScan {
+        dimension: crate::id::DimensionId,
+        measure: ElementId,
+    },
+}
+
+fn eval_comparison<F, G>(
+    a: &Expr,
+    b: &Expr,
+    lookup_self: &mut F,
+    lookup_cross: &mut G,
+    cmp: impl Fn(f64, f64) -> bool,
+) -> Result<ScalarValue, EngineError>
+where
+    F: FnMut(ElementId) -> Result<ScalarValue, EngineError>,
+    G: FnMut(&CrossCoordRead) -> Result<ScalarValue, EngineError>,
+{
+    let lhs = eval_expr(a, lookup_self, lookup_cross)?;
+    let rhs = eval_expr(b, lookup_self, lookup_cross)?;
+    match (to_f64_opt(&lhs), to_f64_opt(&rhs)) {
+        (Some(l), Some(r)) => Ok(bool_to_scalar(cmp(l, r))),
+        _ => Ok(ScalarValue::Null), // Null in comparison returns Null
+    }
+}
+
+fn to_f64_opt(v: &ScalarValue) -> Option<f64> {
+    match v {
+        ScalarValue::F64(x) => Some(*x),
+        ScalarValue::Null => None,
+        _ => None,
+    }
+}
+
+fn bool_to_scalar(b: bool) -> ScalarValue {
+    ScalarValue::F64(if b { 1.0 } else { 0.0 })
 }
 
 /// Treat any non-finite f64 (NaN or ±Inf) as Null. Per spec §7 NaN/Inf
@@ -678,6 +997,10 @@ mod tests {
         move |m| Ok(map.get(&m).cloned().unwrap_or(ScalarValue::Null))
     }
 
+    fn no_cross(_: &CrossCoordRead) -> Result<ScalarValue, EngineError> {
+        Ok(ScalarValue::Null)
+    }
+
     #[test]
     fn eval_simple_div() {
         let spend = ElementId(1);
@@ -691,7 +1014,7 @@ mod tests {
             .into_iter()
             .collect(),
         );
-        let v = eval_expr(&body, &mut lookup).expect("eval ok");
+        let v = eval_expr(&body, &mut lookup, &mut no_cross).expect("eval ok");
         let got = v.as_f64().expect("F64");
         assert!((got - 7_666.666_666_666_667).abs() < 1e-6, "got {got}");
     }
@@ -728,7 +1051,7 @@ mod tests {
             .into_iter()
             .collect(),
         );
-        let v = eval_expr(&body, &mut lookup).expect("eval ok");
+        let v = eval_expr(&body, &mut lookup, &mut no_cross).expect("eval ok");
         let got = v.as_f64().expect("F64");
         // Revenue = 9200/3 ≈ 3066.666...
         assert!(
@@ -751,7 +1074,7 @@ mod tests {
             Box::new(Expr::Const(ScalarValue::Null)),
             Box::new(Expr::Const(ScalarValue::Null)),
         );
-        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null)).unwrap();
+        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null), &mut no_cross).unwrap();
         assert!(v.is_null());
 
         // Add: Null + 5 = 5
@@ -759,7 +1082,7 @@ mod tests {
             Box::new(Expr::Const(ScalarValue::Null)),
             Box::new(Expr::Const(ScalarValue::F64(5.0))),
         );
-        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null)).unwrap();
+        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null), &mut no_cross).unwrap();
         assert_eq!(v.as_f64(), Some(5.0));
 
         // Sub: Null - 5 = -5
@@ -767,7 +1090,7 @@ mod tests {
             Box::new(Expr::Const(ScalarValue::Null)),
             Box::new(Expr::Const(ScalarValue::F64(5.0))),
         );
-        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null)).unwrap();
+        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null), &mut no_cross).unwrap();
         assert_eq!(v.as_f64(), Some(-5.0));
 
         // Sub: 5 - Null = 5
@@ -775,7 +1098,7 @@ mod tests {
             Box::new(Expr::Const(ScalarValue::F64(5.0))),
             Box::new(Expr::Const(ScalarValue::Null)),
         );
-        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null)).unwrap();
+        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null), &mut no_cross).unwrap();
         assert_eq!(v.as_f64(), Some(5.0));
 
         // Mul: Null * 5 = Null
@@ -783,7 +1106,7 @@ mod tests {
             Box::new(Expr::Const(ScalarValue::Null)),
             Box::new(Expr::Const(ScalarValue::F64(5.0))),
         );
-        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null)).unwrap();
+        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null), &mut no_cross).unwrap();
         assert!(v.is_null());
 
         // Mul: 5 * Null = Null
@@ -791,7 +1114,7 @@ mod tests {
             Box::new(Expr::Const(ScalarValue::F64(5.0))),
             Box::new(Expr::Const(ScalarValue::Null)),
         );
-        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null)).unwrap();
+        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null), &mut no_cross).unwrap();
         assert!(v.is_null());
 
         // Div: Null / 5 = Null
@@ -799,7 +1122,7 @@ mod tests {
             Box::new(Expr::Const(ScalarValue::Null)),
             Box::new(Expr::Const(ScalarValue::F64(5.0))),
         );
-        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null)).unwrap();
+        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null), &mut no_cross).unwrap();
         assert!(v.is_null());
 
         // Div: 5 / Null = Null
@@ -807,7 +1130,7 @@ mod tests {
             Box::new(Expr::Const(ScalarValue::F64(5.0))),
             Box::new(Expr::Const(ScalarValue::Null)),
         );
-        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null)).unwrap();
+        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null), &mut no_cross).unwrap();
         assert!(v.is_null());
 
         // Div: 5 / 0 = Null  (NOT Inf)
@@ -815,7 +1138,7 @@ mod tests {
             Box::new(Expr::Const(ScalarValue::F64(5.0))),
             Box::new(Expr::Const(ScalarValue::F64(0.0))),
         );
-        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null)).unwrap();
+        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null), &mut no_cross).unwrap();
         assert!(v.is_null(), "5 / 0 must be Null, not Inf or NaN");
 
         // Div: 5 / 1e-301 = Null  (treated as zero per |y| < 1e-300)
@@ -823,7 +1146,7 @@ mod tests {
             Box::new(Expr::Const(ScalarValue::F64(5.0))),
             Box::new(Expr::Const(ScalarValue::F64(1e-301))),
         );
-        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null)).unwrap();
+        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null), &mut no_cross).unwrap();
         assert!(v.is_null(), "5 / sub-epsilon must be Null");
 
         // IfNull(Null, 99) = 99
@@ -831,7 +1154,7 @@ mod tests {
             Box::new(Expr::Const(ScalarValue::Null)),
             Box::new(Expr::Const(ScalarValue::F64(99.0))),
         );
-        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null)).unwrap();
+        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null), &mut no_cross).unwrap();
         assert_eq!(v.as_f64(), Some(99.0));
 
         // IfNull(7, 99) = 7
@@ -839,7 +1162,7 @@ mod tests {
             Box::new(Expr::Const(ScalarValue::F64(7.0))),
             Box::new(Expr::Const(ScalarValue::F64(99.0))),
         );
-        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null)).unwrap();
+        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null), &mut no_cross).unwrap();
         assert_eq!(v.as_f64(), Some(7.0));
 
         // 0.0 distinct from Null: 0.0 + 5 = 5 (not Null), but Null + 5 = 5 (also 5 — special case).
@@ -850,7 +1173,7 @@ mod tests {
             Box::new(Expr::Const(ScalarValue::F64(0.0))),
             Box::new(Expr::Const(ScalarValue::F64(5.0))),
         );
-        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null)).unwrap();
+        let v = eval_expr(&body, &mut make_lookup(ScalarValue::Null), &mut no_cross).unwrap();
         assert_eq!(v.as_f64(), Some(0.0));
     }
 
@@ -864,7 +1187,7 @@ mod tests {
             Ok::<_, EngineError>(ScalarValue::F64(7.0))
         };
         let body = Expr::SelfRef(m);
-        let v = eval_expr(&body, &mut lookup).unwrap();
+        let v = eval_expr(&body, &mut lookup, &mut no_cross).unwrap();
         assert_eq!(v.as_f64(), Some(7.0));
         assert_eq!(call_count, 1);
     }
@@ -891,5 +1214,396 @@ mod tests {
             )),
         );
         assert_eq!(expr_depth(&gross_profit_body), 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 3E: comparison + logical + function eval tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn eval_comparison_gt() {
+        let body = Expr::Gt(
+            Box::new(Expr::Const(ScalarValue::F64(10.0))),
+            Box::new(Expr::Const(ScalarValue::F64(5.0))),
+        );
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert_eq!(v.as_f64(), Some(1.0)); // true
+    }
+
+    #[test]
+    fn eval_comparison_null_returns_null() {
+        // Null > 5 = Null (per ADR-0011 Decision 3)
+        let body = Expr::Gt(
+            Box::new(Expr::Const(ScalarValue::Null)),
+            Box::new(Expr::Const(ScalarValue::F64(5.0))),
+        );
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert!(v.is_null());
+    }
+
+    #[test]
+    fn eval_if_null_condition_returns_else() {
+        // if(Null, 10, 20) = 20 (Null condition → else branch)
+        let body = Expr::If(
+            Box::new(Expr::Const(ScalarValue::Null)),
+            Box::new(Expr::Const(ScalarValue::F64(10.0))),
+            Box::new(Expr::Const(ScalarValue::F64(20.0))),
+        );
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert_eq!(v.as_f64(), Some(20.0));
+    }
+
+    #[test]
+    fn eval_if_truthy_returns_then() {
+        // if(1, 10, 20) = 10
+        let body = Expr::If(
+            Box::new(Expr::Const(ScalarValue::F64(1.0))),
+            Box::new(Expr::Const(ScalarValue::F64(10.0))),
+            Box::new(Expr::Const(ScalarValue::F64(20.0))),
+        );
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert_eq!(v.as_f64(), Some(10.0));
+    }
+
+    #[test]
+    fn eval_if_zero_returns_else() {
+        // if(0, 10, 20) = 20 (zero is falsy)
+        let body = Expr::If(
+            Box::new(Expr::Const(ScalarValue::F64(0.0))),
+            Box::new(Expr::Const(ScalarValue::F64(10.0))),
+            Box::new(Expr::Const(ScalarValue::F64(20.0))),
+        );
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert_eq!(v.as_f64(), Some(20.0));
+    }
+
+    #[test]
+    fn eval_min_basic() {
+        let body = Expr::Min(vec![
+            Box::new(Expr::Const(ScalarValue::F64(5.0))),
+            Box::new(Expr::Const(ScalarValue::F64(3.0))),
+            Box::new(Expr::Const(ScalarValue::F64(8.0))),
+        ]);
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert_eq!(v.as_f64(), Some(3.0));
+    }
+
+    #[test]
+    fn eval_min_null_propagates() {
+        let body = Expr::Min(vec![
+            Box::new(Expr::Const(ScalarValue::F64(5.0))),
+            Box::new(Expr::Const(ScalarValue::Null)),
+        ]);
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert!(v.is_null());
+    }
+
+    #[test]
+    fn eval_max_basic() {
+        let body = Expr::Max(vec![
+            Box::new(Expr::Const(ScalarValue::F64(5.0))),
+            Box::new(Expr::Const(ScalarValue::F64(9.0))),
+        ]);
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert_eq!(v.as_f64(), Some(9.0));
+    }
+
+    #[test]
+    fn eval_abs() {
+        let body = Expr::Abs(Box::new(Expr::Const(ScalarValue::F64(-7.0))));
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert_eq!(v.as_f64(), Some(7.0));
+    }
+
+    #[test]
+    fn eval_safe_div_normal() {
+        let body = Expr::SafeDiv(
+            Box::new(Expr::Const(ScalarValue::F64(10.0))),
+            Box::new(Expr::Const(ScalarValue::F64(2.0))),
+            Box::new(Expr::Const(ScalarValue::F64(0.0))),
+        );
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert_eq!(v.as_f64(), Some(5.0));
+    }
+
+    #[test]
+    fn eval_safe_div_zero_returns_default() {
+        let body = Expr::SafeDiv(
+            Box::new(Expr::Const(ScalarValue::F64(10.0))),
+            Box::new(Expr::Const(ScalarValue::F64(0.0))),
+            Box::new(Expr::Const(ScalarValue::F64(-1.0))),
+        );
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert_eq!(v.as_f64(), Some(-1.0));
+    }
+
+    #[test]
+    fn eval_clamp() {
+        // clamp(15, 0, 10) = 10
+        let body = Expr::Clamp(
+            Box::new(Expr::Const(ScalarValue::F64(15.0))),
+            Box::new(Expr::Const(ScalarValue::F64(0.0))),
+            Box::new(Expr::Const(ScalarValue::F64(10.0))),
+        );
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert_eq!(v.as_f64(), Some(10.0));
+    }
+
+    #[test]
+    fn eval_coalesce_first_non_null() {
+        let body = Expr::Coalesce(vec![
+            Box::new(Expr::Const(ScalarValue::Null)),
+            Box::new(Expr::Const(ScalarValue::Null)),
+            Box::new(Expr::Const(ScalarValue::F64(42.0))),
+            Box::new(Expr::Const(ScalarValue::F64(99.0))),
+        ]);
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert_eq!(v.as_f64(), Some(42.0));
+    }
+
+    #[test]
+    fn eval_logical_and_or_not() {
+        // 1 and 1 = 1 (true)
+        let body = Expr::And(
+            Box::new(Expr::Const(ScalarValue::F64(1.0))),
+            Box::new(Expr::Const(ScalarValue::F64(1.0))),
+        );
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert_eq!(v.as_f64(), Some(1.0));
+
+        // 1 and 0 = 0 (false)
+        let body = Expr::And(
+            Box::new(Expr::Const(ScalarValue::F64(1.0))),
+            Box::new(Expr::Const(ScalarValue::F64(0.0))),
+        );
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert_eq!(v.as_f64(), Some(0.0));
+
+        // 0 or 1 = 1
+        let body = Expr::Or(
+            Box::new(Expr::Const(ScalarValue::F64(0.0))),
+            Box::new(Expr::Const(ScalarValue::F64(1.0))),
+        );
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert_eq!(v.as_f64(), Some(1.0));
+
+        // not 0 = 1
+        let body = Expr::Not(Box::new(Expr::Const(ScalarValue::F64(0.0))));
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert_eq!(v.as_f64(), Some(1.0));
+
+        // not Null = Null
+        let body = Expr::Not(Box::new(Expr::Const(ScalarValue::Null)));
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert!(v.is_null());
+
+        // Null and 1 = Null
+        let body = Expr::And(
+            Box::new(Expr::Const(ScalarValue::Null)),
+            Box::new(Expr::Const(ScalarValue::F64(1.0))),
+        );
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert!(v.is_null());
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 3F: time-series eval with mock lookup_cross
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn eval_prev_delegates_to_cross() {
+        let measure = ElementId(1);
+        let body = Expr::Prev(measure);
+        let mut cross = |read: &CrossCoordRead| -> Result<ScalarValue, EngineError> {
+            match read {
+                CrossCoordRead::TimeOffset { offset, measure: m } => {
+                    assert_eq!(*offset, -1);
+                    assert_eq!(*m, measure);
+                    Ok(ScalarValue::F64(100.0))
+                }
+                _ => Ok(ScalarValue::Null),
+            }
+        };
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut cross).unwrap();
+        assert_eq!(v.as_f64(), Some(100.0));
+    }
+
+    #[test]
+    fn eval_lag_with_negative_leads() {
+        let measure = ElementId(1);
+        // lag(measure, -2) → TimeOffset { offset: 2 } (lead 2 periods)
+        let body = Expr::Lag(measure, Box::new(Expr::Const(ScalarValue::F64(-2.0))));
+        let mut cross = |read: &CrossCoordRead| -> Result<ScalarValue, EngineError> {
+            match read {
+                CrossCoordRead::TimeOffset { offset, .. } => {
+                    assert_eq!(*offset, 2); // negative lag = positive offset (lead)
+                    Ok(ScalarValue::F64(200.0))
+                }
+                _ => Ok(ScalarValue::Null),
+            }
+        };
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut cross).unwrap();
+        assert_eq!(v.as_f64(), Some(200.0));
+    }
+
+    #[test]
+    fn eval_period_index_delegates() {
+        let body = Expr::PeriodIndex;
+        let mut cross = |read: &CrossCoordRead| -> Result<ScalarValue, EngineError> {
+            match read {
+                CrossCoordRead::PeriodIndex => Ok(ScalarValue::F64(3.0)),
+                _ => Ok(ScalarValue::Null),
+            }
+        };
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut cross).unwrap();
+        assert_eq!(v.as_f64(), Some(3.0));
+    }
+
+    #[test]
+    fn eval_cumulative_delegates() {
+        let measure = ElementId(5);
+        let body = Expr::Cumulative(measure);
+        let mut cross = |read: &CrossCoordRead| -> Result<ScalarValue, EngineError> {
+            match read {
+                CrossCoordRead::Cumulative { measure: m } => {
+                    assert_eq!(*m, measure);
+                    Ok(ScalarValue::F64(500.0))
+                }
+                _ => Ok(ScalarValue::Null),
+            }
+        };
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut cross).unwrap();
+        assert_eq!(v.as_f64(), Some(500.0));
+    }
+
+    #[test]
+    fn eval_rolling_avg_delegates() {
+        let measure = ElementId(5);
+        let body = Expr::RollingAvg(measure, Box::new(Expr::Const(ScalarValue::F64(3.0))));
+        let mut cross = |read: &CrossCoordRead| -> Result<ScalarValue, EngineError> {
+            match read {
+                CrossCoordRead::RollingAvg { measure: m, window } => {
+                    assert_eq!(*m, measure);
+                    assert_eq!(*window, 3);
+                    Ok(ScalarValue::F64(7.5))
+                }
+                _ => Ok(ScalarValue::Null),
+            }
+        };
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut cross).unwrap();
+        assert_eq!(v.as_f64(), Some(7.5));
+    }
+
+    #[test]
+    fn eval_rolling_avg_non_positive_window_returns_null() {
+        let measure = ElementId(5);
+        // window = 0 → Null (non-positive)
+        let body = Expr::RollingAvg(measure, Box::new(Expr::Const(ScalarValue::F64(0.0))));
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert!(v.is_null());
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 3G: reference-data eval with mock lookup_cross
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn eval_benchmark_delegates() {
+        let body = Expr::Benchmark(
+            "industry_cpc".into(),
+            Box::new(Expr::Const(ScalarValue::F64(1.0))), // key placeholder
+        );
+        let mut cross = |read: &CrossCoordRead| -> Result<ScalarValue, EngineError> {
+            match read {
+                CrossCoordRead::BenchmarkLookup { name, .. } => {
+                    assert_eq!(name, "industry_cpc");
+                    Ok(ScalarValue::F64(5.50))
+                }
+                _ => Ok(ScalarValue::Null),
+            }
+        };
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut cross).unwrap();
+        assert_eq!(v.as_f64(), Some(5.50));
+    }
+
+    #[test]
+    fn eval_lookup_delegates() {
+        let body = Expr::Lookup(
+            "tax_rate".into(),
+            Box::new(Expr::Const(ScalarValue::F64(1.0))),
+        );
+        let mut cross = |read: &CrossCoordRead| -> Result<ScalarValue, EngineError> {
+            match read {
+                CrossCoordRead::TableLookup { table, .. } => {
+                    assert_eq!(table, "tax_rate");
+                    Ok(ScalarValue::F64(0.055))
+                }
+                _ => Ok(ScalarValue::Null),
+            }
+        };
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut cross).unwrap();
+        assert_eq!(v.as_f64(), Some(0.055));
+    }
+
+    #[test]
+    fn eval_bucket_null_input_returns_null() {
+        let body = Expr::Bucket(
+            Box::new(Expr::Const(ScalarValue::Null)),
+            "cpc_health".into(),
+        );
+        let mut cross = |read: &CrossCoordRead| -> Result<ScalarValue, EngineError> {
+            match read {
+                CrossCoordRead::BucketLookup { value, .. } => {
+                    // value is Null → bucket returns Null
+                    assert!(value.is_null());
+                    Ok(ScalarValue::Null)
+                }
+                _ => Ok(ScalarValue::Null),
+            }
+        };
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut cross).unwrap();
+        assert!(v.is_null());
+    }
+
+    #[test]
+    fn eval_bucket_delegates_value() {
+        let body = Expr::Bucket(
+            Box::new(Expr::Const(ScalarValue::F64(4.5))),
+            "cpc_health".into(),
+        );
+        let mut cross = |read: &CrossCoordRead| -> Result<ScalarValue, EngineError> {
+            match read {
+                CrossCoordRead::BucketLookup { threshold, value } => {
+                    assert_eq!(threshold, "cpc_health");
+                    assert_eq!(value.as_f64(), Some(4.5));
+                    Ok(ScalarValue::F64(1.0)) // band index 1 ("Warning")
+                }
+                _ => Ok(ScalarValue::Null),
+            }
+        };
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut cross).unwrap();
+        assert_eq!(v.as_f64(), Some(1.0));
+    }
+
+    #[test]
+    fn eval_sum_over_delegates() {
+        let dim = crate::id::DimensionId(99);
+        let measure = ElementId(10);
+        let body = Expr::SumOver(dim, measure);
+        let mut cross = |read: &CrossCoordRead| -> Result<ScalarValue, EngineError> {
+            match read {
+                CrossCoordRead::DimensionScan {
+                    dimension: d,
+                    measure: m,
+                } => {
+                    assert_eq!(*d, dim);
+                    assert_eq!(*m, measure);
+                    Ok(ScalarValue::F64(1000.0)) // total across dimension
+                }
+                _ => Ok(ScalarValue::Null),
+            }
+        };
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut cross).unwrap();
+        assert_eq!(v.as_f64(), Some(1000.0));
     }
 }
