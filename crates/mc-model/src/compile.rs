@@ -311,6 +311,38 @@ pub fn compile(validated: ValidatedModel) -> Result<CompiledCube, EngineError> {
             .insert(st.name.clone(), bands);
     }
 
+    // Populate fitted_models
+    for fm in &validated.parsed.fitted_models {
+        let standardization = fm.standardization.as_ref().map(|sc| {
+            sc.params.iter().map(|p| (p.mean, p.std)).collect()
+        });
+        let data = mc_core::FittedModelData {
+            method: fm.method.clone(),
+            intercept: fm.intercept,
+            coefficients: fm.coefficients.iter().map(|c| c.weight).collect(),
+            residual_std: fm.residual_std,
+            standardization,
+        };
+        cube.reference_data.fitted_models.insert(fm.name.clone(), data);
+    }
+
+    // Populate calibration_maps
+    for cm in &validated.parsed.calibration_maps {
+        let data = mc_core::CalibrationMapData {
+            method: cm.method.clone(),
+            points: cm
+                .points
+                .as_ref()
+                .map(|pts| pts.iter().map(|p| (p.raw, p.calibrated)).collect())
+                .unwrap_or_default(),
+            platt_a: cm.platt_params.as_ref().map(|p| p.a),
+            platt_b: cm.platt_params.as_ref().map(|p| p.b),
+        };
+        cube.reference_data
+            .calibration_maps
+            .insert(cm.name.clone(), data);
+    }
+
     // Populate time_anchor_index from the Time-kind dimension's time_anchor field.
     // The Time dim is identified by kind: "Time" (or kind: "Standard" with name "Time").
     for dim in &validated.parsed.dimensions {

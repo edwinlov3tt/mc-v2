@@ -1090,11 +1090,98 @@ impl Cube {
                     None => Ok(ScalarValue::Null),
                 }
             }
-            CrossCoordRead::PredictModel { .. } | CrossCoordRead::CalibrateMap { .. } => {
-                // Phase 3H: fitted-model evaluation is not yet wired at
-                // the cube layer. Return Null as documented in the 3H
-                // completion report.
-                Ok(ScalarValue::Null)
+            CrossCoordRead::PredictModel { model_id, features } => {
+                let model = match self.reference_data.fitted_models.get(model_id) {
+                    Some(m) => m,
+                    None => return Ok(ScalarValue::Null),
+                };
+
+                // Extract f64 values from features; any non-F64 means Null-poisoning
+                let mut feature_values: Vec<f64> = Vec::with_capacity(features.len());
+                for f in features {
+                    match f {
+                        ScalarValue::F64(v) => feature_values.push(*v),
+                        _ => return Ok(ScalarValue::Null),
+                    }
+                }
+
+                // Arity mismatch check
+                if feature_values.len() != model.coefficients.len() {
+                    return Ok(ScalarValue::Null);
+                }
+
+                // Apply standardization if configured
+                if let Some(ref std_params) = model.standardization {
+                    for (val, (mean, std)) in feature_values.iter_mut().zip(std_params.iter()) {
+                        if *std > 0.0 {
+                            *val = (*val - mean) / std;
+                        }
+                    }
+                }
+
+                // Linear combination: intercept + sum(coef_i * feature_i)
+                let linear_result = model.intercept
+                    + model
+                        .coefficients
+                        .iter()
+                        .zip(feature_values.iter())
+                        .map(|(coef, val)| coef * val)
+                        .sum::<f64>();
+
+                // Apply link function
+                let result = match model.method.as_str() {
+                    "logistic" => 1.0 / (1.0 + (-linear_result).exp()),
+                    _ => linear_result, // "linear" default
+                };
+
+                Ok(ScalarValue::F64(result))
+            }
+            CrossCoordRead::CalibrateMap { map_id, value } => {
+                let map = match self.reference_data.calibration_maps.get(map_id) {
+                    Some(m) => m,
+                    None => return Ok(ScalarValue::Null),
+                };
+
+                let raw = match value {
+                    ScalarValue::F64(v) => *v,
+                    _ => return Ok(ScalarValue::Null),
+                };
+
+                let result = match map.method.as_str() {
+                    "platt" => {
+                        let a = map.platt_a.unwrap_or(0.0);
+                        let b = map.platt_b.unwrap_or(0.0);
+                        1.0 / (1.0 + (a * raw + b).exp())
+                    }
+                    _ => {
+                        // PAVA: piecewise linear interpolation over sorted points
+                        if map.points.is_empty() {
+                            return Ok(ScalarValue::Null);
+                        }
+                        let first = map.points[0];
+                        let last = map.points[map.points.len() - 1];
+                        if raw <= first.0 {
+                            first.1
+                        } else if raw >= last.0 {
+                            last.1
+                        } else {
+                            // Find segment and interpolate
+                            let mut calibrated = first.1;
+                            for i in 0..map.points.len() - 1 {
+                                let (x0, y0) = map.points[i];
+                                let (x1, y1) = map.points[i + 1];
+                                if raw >= x0 && raw < x1 {
+                                    let frac = (raw - x0) / (x1 - x0);
+                                    calibrated = y0 + frac * (y1 - y0);
+                                    break;
+                                }
+                            }
+                            calibrated
+                        }
+                    }
+                };
+
+                Ok(ScalarValue::F64(result))
             }
         }
     }
@@ -2061,6 +2148,39 @@ pub struct ReferenceData {
     /// Time anchor index (position of the time_anchor element in the Time dim).
     /// None = no anchor configured; anchor functions should return Null / fire MC1017.
     pub time_anchor_index: Option<usize>,
+    /// Pre-fitted model coefficients for `predict()` evaluation.
+    pub fitted_models: ahash::AHashMap<String, FittedModelData>,
+    /// Calibration maps for `calibrate()` evaluation.
+    pub calibration_maps: ahash::AHashMap<String, CalibrationMapData>,
+}
+
+/// Pre-fitted model data for `predict()` evaluation (Phase 3H).
+#[derive(Clone, Debug)]
+pub struct FittedModelData {
+    /// `"linear"` or `"logistic"`.
+    pub method: String,
+    /// Model intercept (bias term).
+    pub intercept: f64,
+    /// Coefficient weights, one per feature in declaration order.
+    pub coefficients: Vec<f64>,
+    /// Optional residual standard deviation (for prediction intervals).
+    pub residual_std: Option<f64>,
+    /// Optional per-feature standardization params (mean, std) for z-score normalization.
+    /// If present, features are standardized before applying coefficients.
+    pub standardization: Option<Vec<(f64, f64)>>,
+}
+
+/// Calibration map data for `calibrate()` evaluation (Phase 3H).
+#[derive(Clone, Debug)]
+pub struct CalibrationMapData {
+    /// `"pava"` or `"platt"`.
+    pub method: String,
+    /// (raw, calibrated) pairs for PAVA isotonic regression (sorted by raw).
+    pub points: Vec<(f64, f64)>,
+    /// Platt sigmoid parameter A.
+    pub platt_a: Option<f64>,
+    /// Platt sigmoid parameter B.
+    pub platt_b: Option<f64>,
 }
 
 /// One band within a status threshold. Ordered from lowest to highest; the

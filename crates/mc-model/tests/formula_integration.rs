@@ -2091,8 +2091,8 @@ rules:
 // ============================================================================
 
 #[test]
-fn test_predict_linear_returns_null_until_wired() {
-    // Phase 3H predict is not wired at cube layer — returns Null
+fn test_predict_linear_evaluates() {
+    // Phase 3H predict: linear_model with intercept=10, weights=[2,3]
     let yaml = r#"
 model_format_version: 1
 metadata:
@@ -2176,8 +2176,7 @@ rules:
     );
 
     // Expected: 10 + 2*5 + 3*4 = 32.0
-    // But Phase 3H predict is NOT wired at cube layer → Null
-    let val = read_value(
+    let val = read_f64(
         &mut cube,
         &compiled.refs,
         p,
@@ -2190,11 +2189,11 @@ rules:
             ("Measure", "Result"),
         ],
     );
-    assert_null(val, "predict() not yet wired at cube layer → Null");
+    assert_f64_eq(val, 32.0, "predict(linear_model, 5, 4)");
 }
 
 #[test]
-fn test_calibrate_returns_null_until_wired() {
+fn test_calibrate_pava_interpolates() {
     let yaml = r#"
 model_format_version: 1
 metadata:
@@ -2262,8 +2261,10 @@ rules:
         0.55,
     );
 
-    // Calibrate not wired at cube layer → Null
-    let val = read_value(
+    // PAVA interpolation: raw=0.55, segment [0.5,1.0] → [0.4,0.9]
+    // frac = (0.55 - 0.5) / (1.0 - 0.5) = 0.1
+    // result = 0.4 + 0.1 * (0.9 - 0.4) = 0.45
+    let val = read_f64(
         &mut cube,
         &compiled.refs,
         p,
@@ -2276,7 +2277,7 @@ rules:
             ("Measure", "Result"),
         ],
     );
-    assert_null(val, "calibrate() not yet wired at cube layer → Null");
+    assert_f64_eq(val, 0.45, "calibrate(0.55, pava_map)");
 }
 
 #[test]

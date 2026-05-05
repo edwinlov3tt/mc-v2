@@ -86,80 +86,80 @@ measures:
   - name: "avg_pace"
     role: "Input"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "Average pace (possessions/48 min) of both teams"
 
   - name: "pace_delta"
     role: "Input"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "Pace differential (home_pace - away_pace)"
 
   - name: "combined_off_rating"
     role: "Input"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "Sum of home + away offensive ratings (pts per 100 poss)"
 
   - name: "combined_def_rating"
     role: "Input"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "Sum of home + away defensive ratings (pts per 100 poss)"
 
   - name: "avg_recent_total_5"
     role: "Input"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "Average total points in last 5 games for both teams"
 
   - name: "avg_recent_total_10"
     role: "Input"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "Average total points in last 10 games for both teams"
 
   - name: "home_recent_total_avg"
     role: "Input"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "Home team recent total average (home-specific)"
 
   - name: "combined_stl"
     role: "Input"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "Combined steals (both teams)"
 
   - name: "home_missing_top_scorers"
     role: "Input"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "Number of home team top-3 scorers missing (0-3)"
 
   - name: "away_missing_top_scorers"
     role: "Input"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "Number of away team top-3 scorers missing (0-3)"
 
   # --- Market Data (Inputs) ---
   - name: "Market_Line"
     role: "Input"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "Sportsbook over/under line for the game"
 
   - name: "Decimal_Odds"
     role: "Input"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "Decimal odds offered (e.g., 1.91 for standard -110)"
 
   - name: "Book_Tier"
     role: "Input"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "Book tier encoded: 1=sharp, 2=mid, 3=soft"
 
   # --- Actuals (for grading) ---
@@ -176,31 +176,31 @@ measures:
   - name: "Predicted_Total"
     role: "Derived"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "V1.6 Lasso model-predicted total points"
 
   - name: "P_Over"
     role: "Derived"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "Raw probability total exceeds Market_Line (normal CDF)"
 
   - name: "Calibrated_P"
     role: "Derived"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "Calibrated probability after PAVA isotonic adjustment"
 
   - name: "EV_Per_Dollar"
     role: "Derived"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "Expected value per dollar staked on the OVER"
 
   - name: "Kelly_Fraction"
     role: "Derived"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "Quarter-Kelly stake fraction (0 if negative EV)"
 
   # ==========================================================================
@@ -210,13 +210,13 @@ measures:
   - name: "Prediction_Error"
     role: "Derived"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "Signed prediction error (positive = over-predicted)"
 
   - name: "Abs_Error"
     role: "Derived"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "Absolute prediction error |predicted - actual|"
 
   - name: "Direction_Correct"
@@ -228,7 +228,7 @@ measures:
   - name: "Brier_Component"
     role: "Derived"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "Per-game Brier score component (Calibrated_P - outcome)^2"
 
   - name: "Confidence_Bucket"
@@ -274,7 +274,7 @@ measures:
   - name: "Revenue_Share"
     role: "Derived"
     data_type: "F64"
-    aggregation: "WeightedAverage"
+    aggregation: "Sum"
     description: "This game's profit as share of total portfolio profit"
 
 # =============================================================================
@@ -499,30 +499,11 @@ calibration_maps:
 # LOOKUP TABLES — Book tier classification
 # =============================================================================
 
-lookup_tables:
-  - name: "book_tiers"
-    description: "Sportsbook tier classification (sharp/mid/soft)"
-    keys: ["book_name"]
-    value_column: "tier"
-    entries:
-      # Sharp tier — consensus benchmark books
-      - { book_name: "pinnacle", tier: 1 }
-      - { book_name: "circa", tier: 1 }
-      - { book_name: "bookmaker", tier: 1 }
-      # Mid tier — decent lines, some lag
-      - { book_name: "fanduel", tier: 2 }
-      - { book_name: "betrivers", tier: 2 }
-      - { book_name: "williamhill_us", tier: 2 }
-      - { book_name: "unibet", tier: 2 }
-      - { book_name: "superbook", tier: 2 }
-      # Soft tier — wider vig, slower line movement
-      - { book_name: "draftkings", tier: 3 }
-      - { book_name: "betmgm", tier: 3 }
-      - { book_name: "caesars", tier: 3 }
-      - { book_name: "pointsbetus", tier: 3 }
-      - { book_name: "bovada", tier: 3 }
-      - { book_name: "barstool", tier: 3 }
-      - { book_name: "fanatics", tier: 3 }
+lookup_tables: []
+  # Lookup tables removed — this cartridge's Game dimension has per-game leaf
+  # elements, so lookups by game don't add value. Book tier classification and
+  # playoff offset are expressed as inline formula logic or Input measures.
+  # Future: add season-level lookup tables once multi-key lookups are exercised.
 
 # =============================================================================
 # STATUS THRESHOLDS — Confidence bins + error severity
@@ -530,30 +511,27 @@ lookup_tables:
 
 status_thresholds:
   - name: "confidence_bins"
-    description: "Calibrated probability ranges mapped to confidence levels"
-    bins:
-      - { min: 0.50, max: 0.54, label: "Low", code: 1 }
-      - { min: 0.54, max: 0.58, label: "Moderate", code: 2 }
-      - { min: 0.58, max: 0.62, label: "Good", code: 3 }
-      - { min: 0.62, max: 0.66, label: "Strong", code: 4 }
-      - { min: 0.66, max: 1.00, label: "Very Strong", code: 5 }
+    bands:
+      - { label: "Low", max: 0.54 }
+      - { label: "Moderate", max: 0.58 }
+      - { label: "Good", max: 0.62 }
+      - { label: "Strong", max: 0.66 }
+      - { label: "Very Strong" }
 
   - name: "error_severity"
-    description: "Prediction error severity classification"
-    bins:
-      - { min: 0, max: 8, label: "Good", code: 1 }
-      - { min: 8, max: 15, label: "Moderate", code: 2 }
-      - { min: 15, max: 25, label: "Bad", code: 3 }
-      - { min: 25, max: 999, label: "Severe", code: 4 }
+    bands:
+      - { label: "Good", max: 8.0 }
+      - { label: "Moderate", max: 15.0 }
+      - { label: "Bad", max: 25.0 }
+      - { label: "Severe" }
 
   - name: "ev_thresholds"
-    description: "EV-based bet recommendation thresholds"
-    bins:
-      - { min: -1.0, max: 0.0, label: "No Bet (Negative EV)", code: 0 }
-      - { min: 0.0, max: 0.03, label: "Marginal (Skip)", code: 1 }
-      - { min: 0.03, max: 0.08, label: "Bet (Standard)", code: 2 }
-      - { min: 0.08, max: 0.15, label: "Strong Bet", code: 3 }
-      - { min: 0.15, max: 1.0, label: "Max Bet (Check Line)", code: 4 }
+    bands:
+      - { label: "No Bet", max: 0.0 }
+      - { label: "Marginal", max: 0.03 }
+      - { label: "Standard", max: 0.08 }
+      - { label: "Strong", max: 0.15 }
+      - { label: "Max Bet" }
 
 # =============================================================================
 # GOLDEN TESTS — Hand-computed expected values
@@ -694,5 +672,5 @@ golden_tests:
 # =============================================================================
 
 canonical_inputs:
+  source: "nba-totals.inputs.csv"
   columns: ["Scenario", "Version", "Time", "Game", "Measure", "value"]
-  csv_path: "nba-totals.inputs.csv"
