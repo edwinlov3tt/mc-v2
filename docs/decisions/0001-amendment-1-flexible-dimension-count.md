@@ -18,26 +18,33 @@ This was correct for Phase 1's marketing-finance proof domain (the Acme demo). E
 
 ### The problem
 
-Non-marketing domains don't have "Channel" and "Market":
+The rigid "exactly 6 named as Scenario/Version/Time/Channel/Market/Measure" rule was a Phase 1 simplification, not an architectural truth. Different domains have different natural dimensions:
 
-| Domain | Natural dimensions | Forced workaround |
+| Domain | Natural dimensions (all meaningful, not placeholders) | Count |
 |---|---|---|
-| Sports betting | Scenario, Version, Time, **Game**, Measure | Stuff "Game" into "Channel" or "Market"? Add a singleton "Market: All"? |
-| SaaS metrics | Scenario, Version, Time, **Product/Plan**, **Segment**, Measure | Which one is "Channel"? Which is "Market"? |
-| Sales pipeline | Scenario, Version, Time, **Rep**, **Stage**, Measure | Neither Rep nor Stage maps to Channel/Market |
-| Stock forecasting | Scenario, Version, Time, **Ticker**, **Sector**, Measure | Ticker ≠ Channel; Sector ≠ Market |
-| FP&A | Scenario, Version, Time, **Department**, **Entity**, Measure | Department isn't a Channel |
-| Demand planning | Scenario, Version, Time, **Product**, **Region**, Measure | Close to marketing, but not identical |
+| Marketing (Acme) | Scenario, Version, Time, **Channel**, **Market**, Measure | 6 |
+| Sports betting | Scenario, Version, Time, **League**, **Sportsbook**, **Game**, Measure | 7 |
+| SaaS metrics | Scenario, Version, Time, **Product**, **Segment**, Measure | 6 |
+| Sales pipeline | Scenario, Version, Time, **Rep**, **Stage**, Measure | 6 |
+| Stock forecasting | Scenario, Version, Time, **Ticker**, **Sector**, Measure | 6 |
+| FP&A | Scenario, Version, Time, **Department**, **Entity**, **Account**, Measure | 7 |
+| Demand planning | Scenario, Version, Time, **Product**, **Region**, Measure | 6 |
+| Simple forecast | Scenario, Version, Time, **KPI**, Measure | 5 |
 
-The NBA totals cartridge (the first real non-marketing model) has 5 natural dimensions: Scenario, Version, Time, Game, Measure. Forcing it to 6 means either:
-- A singleton placeholder dim (`Market: "All"`) that bloats every coordinate with a meaningless slot
-- Misusing a dim name ("Channel" holding game identifiers, confusing the LLM and the user)
+**The actual problem is NOT that domains have fewer than 6 dims — most have 6-7.** The problem is that the dims must be NAMED "Channel" and "Market" specifically, when:
+- A sportsbook is not a "Channel" (it's where lines are priced)
+- A league is not a "Market" (it's the sport/competition segment)
+- A Git-department is not a "Channel"
 
-Both are worse than just allowing 5 dims.
+Forcing domain-specific dims into marketing terminology confuses LLMs, users, and the schema-design skill. The fix: allow any dim names in the domain-specific positions, not just "Channel" and "Market."
+
+**Note (per Desktop review):** sports betting was initially framed as "has no Channel/Market equivalent." This was wrong. Sportsbook IS the channel (different lines per book = the channel your edge flows through); League IS the market segment (different sports/competitions). The domain has NATURAL dimensions — they're just named differently. The amendment is warranted because the naming rigidity is wrong, not because the dimension count is wrong.
 
 ### The fix
 
-**Relax from "exactly 6 in a fixed order" to "4 required + N domain-specific in a declared order."**
+**Relax from "exactly 6 named Scenario/Version/Time/Channel/Market/Measure" to "4 structural dims in fixed positions + 1-N domain-specific dims with user-chosen names."**
+
+Minimum 5 dims (4 structural + at least 1 domain). A Mosaic model without domain dimensions is a degenerate time series, not a planning model — the "multidimensional" in "multidimensional planning" requires at least one domain axis.
 
 ---
 
@@ -94,14 +101,17 @@ dimensions:
 
 ### Validation rules (replacing the old "exactly 6" check)
 
-1. **Minimum 4 dimensions.** (Scenario + Version + Time + Measure)
+1. **Minimum 5 dimensions.** (Scenario + Version + Time + at least 1 domain + Measure)
 2. **First dim must be `kind: "Scenario"`.** (Position 0)
 3. **Second dim must be `kind: "Version"`.** (Position 1)
 4. **Third dim must be `kind: "Time"`.** (Position 2)
 5. **Last dim must be `kind: "Measure"`.** (Last position, regardless of total count)
-6. **All dims between Time and Measure must be `kind: "Standard"`.** (Domain-specific dims)
-7. **Maximum 10 dimensions total.** (Practical limit to prevent pathological sparsity; lint warning at >7)
-8. **No duplicate dim names.** (Existing rule, unchanged)
+6. **At least one dim between Time and Measure.** (The domain-specific axis; what you're planning ABOUT)
+7. **All dims between Time and Measure must be `kind: "Standard"`.** (Domain-specific dims have user-chosen names)
+8. **Maximum 10 dimensions total.** (Practical limit to prevent pathological sparsity; lint warning at >7)
+9. **No duplicate dim names.** (Existing rule, unchanged)
+
+**The minimum-1-domain-dim rule:** a model with only Scenario/Version/Time/Measure is a time series, not a planning model. Mosaic's value is multidimensional consolidation, cross-coordinate reads, hierarchy rollups — none of which are useful without at least one entity/channel/market/product dimension to consolidate ACROSS. This makes "always multidimensional" an architectural invariant.
 
 ### What this changes in the kernel
 
@@ -118,13 +128,14 @@ Implementation options:
 **My recommendation: Option B for now (zero-cost for existing models; no kernel perf regression), with a note that Option A is the migration path if we ever need >6 dims to be first-class at the kernel level.**
 
 Option B means:
-- The model YAML validator accepts 4-10 dims
-- The compile step inserts synthetic singleton dims to pad to 6 (if the model has <6)
-- The kernel stays at fixed-6 internally (no CellCoordinate change, no perf regression)
+- The model YAML validator accepts 5-10 dims
+- The compile step inserts synthetic singleton dims to pad to `MAX_KERNEL_DIMS` (currently 6) if the model has fewer
+- The kernel stays at fixed-`MAX_KERNEL_DIMS` internally (no CellCoordinate change, no perf regression)
 - `mc model inspect` hides the synthetic dims from the user
 - Rules + goldens + CSV reference only the user-declared dims (the synthetics are invisible)
+- `MAX_KERNEL_DIMS` is a named workspace constant (currently 6); bumping to 8 or 10 later requires only the constant change + benchmark validation + test regeneration
 
-This is identical to what Acme does today if you declare a dim with one element — except the system does it for you instead of making you write `Channel: [{ name: "All" }]` in the YAML.
+This is identical to what Acme does today if you declare a dim with one element — except the system does it for you instead of making you write `Channel: [{ name: "All" }]` in the YAML. For models with MORE than `MAX_KERNEL_DIMS` dims, Option A (SmallVec or Vec CellCoordinate) becomes the migration path — but that's a separate future ADR, triggered by a real model needing >6 dims that synthetic padding can't handle.
 
 ---
 
@@ -185,7 +196,7 @@ No kernel changes (mc-core stays at 6-slot CellCoordinate). The flexibility is p
 
 | Code | Fires when |
 |---|---|
-| MC2060 | Model has fewer than 4 dimensions |
+| MC2060 | Model has fewer than 5 dimensions (need at least Scenario + Version + Time + 1 domain + Measure) |
 | MC2061 | First dimension is not `kind: "Scenario"` |
 | MC2062 | Second dimension is not `kind: "Version"` |
 | MC2063 | Third dimension is not `kind: "Time"` |
@@ -214,3 +225,5 @@ This is a purely model-layer change. The kernel (`mc-core`) continues to use 6-s
 The "exactly 6 dims" rule served its purpose in Phase 1: it simplified the kernel, prevented scope creep, and made the Acme demo self-contained. Now that non-marketing domains are being modeled (sports betting, SaaS, stocks), the rigidity is a liability rather than a feature. This amendment retires the rigidity while preserving the kernel's internal invariant (6-slot coordinates) through compile-time padding.
 
 **The LNM (Large Numbers Model) vision requires domain flexibility.** A planning substrate that can ONLY model things with exactly 6 dimensions named Scenario/Version/Time/Channel/Market/Measure isn't a substrate — it's a marketing-finance tool with delusions of generality. This amendment makes the generality real.
+
+**Cartridge composability note:** cartridges are self-contained, not composable. Each cartridge is a complete domain model with its own dimension set, fitted artifacts, recipes, and skills. You don't blend an NBA cartridge with an FP&A cartridge into one cube — they're separate models. The user picks one cartridge per workspace/cube. This is by design: dimensional intersections between unrelated domains produce pathological sparsity with no analytical value.
