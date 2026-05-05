@@ -44,7 +44,7 @@ use crate::hierarchy::Hierarchy;
 use crate::id::{CubeId, DimensionId, ElementId, PrincipalId, Revision};
 use crate::lock::{Lock, LockTable};
 use crate::permission::{capability, PermissionTable};
-use crate::rule::{eval_expr, expr_depth, Expr, Rule, RuleSet};
+use crate::rule::{eval_expr, expr_depth, CrossCoordRead, Expr, Rule, RuleSet};
 use crate::slice::{SliceBinding, SliceQuery, SliceResult, PHASE_1_SLICE_LIMIT};
 use crate::snapshot::Snapshot;
 use crate::store::HashMapStore;
@@ -454,7 +454,13 @@ impl Cube {
                 actual_reads.push((measure, cv.clone()));
                 Ok(cv.value)
             };
-            eval_expr(&rule_body, &mut lookup)?
+            // Cross-coordinate reads are resolved by the caller context.
+            // Phase 3E+: the Cube layer does not yet implement full
+            // cross-coordinate resolution; return Null for unresolved reads.
+            let mut cross_lookup = |_read: &CrossCoordRead| -> Result<ScalarValue, EngineError> {
+                Ok(ScalarValue::Null)
+            };
+            eval_expr(&rule_body, &mut lookup, &mut cross_lookup)?
         };
 
         // After eval, validate the declared-dep superset for THIS
@@ -1638,6 +1644,8 @@ fn top_level_expr_op(expr: &Expr) -> ExprOp {
         Expr::Mul(_, _) => ExprOp::Mul,
         Expr::Div(_, _) => ExprOp::Div,
         Expr::IfNull(_, _) => ExprOp::IfNull,
+        // Phase 3E+: new ops map to a generic trace label
+        _ => ExprOp::Const, // placeholder for trace rendering
     }
 }
 
@@ -1833,9 +1841,56 @@ fn validate_expr_well_typed(expr: &Expr, measure_dim: &Dimension) -> Result<(), 
         | Expr::Sub(a, b)
         | Expr::Mul(a, b)
         | Expr::Div(a, b)
-        | Expr::IfNull(a, b) => {
+        | Expr::IfNull(a, b)
+        | Expr::Gt(a, b)
+        | Expr::Lt(a, b)
+        | Expr::Gte(a, b)
+        | Expr::Lte(a, b)
+        | Expr::Eq(a, b)
+        | Expr::Neq(a, b)
+        | Expr::And(a, b)
+        | Expr::Or(a, b) => {
             validate_expr_well_typed(a, measure_dim)?;
             validate_expr_well_typed(b, measure_dim)?;
+            Ok(())
+        }
+        Expr::Not(a) | Expr::Abs(a) | Expr::Bucket(a, _) => {
+            validate_expr_well_typed(a, measure_dim)
+        }
+        Expr::If(a, b, c) | Expr::SafeDiv(a, b, c) | Expr::Clamp(a, b, c) => {
+            validate_expr_well_typed(a, measure_dim)?;
+            validate_expr_well_typed(b, measure_dim)?;
+            validate_expr_well_typed(c, measure_dim)?;
+            Ok(())
+        }
+        Expr::Min(args) | Expr::Max(args) | Expr::Coalesce(args) => {
+            for a in args {
+                validate_expr_well_typed(a, measure_dim)?;
+            }
+            Ok(())
+        }
+        Expr::ActualRef(m) | Expr::Prev(m) | Expr::Cumulative(m) => {
+            // Validate the measure reference exists
+            let _ = measure_dim
+                .element(*m)
+                .ok_or(EngineError::ElementNotFound(*m, measure_dim.id))?;
+            Ok(())
+        }
+        Expr::Lag(m, periods) | Expr::RollingAvg(m, periods) => {
+            let _ = measure_dim
+                .element(*m)
+                .ok_or(EngineError::ElementNotFound(*m, measure_dim.id))?;
+            validate_expr_well_typed(periods, measure_dim)?;
+            Ok(())
+        }
+        Expr::PeriodIndex => Ok(()),
+        Expr::Benchmark(_, key) | Expr::Lookup(_, key) => {
+            validate_expr_well_typed(key, measure_dim)
+        }
+        Expr::SumOver(_, m) => {
+            let _ = measure_dim
+                .element(*m)
+                .ok_or(EngineError::ElementNotFound(*m, measure_dim.id))?;
             Ok(())
         }
     }

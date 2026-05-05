@@ -185,5 +185,7 @@ fn expr_shape(e: &Expr, names: &BTreeMap<mc_core::ElementId, &str>) -> String {
         Expr::Mul(a, b) => format!("Mul({}, {})", expr_shape(a, names), expr_shape(b, names)),
         Expr::Div(a, b) => format!("Div({}, {})", expr_shape(a, names), expr_shape(b, names)),
         Expr::IfNull(a, b) => format!("IfNull({}, {})", expr_shape(a, names), expr_shape(b, names)),
+        // Phase 3E+: render using Debug for new variants
+        other => format!("{other:?}"),
     }
 }

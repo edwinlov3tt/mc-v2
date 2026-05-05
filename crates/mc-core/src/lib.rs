@@ -81,7 +81,9 @@ pub use lock::{ConflictKind, Lock, LockKind, LockTable, ReleaseError};
 pub use permission::{
     capability, CapabilitySet, Grant, PermissionTable, ScopeBinding, ScopePattern,
 };
-pub use rule::{eval_expr, expr_depth, CoordPattern, DependencyDecl, Expr, Rule, RuleSet, Scope};
+pub use rule::{
+    eval_expr, expr_depth, CoordPattern, CrossCoordRead, DependencyDecl, Expr, Rule, RuleSet, Scope,
+};
 pub use slice::{SliceBinding, SliceQuery, SliceResult, PHASE_1_SLICE_LIMIT};
 pub use snapshot::Snapshot;
 pub use store::HashMapStore;

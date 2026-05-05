@@ -838,8 +838,10 @@ fn compute_chain_depths(model: &ValidatedModel) -> BTreeMap<String, usize> {
 }
 
 fn collect_refs(body: &ParsedRuleBody, out: &mut std::collections::BTreeSet<String>) {
+    // Delegate to validate.rs's exhaustive walker via formula::contains_cross_coord
+    // pattern. We only need measure Ref names for chain depth calculation.
     match body {
-        ParsedRuleBody::Const(_) => {}
+        ParsedRuleBody::Const(_) | ParsedRuleBody::PeriodIndex(_) => {}
         ParsedRuleBody::Ref(r) => {
             out.insert(r.measure.clone());
         }
@@ -848,6 +850,58 @@ fn collect_refs(body: &ParsedRuleBody, out: &mut std::collections::BTreeSet<Stri
         ParsedRuleBody::Mul(b) => walk(&b.mul, out),
         ParsedRuleBody::Div(b) => walk(&b.div, out),
         ParsedRuleBody::IfNull(b) => walk(&b.if_null, out),
+        ParsedRuleBody::Gt(b)
+        | ParsedRuleBody::Lt(b)
+        | ParsedRuleBody::Gte(b)
+        | ParsedRuleBody::Lte(b)
+        | ParsedRuleBody::Eq(b)
+        | ParsedRuleBody::Neq(b)
+        | ParsedRuleBody::And(b)
+        | ParsedRuleBody::Or(b) => {
+            collect_refs(&b.left, out);
+            collect_refs(&b.right, out);
+        }
+        ParsedRuleBody::Not(b) | ParsedRuleBody::Abs(b) => collect_refs(&b.operand, out),
+        ParsedRuleBody::If(b) => {
+            collect_refs(&b.condition, out);
+            collect_refs(&b.then_branch, out);
+            collect_refs(&b.else_branch, out);
+        }
+        ParsedRuleBody::Min(b) | ParsedRuleBody::Max(b) | ParsedRuleBody::Coalesce(b) => {
+            for a in &b.args {
+                collect_refs(a, out);
+            }
+        }
+        ParsedRuleBody::SafeDiv(b) => {
+            collect_refs(&b.numerator, out);
+            collect_refs(&b.denominator, out);
+            collect_refs(&b.default, out);
+        }
+        ParsedRuleBody::Clamp(b) => {
+            collect_refs(&b.value, out);
+            collect_refs(&b.lo, out);
+            collect_refs(&b.hi, out);
+        }
+        ParsedRuleBody::ActualRef(b) => {
+            out.insert(b.measure.clone());
+        }
+        ParsedRuleBody::Prev(b) | ParsedRuleBody::Cumulative(b) => {
+            out.insert(b.measure.clone());
+        }
+        ParsedRuleBody::Lag(b) => {
+            out.insert(b.measure.clone());
+            collect_refs(&b.periods, out);
+        }
+        ParsedRuleBody::RollingAvg(b) => {
+            out.insert(b.measure.clone());
+            collect_refs(&b.window, out);
+        }
+        ParsedRuleBody::Benchmark(b) => collect_refs(&b.key_expr, out),
+        ParsedRuleBody::Lookup(b) => collect_refs(&b.key_expr, out),
+        ParsedRuleBody::Bucket(b) => collect_refs(&b.value, out),
+        ParsedRuleBody::SumOver(b) => {
+            out.insert(b.measure.clone());
+        }
     }
 }
 

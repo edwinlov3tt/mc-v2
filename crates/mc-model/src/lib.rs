@@ -61,10 +61,14 @@ pub use inspect::{inspect_json, inspect_text, inspect_text_with_diagnostics, Mod
 pub use lint::{lint, lint_with_file};
 pub use parse::parse;
 pub use schema::{
-    ParsedDimension, ParsedElement, ParsedFixture, ParsedGoldenTest, ParsedHierarchy,
-    ParsedHierarchyEdge, ParsedInlineRows, ParsedInputSet, ParsedMeasure, ParsedMetadata,
-    ParsedModel, ParsedRowCell, ParsedRule, ParsedRuleBody, ParsedRuleBodyForm, ParsedScalar,
-    ValidatedModel, ValidatedRule,
+    ParsedActualRefBody, ParsedBenchmark, ParsedBenchmarkRefBody, ParsedBinopBody,
+    ParsedBucketBody, ParsedClampBody, ParsedDimension, ParsedElement, ParsedFixture,
+    ParsedGoldenTest, ParsedHierarchy, ParsedHierarchyEdge, ParsedIfBody, ParsedInlineRows,
+    ParsedInputSet, ParsedLagBody, ParsedLookupRefBody, ParsedLookupTable, ParsedMeasure,
+    ParsedMeasureRefBody, ParsedMetadata, ParsedModel, ParsedRollingAvgBody, ParsedRowCell,
+    ParsedRule, ParsedRuleBody, ParsedRuleBodyForm, ParsedSafeDivBody, ParsedScalar,
+    ParsedStatusThreshold, ParsedSumOverBody, ParsedThresholdBand, ParsedUnaryBody,
+    ParsedVarargBody, ValidatedModel, ValidatedRule,
 };
 pub use validate::validate;
 

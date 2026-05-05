@@ -85,6 +85,12 @@ pub fn validate(parsed: ParsedModel) -> Result<ValidatedModel, Vec<Error>> {
     check_input_measures_have_no_rules(&parsed, &mut val_errors);
     check_rule_cycles(&parsed, &mut val_errors);
     check_golden_test_shape(&parsed, &mut val_errors);
+    // Phase 3E+: cross-coordinate and time-dimension checks
+    check_time_dimension_requirements(&parsed, &validated_rules, &mut val_errors);
+    check_actual_ref_requirements(&parsed, &validated_rules, &mut val_errors);
+    check_cross_coord_nesting(&validated_rules, &mut errors);
+    // Phase 3G: reference-data block validation
+    check_reference_data_blocks(&parsed, &mut val_errors);
 
     errors.extend(val_errors.into_iter().map(Error::Validation));
 
@@ -218,10 +224,31 @@ fn formula_error_to_parse_error(rule_name: &str, fe: formula::FormulaError) -> P
             offset: fe.offset,
             message: fe.message,
         },
-        // MC1004 is the catch-all (incl. unknown function calls per
-        // acceptance amendment #25). Any unrecognized code is treated
-        // as MC1004 for safety; in practice formula::parse only emits
-        // MC1003-MC1006.
+        "MC1007" => ParseError::FormulaUnknownFunction {
+            span,
+            rule_name,
+            offset: fe.offset,
+            message: fe.message,
+        },
+        "MC1008" => ParseError::FormulaWrongArgCount {
+            span,
+            rule_name,
+            offset: fe.offset,
+            message: fe.message,
+        },
+        "MC1009" => ParseError::FormulaActualRefNonIdentifier {
+            span,
+            rule_name,
+            offset: fe.offset,
+            message: fe.message,
+        },
+        "MC1013" => ParseError::FormulaCrossCoordNesting {
+            span,
+            rule_name,
+            offset: fe.offset,
+            message: fe.message,
+        },
+        // MC1004 is the catch-all for unexpected tokens.
         _ => ParseError::FormulaUnexpectedToken {
             span,
             rule_name,
@@ -324,7 +351,7 @@ fn check_dimension_kinds(parsed: &ParsedModel, errors: &mut Vec<ValidationError>
     let mut measure_count = 0;
     for d in &parsed.dimensions {
         match d.kind.as_str() {
-            "Standard" | "Measure" | "Scenario" | "Version" => {}
+            "Standard" | "Measure" | "Scenario" | "Version" | "Time" => {}
             other => errors.push(ValidationError::Schema {
                 message: format!("dim {:?}: unknown kind {:?}", d.name, other),
             }),
@@ -524,30 +551,99 @@ fn check_rules_reference_known_measures(
 }
 
 fn check_binop_arity(body: &ParsedRuleBody, rule_name: &str, errors: &mut Vec<ValidationError>) {
-    let (op_name, args) = match body {
-        ParsedRuleBody::Const(_) | ParsedRuleBody::Ref(_) => return,
-        ParsedRuleBody::Add(b) => ("add", &b.add),
-        ParsedRuleBody::Sub(b) => ("sub", &b.sub),
-        ParsedRuleBody::Mul(b) => ("mul", &b.mul),
-        ParsedRuleBody::Div(b) => ("div", &b.div),
-        ParsedRuleBody::IfNull(b) => ("if_null", &b.if_null),
+    let (op_name, args): (&str, Option<&[ParsedRuleBody]>) = match body {
+        ParsedRuleBody::Const(_) | ParsedRuleBody::Ref(_) | ParsedRuleBody::PeriodIndex(_) => {
+            return
+        }
+        ParsedRuleBody::Add(b) => ("add", Some(&b.add[..])),
+        ParsedRuleBody::Sub(b) => ("sub", Some(&b.sub[..])),
+        ParsedRuleBody::Mul(b) => ("mul", Some(&b.mul[..])),
+        ParsedRuleBody::Div(b) => ("div", Some(&b.div[..])),
+        ParsedRuleBody::IfNull(b) => ("if_null", Some(&b.if_null[..])),
+        // Phase 3E+ variants: recurse into children
+        ParsedRuleBody::Gt(b)
+        | ParsedRuleBody::Lt(b)
+        | ParsedRuleBody::Gte(b)
+        | ParsedRuleBody::Lte(b)
+        | ParsedRuleBody::Eq(b)
+        | ParsedRuleBody::Neq(b)
+        | ParsedRuleBody::And(b)
+        | ParsedRuleBody::Or(b) => {
+            check_binop_arity(&b.left, rule_name, errors);
+            check_binop_arity(&b.right, rule_name, errors);
+            return;
+        }
+        ParsedRuleBody::Not(b) | ParsedRuleBody::Abs(b) => {
+            check_binop_arity(&b.operand, rule_name, errors);
+            return;
+        }
+        ParsedRuleBody::If(b) => {
+            check_binop_arity(&b.condition, rule_name, errors);
+            check_binop_arity(&b.then_branch, rule_name, errors);
+            check_binop_arity(&b.else_branch, rule_name, errors);
+            return;
+        }
+        ParsedRuleBody::Min(b) | ParsedRuleBody::Max(b) | ParsedRuleBody::Coalesce(b) => {
+            for a in &b.args {
+                check_binop_arity(a, rule_name, errors);
+            }
+            return;
+        }
+        ParsedRuleBody::SafeDiv(b) => {
+            check_binop_arity(&b.numerator, rule_name, errors);
+            check_binop_arity(&b.denominator, rule_name, errors);
+            check_binop_arity(&b.default, rule_name, errors);
+            return;
+        }
+        ParsedRuleBody::Clamp(b) => {
+            check_binop_arity(&b.value, rule_name, errors);
+            check_binop_arity(&b.lo, rule_name, errors);
+            check_binop_arity(&b.hi, rule_name, errors);
+            return;
+        }
+        ParsedRuleBody::ActualRef(_)
+        | ParsedRuleBody::Prev(_)
+        | ParsedRuleBody::Cumulative(_)
+        | ParsedRuleBody::SumOver(_) => return,
+        ParsedRuleBody::Lag(b) => {
+            check_binop_arity(&b.periods, rule_name, errors);
+            return;
+        }
+        ParsedRuleBody::RollingAvg(b) => {
+            check_binop_arity(&b.window, rule_name, errors);
+            return;
+        }
+        ParsedRuleBody::Benchmark(b) => {
+            check_binop_arity(&b.key_expr, rule_name, errors);
+            return;
+        }
+        ParsedRuleBody::Lookup(b) => {
+            check_binop_arity(&b.key_expr, rule_name, errors);
+            return;
+        }
+        ParsedRuleBody::Bucket(b) => {
+            check_binop_arity(&b.value, rule_name, errors);
+            return;
+        }
     };
-    if args.len() != 2 {
-        errors.push(ValidationError::Schema {
-            message: format!(
-                "rule {rule_name:?}: {op_name} expects exactly 2 args, got {}",
-                args.len()
-            ),
-        });
-    }
-    for a in args {
-        check_binop_arity(a, rule_name, errors);
+    if let Some(args) = args {
+        if args.len() != 2 {
+            errors.push(ValidationError::Schema {
+                message: format!(
+                    "rule {rule_name:?}: {op_name} expects exactly 2 args, got {}",
+                    args.len()
+                ),
+            });
+        }
+        for a in args {
+            check_binop_arity(a, rule_name, errors);
+        }
     }
 }
 
 fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
     match body {
-        ParsedRuleBody::Const(_) => {}
+        ParsedRuleBody::Const(_) | ParsedRuleBody::PeriodIndex(_) => {}
         ParsedRuleBody::Ref(r) => {
             out.insert(r.measure.clone());
         }
@@ -556,6 +652,60 @@ fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
         ParsedRuleBody::Mul(b) => walk_args(&b.mul, out),
         ParsedRuleBody::Div(b) => walk_args(&b.div, out),
         ParsedRuleBody::IfNull(b) => walk_args(&b.if_null, out),
+        // Phase 3E: comparisons + logical
+        ParsedRuleBody::Gt(b)
+        | ParsedRuleBody::Lt(b)
+        | ParsedRuleBody::Gte(b)
+        | ParsedRuleBody::Lte(b)
+        | ParsedRuleBody::Eq(b)
+        | ParsedRuleBody::Neq(b)
+        | ParsedRuleBody::And(b)
+        | ParsedRuleBody::Or(b) => {
+            collect_body_refs(&b.left, out);
+            collect_body_refs(&b.right, out);
+        }
+        ParsedRuleBody::Not(b) | ParsedRuleBody::Abs(b) => collect_body_refs(&b.operand, out),
+        ParsedRuleBody::If(b) => {
+            collect_body_refs(&b.condition, out);
+            collect_body_refs(&b.then_branch, out);
+            collect_body_refs(&b.else_branch, out);
+        }
+        ParsedRuleBody::Min(b) | ParsedRuleBody::Max(b) | ParsedRuleBody::Coalesce(b) => {
+            for a in &b.args {
+                collect_body_refs(a, out);
+            }
+        }
+        ParsedRuleBody::SafeDiv(b) => {
+            collect_body_refs(&b.numerator, out);
+            collect_body_refs(&b.denominator, out);
+            collect_body_refs(&b.default, out);
+        }
+        ParsedRuleBody::Clamp(b) => {
+            collect_body_refs(&b.value, out);
+            collect_body_refs(&b.lo, out);
+            collect_body_refs(&b.hi, out);
+        }
+        // Cross-coordinate: the measure name IS a dependency
+        ParsedRuleBody::ActualRef(b) => {
+            out.insert(b.measure.clone());
+        }
+        ParsedRuleBody::Prev(b) | ParsedRuleBody::Cumulative(b) => {
+            out.insert(b.measure.clone());
+        }
+        ParsedRuleBody::Lag(b) => {
+            out.insert(b.measure.clone());
+            collect_body_refs(&b.periods, out);
+        }
+        ParsedRuleBody::RollingAvg(b) => {
+            out.insert(b.measure.clone());
+            collect_body_refs(&b.window, out);
+        }
+        ParsedRuleBody::Benchmark(b) => collect_body_refs(&b.key_expr, out),
+        ParsedRuleBody::Lookup(b) => collect_body_refs(&b.key_expr, out),
+        ParsedRuleBody::Bucket(b) => collect_body_refs(&b.value, out),
+        ParsedRuleBody::SumOver(b) => {
+            out.insert(b.measure.clone());
+        }
     }
 }
 
@@ -726,6 +876,417 @@ fn check_golden_test_shape(parsed: &ParsedModel, errors: &mut Vec<ValidationErro
                 ),
             }),
             _ => {}
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3E/3F: Time dimension + actual_ref + cross-coord nesting checks
+// ---------------------------------------------------------------------------
+
+/// Check if any rule body uses a time-series function (prev, lag, cumulative,
+/// rolling_avg, period_index).
+fn uses_time_series(body: &ParsedRuleBody) -> bool {
+    match body {
+        ParsedRuleBody::Prev(_)
+        | ParsedRuleBody::Lag(_)
+        | ParsedRuleBody::Cumulative(_)
+        | ParsedRuleBody::RollingAvg(_)
+        | ParsedRuleBody::PeriodIndex(_) => true,
+        ParsedRuleBody::Const(_) | ParsedRuleBody::Ref(_) => false,
+        ParsedRuleBody::Add(b) => b.add.iter().any(uses_time_series),
+        ParsedRuleBody::Sub(b) => b.sub.iter().any(uses_time_series),
+        ParsedRuleBody::Mul(b) => b.mul.iter().any(uses_time_series),
+        ParsedRuleBody::Div(b) => b.div.iter().any(uses_time_series),
+        ParsedRuleBody::IfNull(b) => b.if_null.iter().any(uses_time_series),
+        ParsedRuleBody::Gt(b)
+        | ParsedRuleBody::Lt(b)
+        | ParsedRuleBody::Gte(b)
+        | ParsedRuleBody::Lte(b)
+        | ParsedRuleBody::Eq(b)
+        | ParsedRuleBody::Neq(b)
+        | ParsedRuleBody::And(b)
+        | ParsedRuleBody::Or(b) => uses_time_series(&b.left) || uses_time_series(&b.right),
+        ParsedRuleBody::Not(b) | ParsedRuleBody::Abs(b) => uses_time_series(&b.operand),
+        ParsedRuleBody::If(b) => {
+            uses_time_series(&b.condition)
+                || uses_time_series(&b.then_branch)
+                || uses_time_series(&b.else_branch)
+        }
+        ParsedRuleBody::Min(b) | ParsedRuleBody::Max(b) | ParsedRuleBody::Coalesce(b) => {
+            b.args.iter().any(uses_time_series)
+        }
+        ParsedRuleBody::SafeDiv(b) => {
+            uses_time_series(&b.numerator)
+                || uses_time_series(&b.denominator)
+                || uses_time_series(&b.default)
+        }
+        ParsedRuleBody::Clamp(b) => {
+            uses_time_series(&b.value) || uses_time_series(&b.lo) || uses_time_series(&b.hi)
+        }
+        ParsedRuleBody::ActualRef(_) | ParsedRuleBody::SumOver(_) => false,
+        ParsedRuleBody::Benchmark(b) => uses_time_series(&b.key_expr),
+        ParsedRuleBody::Lookup(b) => uses_time_series(&b.key_expr),
+        ParsedRuleBody::Bucket(b) => uses_time_series(&b.value),
+    }
+}
+
+/// Check if any rule body uses actual_ref.
+fn uses_actual_ref(body: &ParsedRuleBody) -> bool {
+    match body {
+        ParsedRuleBody::ActualRef(_) => true,
+        ParsedRuleBody::Const(_) | ParsedRuleBody::Ref(_) | ParsedRuleBody::PeriodIndex(_) => false,
+        ParsedRuleBody::Add(b) => b.add.iter().any(uses_actual_ref),
+        ParsedRuleBody::Sub(b) => b.sub.iter().any(uses_actual_ref),
+        ParsedRuleBody::Mul(b) => b.mul.iter().any(uses_actual_ref),
+        ParsedRuleBody::Div(b) => b.div.iter().any(uses_actual_ref),
+        ParsedRuleBody::IfNull(b) => b.if_null.iter().any(uses_actual_ref),
+        ParsedRuleBody::Gt(b)
+        | ParsedRuleBody::Lt(b)
+        | ParsedRuleBody::Gte(b)
+        | ParsedRuleBody::Lte(b)
+        | ParsedRuleBody::Eq(b)
+        | ParsedRuleBody::Neq(b)
+        | ParsedRuleBody::And(b)
+        | ParsedRuleBody::Or(b) => uses_actual_ref(&b.left) || uses_actual_ref(&b.right),
+        ParsedRuleBody::Not(b) | ParsedRuleBody::Abs(b) => uses_actual_ref(&b.operand),
+        ParsedRuleBody::If(b) => {
+            uses_actual_ref(&b.condition)
+                || uses_actual_ref(&b.then_branch)
+                || uses_actual_ref(&b.else_branch)
+        }
+        ParsedRuleBody::Min(b) | ParsedRuleBody::Max(b) | ParsedRuleBody::Coalesce(b) => {
+            b.args.iter().any(uses_actual_ref)
+        }
+        ParsedRuleBody::SafeDiv(b) => {
+            uses_actual_ref(&b.numerator)
+                || uses_actual_ref(&b.denominator)
+                || uses_actual_ref(&b.default)
+        }
+        ParsedRuleBody::Clamp(b) => {
+            uses_actual_ref(&b.value) || uses_actual_ref(&b.lo) || uses_actual_ref(&b.hi)
+        }
+        ParsedRuleBody::Prev(_)
+        | ParsedRuleBody::Lag(_)
+        | ParsedRuleBody::Cumulative(_)
+        | ParsedRuleBody::RollingAvg(_)
+        | ParsedRuleBody::SumOver(_) => false,
+        ParsedRuleBody::Benchmark(b) => uses_actual_ref(&b.key_expr),
+        ParsedRuleBody::Lookup(b) => uses_actual_ref(&b.key_expr),
+        ParsedRuleBody::Bucket(b) => uses_actual_ref(&b.value),
+    }
+}
+
+/// MC2035: no Time dim but time-series functions used.
+/// MC2036: multiple Time dims.
+fn check_time_dimension_requirements(
+    parsed: &ParsedModel,
+    validated_rules: &[ValidatedRule],
+    errors: &mut Vec<ValidationError>,
+) {
+    let time_dim_count = parsed
+        .dimensions
+        .iter()
+        .filter(|d| d.kind == "Time")
+        .count();
+
+    // MC2036: multiple Time dims
+    if time_dim_count > 1 {
+        errors.push(ValidationError::Schema {
+            message: format!(
+                "model has {} Time dimensions; exactly one allowed (MC2036)",
+                time_dim_count
+            ),
+        });
+    }
+
+    // MC2035: time-series function used but no Time dim
+    if time_dim_count == 0 {
+        let has_time_series = validated_rules.iter().any(|r| uses_time_series(&r.body));
+        if has_time_series {
+            errors.push(ValidationError::Schema {
+                message: "time-series function (prev/lag/cumulative/rolling_avg/period_index) \
+                          used but no dimension with kind: \"Time\" declared (MC2035)"
+                    .into(),
+            });
+        }
+    }
+}
+
+/// MC2037: actual_ref used but no actuals_element on Scenario dim.
+fn check_actual_ref_requirements(
+    parsed: &ParsedModel,
+    validated_rules: &[ValidatedRule],
+    errors: &mut Vec<ValidationError>,
+) {
+    let has_actual_ref = validated_rules.iter().any(|r| uses_actual_ref(&r.body));
+    if !has_actual_ref {
+        return;
+    }
+
+    // Find the Scenario-kind dimension and check for actuals_element
+    let scenario_dims: Vec<&crate::schema::ParsedDimension> = parsed
+        .dimensions
+        .iter()
+        .filter(|d| d.kind == "Scenario")
+        .collect();
+
+    if scenario_dims.is_empty() {
+        errors.push(ValidationError::Schema {
+            message: "actual_ref used but no Scenario-kind dimension declared".into(),
+        });
+        return;
+    }
+
+    let has_actuals_element = scenario_dims.iter().any(|d| d.actuals_element.is_some());
+
+    if !has_actuals_element {
+        errors.push(ValidationError::Schema {
+            message: "actual_ref used but no actuals_element field declared on Scenario \
+                      dimension (MC2037)"
+                .into(),
+        });
+    }
+}
+
+/// MC1013: cross-coordinate function nesting.
+/// Rejects formulas where cross-coord functions appear nested inside each other.
+fn check_cross_coord_nesting(validated_rules: &[ValidatedRule], errors: &mut Vec<Error>) {
+    use crate::error::Span;
+    for r in validated_rules {
+        if let Some(msg) = find_cross_coord_nesting(&r.body) {
+            let span = Span {
+                file: None::<PathBuf>,
+                line: 0,
+                column: 0,
+            };
+            errors.push(Error::Parse(ParseError::FormulaCrossCoordNesting {
+                span,
+                rule_name: r.name.clone(),
+                offset: 0,
+                message: msg,
+            }));
+        }
+    }
+}
+
+/// Walk a rule body looking for nested cross-coordinate functions.
+/// Returns a diagnostic message if nesting is found.
+fn find_cross_coord_nesting(body: &ParsedRuleBody) -> Option<String> {
+    match body {
+        // Cross-coord functions: check if their arguments contain another cross-coord
+        ParsedRuleBody::ActualRef(_) => None, // leaf, bare identifier — can't nest
+        ParsedRuleBody::Prev(_) | ParsedRuleBody::Cumulative(_) => None, // leaf measure ref
+        ParsedRuleBody::Lag(b) => {
+            if crate::formula::contains_cross_coord(&b.periods) {
+                Some("cross-coordinate function nested inside lag() (MC1013)".into())
+            } else {
+                find_cross_coord_nesting(&b.periods)
+            }
+        }
+        ParsedRuleBody::RollingAvg(b) => {
+            if crate::formula::contains_cross_coord(&b.window) {
+                Some("cross-coordinate function nested inside rolling_avg() (MC1013)".into())
+            } else {
+                find_cross_coord_nesting(&b.window)
+            }
+        }
+        ParsedRuleBody::SumOver(_) => None, // leaf
+        // Non-cross-coord nodes: recurse into children
+        ParsedRuleBody::Const(_) | ParsedRuleBody::Ref(_) | ParsedRuleBody::PeriodIndex(_) => None,
+        ParsedRuleBody::Add(b) => walk_nesting_args(&b.add),
+        ParsedRuleBody::Sub(b) => walk_nesting_args(&b.sub),
+        ParsedRuleBody::Mul(b) => walk_nesting_args(&b.mul),
+        ParsedRuleBody::Div(b) => walk_nesting_args(&b.div),
+        ParsedRuleBody::IfNull(b) => walk_nesting_args(&b.if_null),
+        ParsedRuleBody::Gt(b)
+        | ParsedRuleBody::Lt(b)
+        | ParsedRuleBody::Gte(b)
+        | ParsedRuleBody::Lte(b)
+        | ParsedRuleBody::Eq(b)
+        | ParsedRuleBody::Neq(b)
+        | ParsedRuleBody::And(b)
+        | ParsedRuleBody::Or(b) => {
+            find_cross_coord_nesting(&b.left).or_else(|| find_cross_coord_nesting(&b.right))
+        }
+        ParsedRuleBody::Not(b) | ParsedRuleBody::Abs(b) => find_cross_coord_nesting(&b.operand),
+        ParsedRuleBody::If(b) => find_cross_coord_nesting(&b.condition)
+            .or_else(|| find_cross_coord_nesting(&b.then_branch))
+            .or_else(|| find_cross_coord_nesting(&b.else_branch)),
+        ParsedRuleBody::Min(b) | ParsedRuleBody::Max(b) | ParsedRuleBody::Coalesce(b) => {
+            b.args.iter().find_map(find_cross_coord_nesting)
+        }
+        ParsedRuleBody::SafeDiv(b) => find_cross_coord_nesting(&b.numerator)
+            .or_else(|| find_cross_coord_nesting(&b.denominator))
+            .or_else(|| find_cross_coord_nesting(&b.default)),
+        ParsedRuleBody::Clamp(b) => find_cross_coord_nesting(&b.value)
+            .or_else(|| find_cross_coord_nesting(&b.lo))
+            .or_else(|| find_cross_coord_nesting(&b.hi)),
+        ParsedRuleBody::Benchmark(b) => find_cross_coord_nesting(&b.key_expr),
+        ParsedRuleBody::Lookup(b) => find_cross_coord_nesting(&b.key_expr),
+        ParsedRuleBody::Bucket(b) => find_cross_coord_nesting(&b.value),
+    }
+}
+
+fn walk_nesting_args(args: &[ParsedRuleBody]) -> Option<String> {
+    args.iter().find_map(find_cross_coord_nesting)
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3G: Reference-data block validation
+// ---------------------------------------------------------------------------
+
+fn check_reference_data_blocks(parsed: &ParsedModel, errors: &mut Vec<ValidationError>) {
+    let dim_names: BTreeSet<&str> = parsed.dimensions.iter().map(|d| d.name.as_str()).collect();
+    let elem_by_dim: BTreeMap<&str, BTreeSet<&str>> = parsed
+        .dimensions
+        .iter()
+        .map(|d| {
+            let elems: BTreeSet<&str> = d.elements.iter().map(|e| e.name.as_str()).collect();
+            (d.name.as_str(), elems)
+        })
+        .collect();
+
+    // Collect all reference-data names for uniqueness check (MC2037)
+    let mut all_ref_names: BTreeMap<&str, &str> = BTreeMap::new(); // name → block type
+
+    for b in &parsed.benchmarks {
+        if let Some(existing) = all_ref_names.get(b.name.as_str()) {
+            errors.push(ValidationError::Schema {
+                message: format!(
+                    "duplicate reference-data name {:?} (already in {existing} block) (MC2037)",
+                    b.name
+                ),
+            });
+        } else {
+            all_ref_names.insert(&b.name, "benchmarks");
+        }
+
+        // MC2038: key_dimension must reference a declared dimension
+        if !dim_names.contains(b.key_dimension.as_str()) {
+            errors.push(ValidationError::Schema {
+                message: format!(
+                    "benchmark {:?}: key_dimension {:?} is not a declared dimension (MC2038)",
+                    b.name, b.key_dimension
+                ),
+            });
+        } else {
+            // MC2039: value keys must be valid elements in key dimension
+            if let Some(elements) = elem_by_dim.get(b.key_dimension.as_str()) {
+                for key in b.values.keys() {
+                    if !elements.contains(key.as_str()) {
+                        errors.push(ValidationError::Schema {
+                            message: format!(
+                                "benchmark {:?}: value key {:?} is not an element of dimension {:?} (MC2039)",
+                                b.name, key, b.key_dimension
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    for lt in &parsed.lookup_tables {
+        if let Some(existing) = all_ref_names.get(lt.name.as_str()) {
+            errors.push(ValidationError::Schema {
+                message: format!(
+                    "duplicate reference-data name {:?} (already in {existing} block) (MC2037)",
+                    lt.name
+                ),
+            });
+        } else {
+            all_ref_names.insert(&lt.name, "lookup_tables");
+        }
+
+        if !dim_names.contains(lt.key_dimension.as_str()) {
+            errors.push(ValidationError::Schema {
+                message: format!(
+                    "lookup_table {:?}: key_dimension {:?} is not a declared dimension (MC2038)",
+                    lt.name, lt.key_dimension
+                ),
+            });
+        } else if let Some(elements) = elem_by_dim.get(lt.key_dimension.as_str()) {
+            for key in lt.values.keys() {
+                if !elements.contains(key.as_str()) {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "lookup_table {:?}: value key {:?} is not an element of dimension {:?} (MC2039)",
+                            lt.name, key, lt.key_dimension
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    for st in &parsed.status_thresholds {
+        if let Some(existing) = all_ref_names.get(st.name.as_str()) {
+            errors.push(ValidationError::Schema {
+                message: format!(
+                    "duplicate reference-data name {:?} (already in {existing} block) (MC2037)",
+                    st.name
+                ),
+            });
+        } else {
+            all_ref_names.insert(&st.name, "status_thresholds");
+        }
+
+        // MC2040: at least 2 bands
+        if st.bands.len() < 2 {
+            errors.push(ValidationError::Schema {
+                message: format!(
+                    "status_threshold {:?}: must have at least 2 bands, got {} (MC2040)",
+                    st.name,
+                    st.bands.len()
+                ),
+            });
+            continue;
+        }
+
+        // MC2042: last band must have no max (unbounded)
+        if let Some(last) = st.bands.last() {
+            if last.max.is_some() {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "status_threshold {:?}: last band {:?} must have no max (unbounded above) (MC2042)",
+                        st.name, last.label
+                    ),
+                });
+            }
+        }
+
+        // MC2041: bands must have ascending max values
+        let mut prev_max: Option<f64> = None;
+        for (i, band) in st.bands.iter().enumerate() {
+            if i == st.bands.len() - 1 {
+                break; // last band has no max
+            }
+            match band.max {
+                None => {
+                    if i < st.bands.len() - 1 {
+                        errors.push(ValidationError::Schema {
+                            message: format!(
+                                "status_threshold {:?}: non-last band {:?} must have a max value (MC2041)",
+                                st.name, band.label
+                            ),
+                        });
+                    }
+                }
+                Some(max) => {
+                    if let Some(pm) = prev_max {
+                        if max <= pm {
+                            errors.push(ValidationError::Schema {
+                                message: format!(
+                                    "status_threshold {:?}: band {:?} max ({}) must be greater than previous band max ({}) (MC2041)",
+                                    st.name, band.label, max, pm
+                                ),
+                            });
+                        }
+                    }
+                    prev_max = Some(max);
+                }
+            }
         }
     }
 }

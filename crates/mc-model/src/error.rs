@@ -48,10 +48,7 @@ impl std::fmt::Display for Span {
 /// | MC1005 | `FormulaExpectedExpression`   | 3D     |
 /// | MC1006 | `FormulaInvalidNumber`        | 3D     |
 ///
-/// Per Phase 3D acceptance amendment #25, **MC1004 covers both
-/// "unexpected token" and "unknown function call"** (e.g.,
-/// `body: "min(a, b)"`). MC1007 is intentionally NOT introduced; if
-/// Phase 3E+ adds more functions, MC1007 may be carved out then.
+/// Phase 3E carves out MC1007-MC1009 and MC1013 from the MC1004 catch-all.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ParseError {
@@ -109,6 +106,42 @@ pub enum ParseError {
         offset: usize,
         message: String,
     },
+
+    /// **MC1007** — Unknown function call (Phase 3E: split from MC1004).
+    #[error("rule {rule_name:?} formula at offset {offset}: {message}")]
+    FormulaUnknownFunction {
+        span: Span,
+        rule_name: String,
+        offset: usize,
+        message: String,
+    },
+
+    /// **MC1008** — Wrong argument count or chained non-associative comparison.
+    #[error("rule {rule_name:?} formula at offset {offset}: {message}")]
+    FormulaWrongArgCount {
+        span: Span,
+        rule_name: String,
+        offset: usize,
+        message: String,
+    },
+
+    /// **MC1009** — `actual_ref` called with non-identifier argument.
+    #[error("rule {rule_name:?} formula at offset {offset}: {message}")]
+    FormulaActualRefNonIdentifier {
+        span: Span,
+        rule_name: String,
+        offset: usize,
+        message: String,
+    },
+
+    /// **MC1013** — Cross-coordinate function nesting.
+    #[error("rule {rule_name:?} formula at offset {offset}: {message}")]
+    FormulaCrossCoordNesting {
+        span: Span,
+        rule_name: String,
+        offset: usize,
+        message: String,
+    },
 }
 
 impl ParseError {
@@ -121,6 +154,10 @@ impl ParseError {
             ParseError::FormulaUnexpectedToken { .. } => "MC1004",
             ParseError::FormulaExpectedExpression { .. } => "MC1005",
             ParseError::FormulaInvalidNumber { .. } => "MC1006",
+            ParseError::FormulaUnknownFunction { .. } => "MC1007",
+            ParseError::FormulaWrongArgCount { .. } => "MC1008",
+            ParseError::FormulaActualRefNonIdentifier { .. } => "MC1009",
+            ParseError::FormulaCrossCoordNesting { .. } => "MC1013",
         }
     }
 
@@ -129,12 +166,16 @@ impl ParseError {
     /// location.
     pub fn span(&self) -> &Span {
         match self {
-            ParseError::Syntax { span, .. } => span,
-            ParseError::SafeSubset { span, .. } => span,
-            ParseError::FormulaUnbalancedParen { span, .. } => span,
-            ParseError::FormulaUnexpectedToken { span, .. } => span,
-            ParseError::FormulaExpectedExpression { span, .. } => span,
-            ParseError::FormulaInvalidNumber { span, .. } => span,
+            ParseError::Syntax { span, .. }
+            | ParseError::SafeSubset { span, .. }
+            | ParseError::FormulaUnbalancedParen { span, .. }
+            | ParseError::FormulaUnexpectedToken { span, .. }
+            | ParseError::FormulaExpectedExpression { span, .. }
+            | ParseError::FormulaInvalidNumber { span, .. }
+            | ParseError::FormulaUnknownFunction { span, .. }
+            | ParseError::FormulaWrongArgCount { span, .. }
+            | ParseError::FormulaActualRefNonIdentifier { span, .. }
+            | ParseError::FormulaCrossCoordNesting { span, .. } => span,
         }
     }
 }

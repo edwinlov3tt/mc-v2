@@ -278,17 +278,51 @@ fn collect_self_refs(expr: &mc_core::Expr) -> std::collections::HashSet<mc_core:
     walk(expr, &mut out);
     fn walk(e: &mc_core::Expr, acc: &mut std::collections::HashSet<mc_core::ElementId>) {
         match e {
-            mc_core::Expr::Const(_) => {}
-            mc_core::Expr::SelfRef(m) => {
+            mc_core::Expr::Const(_) | mc_core::Expr::PeriodIndex => {}
+            mc_core::Expr::SelfRef(m)
+            | mc_core::Expr::ActualRef(m)
+            | mc_core::Expr::Prev(m)
+            | mc_core::Expr::Cumulative(m) => {
                 acc.insert(*m);
             }
             mc_core::Expr::Add(a, b)
             | mc_core::Expr::Sub(a, b)
             | mc_core::Expr::Mul(a, b)
             | mc_core::Expr::Div(a, b)
-            | mc_core::Expr::IfNull(a, b) => {
+            | mc_core::Expr::IfNull(a, b)
+            | mc_core::Expr::Gt(a, b)
+            | mc_core::Expr::Lt(a, b)
+            | mc_core::Expr::Gte(a, b)
+            | mc_core::Expr::Lte(a, b)
+            | mc_core::Expr::Eq(a, b)
+            | mc_core::Expr::Neq(a, b)
+            | mc_core::Expr::And(a, b)
+            | mc_core::Expr::Or(a, b) => {
                 walk(a, acc);
                 walk(b, acc);
+            }
+            mc_core::Expr::Not(a) | mc_core::Expr::Abs(a) | mc_core::Expr::Bucket(a, _) => {
+                walk(a, acc)
+            }
+            mc_core::Expr::If(a, b, c)
+            | mc_core::Expr::SafeDiv(a, b, c)
+            | mc_core::Expr::Clamp(a, b, c) => {
+                walk(a, acc);
+                walk(b, acc);
+                walk(c, acc);
+            }
+            mc_core::Expr::Min(args) | mc_core::Expr::Max(args) | mc_core::Expr::Coalesce(args) => {
+                for a in args {
+                    walk(a, acc);
+                }
+            }
+            mc_core::Expr::Lag(m, p) | mc_core::Expr::RollingAvg(m, p) => {
+                acc.insert(*m);
+                walk(p, acc);
+            }
+            mc_core::Expr::Benchmark(_, k) | mc_core::Expr::Lookup(_, k) => walk(k, acc),
+            mc_core::Expr::SumOver(_, m) => {
+                acc.insert(*m);
             }
         }
     }

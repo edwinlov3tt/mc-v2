@@ -49,22 +49,22 @@ fn mc1003_extra_close_paren() {
 }
 
 // ---------------------------------------------------------------------------
-// MC1004 — unexpected token (incl. unknown function call per amendment #25)
+// MC1007 — unknown function call (Phase 3E: split from MC1004)
 // ---------------------------------------------------------------------------
 
 #[test]
 fn mc1004_unknown_function_call() {
-    assert_codes_contain("unknown_function.yaml", "MC1004");
+    assert_codes_contain("unknown_function.yaml", "MC1007");
 }
 
 #[test]
-fn mc1004_if_null_arity_one_arg() {
-    assert_codes_contain("wrong_if_null_arity_one.yaml", "MC1004");
+fn mc1008_if_null_arity_one_arg() {
+    assert_codes_contain("wrong_if_null_arity_one.yaml", "MC1008");
 }
 
 #[test]
-fn mc1004_if_null_arity_three_args() {
-    assert_codes_contain("wrong_if_null_arity_three.yaml", "MC1004");
+fn mc1008_if_null_arity_three_args() {
+    assert_codes_contain("wrong_if_null_arity_three.yaml", "MC1008");
 }
 
 // ---------------------------------------------------------------------------
