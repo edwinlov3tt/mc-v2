@@ -1,13 +1,23 @@
 model_format_version: 1
 metadata:
-  name: "NBA_Totals_Prediction"
-  description: "NBA game-totals prediction model — demonstrates predict(), calibrate(), exp(), and norm_cdf()."
-  author: "Mosaic Phase 3H"
+  name: "NBA_Totals_V16_Lasso"
+  description: >
+    NBA game-totals prediction cartridge — V1.6 Lasso (alpha=0.7) with player
+    availability features. Production weights from claw-core Worker inference.
+    Includes 3 layers: Calculator (predict + price), Judge (grade + calibrate),
+    Investigator (diagnose + flag). Uses REAL production coefficients and
+    PAVA-fitted calibration from 1,312 OOD settled bets (EXP-016).
+  author: "Mosaic Sports-Betting Cartridge"
+  created: "2026-05-05"
+
+# =============================================================================
+# DIMENSIONS
+# =============================================================================
 
 dimensions:
   - name: "Scenario"
     kind: "Scenario"
-    description: "Scenario dimension"
+    description: "Scenario dimension (Base only for production use)"
     actuals_element: "Base"
     elements:
       - name: "Base"
@@ -22,219 +32,667 @@ dimensions:
 
   - name: "Time"
     kind: "Time"
-    description: "Game dates"
+    description: "Game dates (one period per game date)"
     granularity: "day"
-    time_anchor: "Game_1"
+    time_anchor: "2026_04_15"
     elements:
-      - name: "Game_1"
+      - name: "2026_04_15"
         period_start: "2026-04-15"
         period_end_exclusive: "2026-04-16"
-      - name: "Game_2"
+      - name: "2026_04_16"
         period_start: "2026-04-16"
         period_end_exclusive: "2026-04-17"
+      - name: "2026_04_17"
+        period_start: "2026-04-17"
+        period_end_exclusive: "2026-04-18"
+      - name: "2026_04_18"
+        period_start: "2026-04-18"
+        period_end_exclusive: "2026-04-19"
+      - name: "2026_04_19"
+        period_start: "2026-04-19"
+        period_end_exclusive: "2026-04-20"
 
-  - name: "Matchup"
+  - name: "Game"
     kind: "Standard"
-    description: "Individual NBA matchups"
+    description: "Individual NBA matchups (Away_at_Home format)"
     elements:
       - name: "LAL_at_BOS"
       - name: "GSW_at_MIL"
+      - name: "PHX_at_DEN"
+      - name: "NYK_at_MIA"
+      - name: "DAL_at_MIN"
+      - name: "CLE_at_ORL"
+      - name: "OKC_at_SAC"
+      - name: "PHI_at_IND"
+      - name: "MEM_at_NOP"
+      - name: "ATL_at_CHI"
+      - name: "LAC_at_POR"
+      - name: "SAS_at_HOU"
+      - name: "TOR_at_DET"
+      - name: "BKN_at_WAS"
+      - name: "UTA_at_CHA"
 
   - name: "Measure"
     kind: "Measure"
-    description: "Measure dimension"
+    description: "All input features, derived predictions, grading, and diagnostics"
     elements: []
 
+# =============================================================================
+# MEASURES — Layer 0 (Inputs)
+# =============================================================================
+
 measures:
+  # --- Model Features (Inputs) ---
   - name: "avg_pace"
     role: "Input"
     data_type: "F64"
-    aggregation: "Sum"
-    description: "Average pace (possessions per 48 min)"
+    aggregation: "WeightedAverage"
+    description: "Average pace (possessions/48 min) of both teams"
+
+  - name: "pace_delta"
+    role: "Input"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    description: "Pace differential (home_pace - away_pace)"
 
   - name: "combined_off_rating"
     role: "Input"
     data_type: "F64"
-    aggregation: "Sum"
-    description: "Combined offensive rating of both teams"
-
-  - name: "avg_recent_total_10"
-    role: "Input"
-    data_type: "F64"
-    aggregation: "Sum"
-    description: "Average total points in last 10 games for both teams"
+    aggregation: "WeightedAverage"
+    description: "Sum of home + away offensive ratings (pts per 100 poss)"
 
   - name: "combined_def_rating"
     role: "Input"
     data_type: "F64"
-    aggregation: "Sum"
-    description: "Combined defensive rating of both teams"
+    aggregation: "WeightedAverage"
+    description: "Sum of home + away defensive ratings (pts per 100 poss)"
+
+  - name: "avg_recent_total_5"
+    role: "Input"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    description: "Average total points in last 5 games for both teams"
+
+  - name: "avg_recent_total_10"
+    role: "Input"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    description: "Average total points in last 10 games for both teams"
+
+  - name: "home_recent_total_avg"
+    role: "Input"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    description: "Home team recent total average (home-specific)"
+
+  - name: "combined_stl"
+    role: "Input"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    description: "Combined steals (both teams)"
 
   - name: "home_missing_top_scorers"
     role: "Input"
     data_type: "F64"
-    aggregation: "Sum"
-    description: "Number of home team top scorers missing (0-3)"
+    aggregation: "WeightedAverage"
+    description: "Number of home team top-3 scorers missing (0-3)"
 
+  - name: "away_missing_top_scorers"
+    role: "Input"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    description: "Number of away team top-3 scorers missing (0-3)"
+
+  # --- Market Data (Inputs) ---
   - name: "Market_Line"
     role: "Input"
     data_type: "F64"
-    aggregation: "Sum"
+    aggregation: "WeightedAverage"
     description: "Sportsbook over/under line for the game"
+
+  - name: "Decimal_Odds"
+    role: "Input"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    description: "Decimal odds offered (e.g., 1.91 for standard -110)"
+
+  - name: "Book_Tier"
+    role: "Input"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    description: "Book tier encoded: 1=sharp, 2=mid, 3=soft"
+
+  # --- Actuals (for grading) ---
+  - name: "Actual_Total"
+    role: "Input"
+    data_type: "F64"
+    aggregation: "Sum"
+    description: "Actual combined final score (for post-game grading)"
+
+  # ==========================================================================
+  # LAYER 1 — Calculator (predict + price)
+  # ==========================================================================
 
   - name: "Predicted_Total"
     role: "Derived"
     data_type: "F64"
-    aggregation: "Sum"
-    description: "Model-predicted total points (from fitted Lasso model)"
+    aggregation: "WeightedAverage"
+    description: "V1.6 Lasso model-predicted total points"
 
-  - name: "Over_Probability"
+  - name: "P_Over"
+    role: "Derived"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    description: "Raw probability total exceeds Market_Line (normal CDF)"
+
+  - name: "Calibrated_P"
+    role: "Derived"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    description: "Calibrated probability after PAVA isotonic adjustment"
+
+  - name: "EV_Per_Dollar"
+    role: "Derived"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    description: "Expected value per dollar staked on the OVER"
+
+  - name: "Kelly_Fraction"
+    role: "Derived"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    description: "Quarter-Kelly stake fraction (0 if negative EV)"
+
+  # ==========================================================================
+  # LAYER 2 — Judge (grade + calibrate)
+  # ==========================================================================
+
+  - name: "Prediction_Error"
+    role: "Derived"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    description: "Signed prediction error (positive = over-predicted)"
+
+  - name: "Abs_Error"
+    role: "Derived"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    description: "Absolute prediction error |predicted - actual|"
+
+  - name: "Direction_Correct"
     role: "Derived"
     data_type: "F64"
     aggregation: "Sum"
-    description: "Probability the actual total exceeds the market line"
+    description: "1 if model predicted correct side vs market line, 0 otherwise"
 
-  - name: "Exp_Test"
+  - name: "Brier_Component"
+    role: "Derived"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    description: "Per-game Brier score component (Calibrated_P - outcome)^2"
+
+  - name: "Confidence_Bucket"
     role: "Derived"
     data_type: "F64"
     aggregation: "Sum"
-    description: "Test: exp(0) should be 1.0"
+    description: "Calibrated confidence bucket (1-5 scale)"
 
-  - name: "NormCdf_Test"
+  - name: "Profit_Units"
     role: "Derived"
     data_type: "F64"
     aggregation: "Sum"
-    description: "Test: norm_cdf(0, 0, 1) should be ~0.5"
+    description: "Profit in units if bet was placed (0 if no bet)"
+
+  # ==========================================================================
+  # LAYER 3 — Investigator (diagnose + flag)
+  # ==========================================================================
+
+  - name: "Overconfidence_Flag"
+    role: "Derived"
+    data_type: "F64"
+    aggregation: "Sum"
+    description: "1 if model was confident (>0.60) but wrong"
+
+  - name: "High_Pace_Miss"
+    role: "Derived"
+    data_type: "F64"
+    aggregation: "Sum"
+    description: "1 if game had high pace (>102) and large error (>15)"
+
+  - name: "Should_Bet"
+    role: "Derived"
+    data_type: "F64"
+    aggregation: "Sum"
+    description: "1 if EV > 3% and Calibrated_P > 0.56 (recommended bet)"
+
+  - name: "Error_Severity"
+    role: "Derived"
+    data_type: "F64"
+    aggregation: "Sum"
+    description: "Error severity bucket (1=good, 2=moderate, 3=bad, 4=severe)"
+
+  - name: "Revenue_Share"
+    role: "Derived"
+    data_type: "F64"
+    aggregation: "WeightedAverage"
+    description: "This game's profit as share of total portfolio profit"
+
+# =============================================================================
+# RULES
+# =============================================================================
 
 rules:
+  # --- Layer 1: Calculator ---
+
   - name: "predict_total"
     target_measure: "Predicted_Total"
     scope: "AllLeaves"
-    description: "Lasso model prediction of game total points"
-    body: "predict(\"nba_total_v1_lasso\", avg_pace, combined_off_rating, avg_recent_total_10, combined_def_rating, home_missing_top_scorers)"
+    description: "V1.6 Lasso prediction using 9 non-zero production coefficients"
+    body: "predict(\"nba_v16_lasso\", avg_pace, pace_delta, combined_off_rating, combined_def_rating, avg_recent_total_5, avg_recent_total_10, home_recent_total_avg, combined_stl, home_missing_top_scorers, away_missing_top_scorers)"
     declared_dependencies:
       - "avg_pace"
+      - "pace_delta"
       - "combined_off_rating"
-      - "avg_recent_total_10"
       - "combined_def_rating"
+      - "avg_recent_total_5"
+      - "avg_recent_total_10"
+      - "home_recent_total_avg"
+      - "combined_stl"
       - "home_missing_top_scorers"
+      - "away_missing_top_scorers"
 
-  - name: "over_prob"
-    target_measure: "Over_Probability"
+  - name: "calc_p_over"
+    target_measure: "P_Over"
     scope: "AllLeaves"
-    description: "P(total > market line) using normal CDF with model residual_std"
+    description: "P(total > line) = 1 - Phi((line - predicted) / sigma)"
     body: "1 - norm_cdf(Market_Line, Predicted_Total, 17.251)"
     declared_dependencies:
       - "Market_Line"
       - "Predicted_Total"
 
-  - name: "exp_test_rule"
-    target_measure: "Exp_Test"
+  - name: "calc_calibrated_p"
+    target_measure: "Calibrated_P"
     scope: "AllLeaves"
-    description: "Test rule: exp(0) = 1"
-    body: "exp(0)"
-    declared_dependencies: []
+    description: "Apply PAVA calibration map to raw probability"
+    body: "calibrate(P_Over, \"v16_calibration\")"
+    declared_dependencies:
+      - "P_Over"
 
-  - name: "normcdf_test_rule"
-    target_measure: "NormCdf_Test"
+  - name: "calc_ev"
+    target_measure: "EV_Per_Dollar"
     scope: "AllLeaves"
-    description: "Test rule: norm_cdf(0, 0, 1) ≈ 0.5"
-    body: "norm_cdf(0, 0, 1)"
-    declared_dependencies: []
+    description: "EV = P_win * (decimal - 1) - (1 - P_win)"
+    body: "Calibrated_P * (Decimal_Odds - 1) - (1 - Calibrated_P)"
+    declared_dependencies:
+      - "Calibrated_P"
+      - "Decimal_Odds"
+
+  - name: "calc_kelly"
+    target_measure: "Kelly_Fraction"
+    scope: "AllLeaves"
+    description: "Quarter-Kelly: f* = (b*p - q) / b * 0.25, floored at 0"
+    body: "if(EV_Per_Dollar > 0, safe_div(Calibrated_P * Decimal_Odds - 1, Decimal_Odds - 1, 0) * 0.25, 0)"
+    declared_dependencies:
+      - "EV_Per_Dollar"
+      - "Calibrated_P"
+      - "Decimal_Odds"
+
+  # --- Layer 2: Judge ---
+
+  - name: "calc_prediction_error"
+    target_measure: "Prediction_Error"
+    scope: "AllLeaves"
+    description: "Signed error — positive means model over-predicted"
+    body: "Predicted_Total - Actual_Total"
+    declared_dependencies:
+      - "Predicted_Total"
+      - "Actual_Total"
+
+  - name: "calc_abs_error"
+    target_measure: "Abs_Error"
+    scope: "AllLeaves"
+    description: "Absolute prediction error"
+    body: "abs(Predicted_Total - Actual_Total)"
+    declared_dependencies:
+      - "Predicted_Total"
+      - "Actual_Total"
+
+  - name: "calc_direction_correct"
+    target_measure: "Direction_Correct"
+    scope: "AllLeaves"
+    description: "1 if model and reality agree on over/under relative to market line"
+    body: "if((P_Over > 0.5) * (Actual_Total > Market_Line) + (P_Over <= 0.5) * (Actual_Total <= Market_Line) > 0, 1, 0)"
+    declared_dependencies:
+      - "P_Over"
+      - "Actual_Total"
+      - "Market_Line"
+
+  - name: "calc_brier"
+    target_measure: "Brier_Component"
+    scope: "AllLeaves"
+    description: "Brier score component for this game"
+    body: "(Calibrated_P - Direction_Correct) * (Calibrated_P - Direction_Correct)"
+    declared_dependencies:
+      - "Calibrated_P"
+      - "Direction_Correct"
+
+  - name: "calc_confidence_bucket"
+    target_measure: "Confidence_Bucket"
+    scope: "AllLeaves"
+    description: "Confidence bucket: 1=[0.50-0.54], 2=[0.54-0.58], 3=[0.58-0.62], 4=[0.62-0.66], 5=[0.66+]"
+    body: "if(Calibrated_P < 0.54, 1, if(Calibrated_P < 0.58, 2, if(Calibrated_P < 0.62, 3, if(Calibrated_P < 0.66, 4, 5))))"
+    declared_dependencies:
+      - "Calibrated_P"
+
+  - name: "calc_profit_units"
+    target_measure: "Profit_Units"
+    scope: "AllLeaves"
+    description: "Profit if Kelly says bet: win gets (decimal-1), loss gets -1"
+    body: "if(Kelly_Fraction > 0, if(Direction_Correct > 0.5, Decimal_Odds - 1, -1), 0)"
+    declared_dependencies:
+      - "Kelly_Fraction"
+      - "Direction_Correct"
+      - "Decimal_Odds"
+
+  # --- Layer 3: Investigator ---
+
+  - name: "calc_overconfidence_flag"
+    target_measure: "Overconfidence_Flag"
+    scope: "AllLeaves"
+    description: "Flag games where model was highly confident but wrong"
+    body: "if(Calibrated_P > 0.60, if(Direction_Correct < 0.5, 1, 0), 0)"
+    declared_dependencies:
+      - "Calibrated_P"
+      - "Direction_Correct"
+
+  - name: "calc_high_pace_miss"
+    target_measure: "High_Pace_Miss"
+    scope: "AllLeaves"
+    description: "Flag: high-pace game with large prediction miss"
+    body: "if(avg_pace > 102, if(Abs_Error > 15, 1, 0), 0)"
+    declared_dependencies:
+      - "avg_pace"
+      - "Abs_Error"
+
+  - name: "calc_should_bet"
+    target_measure: "Should_Bet"
+    scope: "AllLeaves"
+    description: "Recommended bet signal: meaningful EV and sufficient confidence"
+    body: "if(EV_Per_Dollar > 0.03, if(Calibrated_P > 0.56, 1, 0), 0)"
+    declared_dependencies:
+      - "EV_Per_Dollar"
+      - "Calibrated_P"
+
+  - name: "calc_error_severity"
+    target_measure: "Error_Severity"
+    scope: "AllLeaves"
+    description: "Error severity: 1=good(<8), 2=moderate(8-15), 3=bad(15-25), 4=severe(>25)"
+    body: "if(Abs_Error < 8, 1, if(Abs_Error < 15, 2, if(Abs_Error < 25, 3, 4)))"
+    declared_dependencies:
+      - "Abs_Error"
+
+  - name: "calc_revenue_share"
+    target_measure: "Revenue_Share"
+    scope: "AllLeaves"
+    description: "This game's profit as fraction of total portfolio profit"
+    body: "safe_div(Profit_Units, 15, 0)"
+    declared_dependencies:
+      - "Profit_Units"
+
+# =============================================================================
+# FITTED MODELS — Real V1.6 Lasso production coefficients
+# =============================================================================
 
 fitted_models:
-  - name: "nba_total_v1_lasso"
+  - name: "nba_v16_lasso"
     method: "linear"
-    intercept: 211.34
+    intercept: -435.176757
     coefficients:
-      - { feature: "avg_pace", weight: 3.016 }
-      - { feature: "combined_off_rating", weight: 0.548 }
-      - { feature: "avg_recent_total_10", weight: 0.331 }
-      - { feature: "combined_def_rating", weight: 0.602 }
-      - { feature: "home_missing_top_scorers", weight: -1.203 }
-    standardization:
-      method: "zscore"
-      params:
-        - { feature: "avg_pace", mean: 99.2, std: 4.7 }
-        - { feature: "combined_off_rating", mean: 113.4, std: 8.2 }
-        - { feature: "combined_def_rating", mean: 110.1, std: 7.8 }
-        - { feature: "avg_recent_total_10", mean: 222.5, std: 15.3 }
-        - { feature: "home_missing_top_scorers", mean: 0.12, std: 0.33 }
+      - { feature: "avg_pace", weight: 3.015916 }
+      - { feature: "pace_delta", weight: 0.0 }
+      - { feature: "combined_off_rating", weight: 0.548263 }
+      - { feature: "combined_def_rating", weight: 0.602389 }
+      - { feature: "avg_recent_total_5", weight: 0.064143 }
+      - { feature: "avg_recent_total_10", weight: 0.331426 }
+      - { feature: "home_recent_total_avg", weight: 0.046528 }
+      - { feature: "combined_stl", weight: -0.017643 }
+      - { feature: "home_missing_top_scorers", weight: -1.202871 }
+      - { feature: "away_missing_top_scorers", weight: -0.054086 }
+    standardization: null
     residual_std: 17.251
     metadata:
-      fitted_at: "2026-04-08T12:00:00Z"
+      fitted_at: "2026-04-11T00:00:00Z"
       algorithm: "lasso"
       alpha: 0.7
       n_train: 3685
       holdout_mae: 13.783
 
+# =============================================================================
+# CALIBRATION MAPS — PAVA from EXP-016 (1,312 OOD settled bets)
+# =============================================================================
+
 calibration_maps:
-  - name: "nba_totals_calibration_v1"
+  - name: "v16_calibration"
     method: "pava"
     points:
-      - { raw: 0.50, calibrated: 0.42 }
-      - { raw: 0.55, calibrated: 0.46 }
-      - { raw: 0.60, calibrated: 0.50 }
-      - { raw: 0.65, calibrated: 0.55 }
-      - { raw: 0.70, calibrated: 0.61 }
-      - { raw: 0.75, calibrated: 0.68 }
-      - { raw: 0.80, calibrated: 0.76 }
+      # These are the bet-side probabilities (not raw P_Over) calibrated against
+      # actual win rate. Source: exp016_fit_calibration.py on 2020-21 + 2021-22
+      # OOD data. The model shows slight overconfidence at high raw probs and
+      # slight underconfidence at low raw probs (conservative bias).
+      - { raw: 0.510, calibrated: 0.487 }
+      - { raw: 0.535, calibrated: 0.518 }
+      - { raw: 0.560, calibrated: 0.542 }
+      - { raw: 0.590, calibrated: 0.571 }
+      - { raw: 0.625, calibrated: 0.609 }
+      - { raw: 0.670, calibrated: 0.652 }
+      - { raw: 0.730, calibrated: 0.714 }
+      - { raw: 0.820, calibrated: 0.791 }
     metadata:
       fitted_at: "2026-04-30T01:29:14Z"
       sample_size: 1312
-      raw_brier: 0.2887
-      calibrated_brier: 0.2499
+      raw_brier: 0.2491
+      calibrated_brier: 0.2453
+      # source: EXP-016; ood_seasons: 2020-21, 2021-22; 8 buckets
+      # PAVA-enforced monotonicity; slight overconfidence correction
+
+# =============================================================================
+# LOOKUP TABLES — Book tier classification
+# =============================================================================
+
+lookup_tables:
+  - name: "book_tiers"
+    description: "Sportsbook tier classification (sharp/mid/soft)"
+    keys: ["book_name"]
+    value_column: "tier"
+    entries:
+      # Sharp tier — consensus benchmark books
+      - { book_name: "pinnacle", tier: 1 }
+      - { book_name: "circa", tier: 1 }
+      - { book_name: "bookmaker", tier: 1 }
+      # Mid tier — decent lines, some lag
+      - { book_name: "fanduel", tier: 2 }
+      - { book_name: "betrivers", tier: 2 }
+      - { book_name: "williamhill_us", tier: 2 }
+      - { book_name: "unibet", tier: 2 }
+      - { book_name: "superbook", tier: 2 }
+      # Soft tier — wider vig, slower line movement
+      - { book_name: "draftkings", tier: 3 }
+      - { book_name: "betmgm", tier: 3 }
+      - { book_name: "caesars", tier: 3 }
+      - { book_name: "pointsbetus", tier: 3 }
+      - { book_name: "bovada", tier: 3 }
+      - { book_name: "barstool", tier: 3 }
+      - { book_name: "fanatics", tier: 3 }
+
+# =============================================================================
+# STATUS THRESHOLDS — Confidence bins + error severity
+# =============================================================================
+
+status_thresholds:
+  - name: "confidence_bins"
+    description: "Calibrated probability ranges mapped to confidence levels"
+    bins:
+      - { min: 0.50, max: 0.54, label: "Low", code: 1 }
+      - { min: 0.54, max: 0.58, label: "Moderate", code: 2 }
+      - { min: 0.58, max: 0.62, label: "Good", code: 3 }
+      - { min: 0.62, max: 0.66, label: "Strong", code: 4 }
+      - { min: 0.66, max: 1.00, label: "Very Strong", code: 5 }
+
+  - name: "error_severity"
+    description: "Prediction error severity classification"
+    bins:
+      - { min: 0, max: 8, label: "Good", code: 1 }
+      - { min: 8, max: 15, label: "Moderate", code: 2 }
+      - { min: 15, max: 25, label: "Bad", code: 3 }
+      - { min: 25, max: 999, label: "Severe", code: 4 }
+
+  - name: "ev_thresholds"
+    description: "EV-based bet recommendation thresholds"
+    bins:
+      - { min: -1.0, max: 0.0, label: "No Bet (Negative EV)", code: 0 }
+      - { min: 0.0, max: 0.03, label: "Marginal (Skip)", code: 1 }
+      - { min: 0.03, max: 0.08, label: "Bet (Standard)", code: 2 }
+      - { min: 0.08, max: 0.15, label: "Strong Bet", code: 3 }
+      - { min: 0.15, max: 1.0, label: "Max Bet (Check Line)", code: 4 }
+
+# =============================================================================
+# GOLDEN TESTS — Hand-computed expected values
+# =============================================================================
 
 golden_tests:
-  # exp(0) = 1.0 — evaluated directly in eval_expr, no cross-coord
-  - name: "exp_zero_is_one"
+  # Game 1: LAL_at_BOS — model predicts OVER, actual confirms (correct)
+  # Features: avg_pace=100.8, combined_off=226.4, combined_def=222.8,
+  #           avg_recent_5=230.0, avg_recent_10=228.5, home_recent=231.0,
+  #           stl=15.2, home_miss=0, away_miss=0, pace_delta=0
+  # Predicted = -435.176757 + 3.015916*100.8 + 0*0 + 0.548263*226.4
+  #           + 0.602389*222.8 + 0.064143*230.0 + 0.331426*228.5
+  #           + 0.046528*231.0 + (-0.017643)*15.2 + (-1.202871)*0 + (-0.054086)*0
+  #           = -435.176757 + 304.004 + 0 + 124.127 + 134.212 + 14.753
+  #           + 75.731 + 10.748 + (-0.268) + 0 + 0
+  #           = 228.130
+  # Market_Line = 224.5, so P_Over = 1 - Phi((224.5 - 228.13) / 17.251)
+  #            = 1 - Phi(-0.2104) = 1 - 0.4167 = 0.5833
+  # Calibrate 0.5833: between raw=0.560 (cal=0.542) and raw=0.590 (cal=0.571)
+  #   t = (0.5833 - 0.560) / (0.590 - 0.560) = 0.777
+  #   cal = 0.542 + 0.777 * (0.571 - 0.542) = 0.542 + 0.0225 = 0.5645
+  # EV = 0.5645 * (1.91 - 1) - (1 - 0.5645) = 0.5645*0.91 - 0.4355 = 0.5137 - 0.4355 = 0.0782
+  # Kelly = (0.5645*1.91 - 1) / (1.91 - 1) * 0.25 = (1.0782 - 1)/0.91 * 0.25 = 0.0859*0.25 = 0.0215
+
+  - name: "lal_bos_predicted_total"
     coord:
       Scenario: "Base"
       Version: "Working"
-      Time: "Game_1"
-      Matchup: "LAL_at_BOS"
-      Measure: "Exp_Test"
+      Time: "2026_04_15"
+      Game: "LAL_at_BOS"
+      Measure: "Predicted_Total"
+    expect_within_epsilon:
+      value: 228.13
+      epsilon: 0.5
+
+  - name: "lal_bos_p_over"
+    coord:
+      Scenario: "Base"
+      Version: "Working"
+      Time: "2026_04_15"
+      Game: "LAL_at_BOS"
+      Measure: "P_Over"
+    expect_within_epsilon:
+      value: 0.583
+      epsilon: 0.01
+
+  - name: "lal_bos_ev_positive"
+    coord:
+      Scenario: "Base"
+      Version: "Working"
+      Time: "2026_04_15"
+      Game: "LAL_at_BOS"
+      Measure: "EV_Per_Dollar"
+    expect_within_epsilon:
+      value: 0.078
+      epsilon: 0.02
+
+  - name: "lal_bos_direction_correct"
+    coord:
+      Scenario: "Base"
+      Version: "Working"
+      Time: "2026_04_15"
+      Game: "LAL_at_BOS"
+      Measure: "Direction_Correct"
     expect: 1.0
 
-  - name: "normcdf_standard_at_zero"
+  # Game 2: GSW_at_MIL — model predicts UNDER correctly
+  # Features: avg_pace=98.5, combined_off=221.0, combined_def=224.6,
+  #           avg_recent_5=218.0, avg_recent_10=220.5, home_recent=222.0,
+  #           stl=16.5, home_miss=1, away_miss=0, pace_delta=1.2
+  # Predicted = -435.177 + 3.016*98.5 + 0*1.2 + 0.548*221.0 + 0.602*224.6
+  #           + 0.064*218.0 + 0.331*220.5 + 0.047*222.0 + (-0.018)*16.5
+  #           + (-1.203)*1 + (-0.054)*0
+  #           = -435.177 + 297.07 + 0 + 121.16 + 135.21 + 13.98 + 73.03
+  #           + 10.33 + (-0.29) + (-1.20) + 0
+  #           = 214.10
+  # Market_Line = 219.5, P_Over = 1 - Phi((219.5 - 214.1)/17.251) = 1 - Phi(0.313) = 1 - 0.623 = 0.377
+  # P_Over < 0.5, so model says UNDER. Actual_Total = 208 < 219.5, model correct.
+
+  - name: "gsw_mil_predicts_under"
     coord:
       Scenario: "Base"
       Version: "Working"
-      Time: "Game_1"
-      Matchup: "LAL_at_BOS"
-      Measure: "NormCdf_Test"
+      Time: "2026_04_15"
+      Game: "GSW_at_MIL"
+      Measure: "P_Over"
     expect_within_epsilon:
-      value: 0.5
-      epsilon: 0.0001
+      value: 0.377
+      epsilon: 0.02
+
+  - name: "gsw_mil_direction_correct"
+    coord:
+      Scenario: "Base"
+      Version: "Working"
+      Time: "2026_04_15"
+      Game: "GSW_at_MIL"
+      Measure: "Direction_Correct"
+    expect: 1.0
+
+  # Game 3: PHX_at_DEN — model is WRONG (predicts over, actual goes under)
+  # High pace game with large miss — triggers High_Pace_Miss flag
+  # avg_pace=103.2, Predicted ~ 236, Market_Line=232.5, P_Over ~ 0.58
+  # Actual_Total = 215 (under the line by 17.5 pts)
+
+  - name: "phx_den_overconfidence_flag"
+    coord:
+      Scenario: "Base"
+      Version: "Working"
+      Time: "2026_04_16"
+      Game: "PHX_at_DEN"
+      Measure: "Overconfidence_Flag"
+    expect: 1.0
+
+  - name: "phx_den_high_pace_miss"
+    coord:
+      Scenario: "Base"
+      Version: "Working"
+      Time: "2026_04_16"
+      Game: "PHX_at_DEN"
+      Measure: "High_Pace_Miss"
+    expect: 1.0
+
+  # Calibration test: raw ~0.631 maps to calibrated ~0.611 (between 0.625/0.609 and 0.670/0.652)
+  # Verifies PAVA piecewise-linear interpolation is working correctly
+  - name: "calibration_at_known_point"
+    coord:
+      Scenario: "Base"
+      Version: "Working"
+      Time: "2026_04_17"
+      Game: "NYK_at_MIA"
+      Measure: "Calibrated_P"
+    expect_within_epsilon:
+      value: 0.612
+      epsilon: 0.015
+
+# =============================================================================
+# CANONICAL INPUTS — loaded from external CSV
+# =============================================================================
 
 canonical_inputs:
-  columns: ["Scenario", "Version", "Time", "Matchup", "Measure", "value"]
-  inline:
-    rows:
-      # LAL_at_BOS Game_1: features at their standardization means
-      - ["Base", "Working", "Game_1", "LAL_at_BOS", "avg_pace", 99.2]
-      - ["Base", "Working", "Game_1", "LAL_at_BOS", "combined_off_rating", 113.4]
-      - ["Base", "Working", "Game_1", "LAL_at_BOS", "avg_recent_total_10", 222.5]
-      - ["Base", "Working", "Game_1", "LAL_at_BOS", "combined_def_rating", 110.1]
-      - ["Base", "Working", "Game_1", "LAL_at_BOS", "home_missing_top_scorers", 0.12]
-      - ["Base", "Working", "Game_1", "LAL_at_BOS", "Market_Line", 220.5]
-      # GSW_at_MIL Game_1
-      - ["Base", "Working", "Game_1", "GSW_at_MIL", "avg_pace", 99.2]
-      - ["Base", "Working", "Game_1", "GSW_at_MIL", "combined_off_rating", 113.4]
-      - ["Base", "Working", "Game_1", "GSW_at_MIL", "avg_recent_total_10", 222.5]
-      - ["Base", "Working", "Game_1", "GSW_at_MIL", "combined_def_rating", 110.1]
-      - ["Base", "Working", "Game_1", "GSW_at_MIL", "home_missing_top_scorers", 0.12]
-      - ["Base", "Working", "Game_1", "GSW_at_MIL", "Market_Line", 215.0]
-      # Game_2 data
-      - ["Base", "Working", "Game_2", "LAL_at_BOS", "avg_pace", 99.2]
-      - ["Base", "Working", "Game_2", "LAL_at_BOS", "combined_off_rating", 113.4]
-      - ["Base", "Working", "Game_2", "LAL_at_BOS", "avg_recent_total_10", 222.5]
-      - ["Base", "Working", "Game_2", "LAL_at_BOS", "combined_def_rating", 110.1]
-      - ["Base", "Working", "Game_2", "LAL_at_BOS", "home_missing_top_scorers", 0.12]
-      - ["Base", "Working", "Game_2", "LAL_at_BOS", "Market_Line", 220.5]
-      - ["Base", "Working", "Game_2", "GSW_at_MIL", "avg_pace", 99.2]
-      - ["Base", "Working", "Game_2", "GSW_at_MIL", "combined_off_rating", 113.4]
-      - ["Base", "Working", "Game_2", "GSW_at_MIL", "avg_recent_total_10", 222.5]
-      - ["Base", "Working", "Game_2", "GSW_at_MIL", "combined_def_rating", 110.1]
-      - ["Base", "Working", "Game_2", "GSW_at_MIL", "home_missing_top_scorers", 0.12]
-      - ["Base", "Working", "Game_2", "GSW_at_MIL", "Market_Line", 215.0]
+  columns: ["Scenario", "Version", "Time", "Game", "Measure", "value"]
+  csv_path: "nba-totals.inputs.csv"
