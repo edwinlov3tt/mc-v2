@@ -901,12 +901,18 @@ impl Cube {
                 }
             }
             CrossCoordRead::AnchorIndex => {
-                // Time anchor is the element marked with time_anchor metadata.
-                // For now, default to index 0 if no anchor is explicitly set.
-                // The model layer should set this via reference_data or cube config.
-                Ok(ScalarValue::F64(0.0))
+                // Per ADR-0014: time_anchor_index is set during compile from
+                // the Time dim's time_anchor field or --time-anchor CLI override.
+                match self.reference_data.time_anchor_index {
+                    Some(idx) => Ok(ScalarValue::F64(idx as f64)),
+                    None => Ok(ScalarValue::Null), // MC1017 should have fired at validate
+                }
             }
             CrossCoordRead::IsPast => {
+                let anchor = match self.reference_data.time_anchor_index {
+                    Some(a) => a as f64,
+                    None => return Ok(ScalarValue::Null),
+                };
                 let time_pos = match self.find_time_dimension_position() {
                     Some(p) => p,
                     None => return Ok(ScalarValue::Null),
@@ -917,10 +923,17 @@ impl Cube {
                     Some(i) => i as f64,
                     None => return Ok(ScalarValue::Null),
                 };
-                // anchor_index defaults to 0
-                Ok(ScalarValue::F64(if current_idx < 0.0 { 1.0 } else { 0.0 }))
+                Ok(ScalarValue::F64(if current_idx < anchor {
+                    1.0
+                } else {
+                    0.0
+                }))
             }
             CrossCoordRead::IsCurrent => {
+                let anchor = match self.reference_data.time_anchor_index {
+                    Some(a) => a as f64,
+                    None => return Ok(ScalarValue::Null),
+                };
                 let time_pos = match self.find_time_dimension_position() {
                     Some(p) => p,
                     None => return Ok(ScalarValue::Null),
@@ -931,7 +944,11 @@ impl Cube {
                     Some(i) => i as f64,
                     None => return Ok(ScalarValue::Null),
                 };
-                Ok(ScalarValue::F64(if current_idx == 0.0 { 1.0 } else { 0.0 }))
+                Ok(ScalarValue::F64(if current_idx == anchor {
+                    1.0
+                } else {
+                    0.0
+                }))
             }
             CrossCoordRead::IsFuture => {
                 let time_pos = match self.find_time_dimension_position() {
@@ -944,9 +961,21 @@ impl Cube {
                     Some(i) => i as f64,
                     None => return Ok(ScalarValue::Null),
                 };
-                Ok(ScalarValue::F64(if current_idx > 0.0 { 1.0 } else { 0.0 }))
+                let anchor = match self.reference_data.time_anchor_index {
+                    Some(a) => a as f64,
+                    None => return Ok(ScalarValue::Null),
+                };
+                Ok(ScalarValue::F64(if current_idx > anchor {
+                    1.0
+                } else {
+                    0.0
+                }))
             }
             CrossCoordRead::PeriodsSinceAnchor => {
+                let anchor = match self.reference_data.time_anchor_index {
+                    Some(a) => a as f64,
+                    None => return Ok(ScalarValue::Null),
+                };
                 let time_pos = match self.find_time_dimension_position() {
                     Some(p) => p,
                     None => return Ok(ScalarValue::Null),
@@ -954,7 +983,7 @@ impl Cube {
                 let time_dim = &self.dimensions[time_pos];
                 let current_element = target_coord.element_at(time_pos);
                 match time_dim.element_index.get(&current_element).copied() {
-                    Some(i) => Ok(ScalarValue::F64(i as f64)), // anchor=0
+                    Some(i) => Ok(ScalarValue::F64(i as f64 - anchor)),
                     None => Ok(ScalarValue::Null),
                 }
             }
@@ -2029,6 +2058,9 @@ pub struct ReferenceData {
     pub lookup_tables: ahash::AHashMap<String, ahash::AHashMap<String, f64>>,
     /// Named status threshold bands: name → ordered bands.
     pub thresholds: ahash::AHashMap<String, Vec<ThresholdBand>>,
+    /// Time anchor index (position of the time_anchor element in the Time dim).
+    /// None = no anchor configured; anchor functions should return Null / fire MC1017.
+    pub time_anchor_index: Option<usize>,
 }
 
 /// One band within a status threshold. Ordered from lowest to highest; the

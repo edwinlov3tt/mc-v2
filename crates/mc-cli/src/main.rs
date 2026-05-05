@@ -214,7 +214,12 @@ fn run_model(cmd: ModelCommand) {
         ModelVerb::Validate => run_validate(&cmd.path, cmd.format),
         ModelVerb::Inspect => run_inspect(&cmd.path, cmd.format),
         ModelVerb::Lint => run_lint(&cmd.path, cmd.format, cmd.deny_warnings),
-        ModelVerb::Test => run_test(&cmd.path, cmd.format, cmd.fixture_filter.as_deref()),
+        ModelVerb::Test => run_test(
+            &cmd.path,
+            cmd.format,
+            cmd.fixture_filter.as_deref(),
+            cmd.time_anchor.as_deref(),
+        ),
     }
 }
 
@@ -313,7 +318,12 @@ fn run_lint(path: &str, format: OutputFormat, deny_warnings: bool) {
     }
 }
 
-fn run_test(path: &str, format: OutputFormat, fixture_filter: Option<&str>) {
+fn run_test(
+    path: &str,
+    format: OutputFormat,
+    fixture_filter: Option<&str>,
+    time_anchor: Option<&str>,
+) {
     // Phase 3C: load + resolve_inputs + compile, then apply
     // canonical_inputs and run goldens against the model-owned data.
     // Generic flow — no metadata.name special cases.
@@ -344,6 +354,33 @@ fn run_test(path: &str, format: OutputFormat, fixture_filter: Option<&str>) {
     };
     let mut cube = compiled.cube;
     let principal = compiled.root_principal;
+
+    // Per ADR-0014 Decision 4: CLI --time-anchor overrides the YAML default.
+    if let Some(anchor_name) = time_anchor {
+        // Find the element index first (immutable borrow), then assign (mutable).
+        let anchor_idx = cube.dimensions().iter().find_map(|dim| {
+            dim.elements.iter().enumerate().find_map(|(idx, elem)| {
+                if elem.name == anchor_name {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+        });
+        match anchor_idx {
+            Some(idx) => cube.reference_data.time_anchor_index = Some(idx),
+            None => {
+                print_compile_error(
+                    path,
+                    &format!(
+                        "--time-anchor '{anchor_name}' does not match any element in any dimension"
+                    ),
+                    format,
+                );
+                std::process::exit(1);
+            }
+        }
+    }
 
     // Apply canonical_inputs (no-op if the model didn't declare any).
     if let Err(e) = apply_canonical_inputs(&mut cube, &compiled.refs, principal, &inputs) {

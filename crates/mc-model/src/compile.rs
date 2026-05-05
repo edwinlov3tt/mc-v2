@@ -311,6 +311,24 @@ pub fn compile(validated: ValidatedModel) -> Result<CompiledCube, EngineError> {
             .insert(st.name.clone(), bands);
     }
 
+    // Populate time_anchor_index from the Time-kind dimension's time_anchor field.
+    // The Time dim is identified by kind: "Time" (or kind: "Standard" with name "Time").
+    for dim in &validated.parsed.dimensions {
+        let is_time = dim.kind == "Time";
+        if is_time {
+            if let Some(ref anchor_name) = dim.time_anchor {
+                // Find the element index that matches the anchor name
+                for (idx, elem) in dim.elements.iter().enumerate() {
+                    if elem.name == *anchor_name {
+                        cube.reference_data.time_anchor_index = Some(idx);
+                        break;
+                    }
+                }
+            }
+            break; // Only one Time-kind dim per ADR-0014
+        }
+    }
+
     Ok(CompiledCube {
         cube,
         root_principal,
