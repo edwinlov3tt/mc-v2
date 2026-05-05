@@ -909,6 +909,19 @@ fn collect_refs(body: &ParsedRuleBody, out: &mut std::collections::BTreeSet<Stri
         ParsedRuleBody::SumOver(b) => {
             out.insert(b.measure.clone());
         }
+        // Phase 3H
+        ParsedRuleBody::Predict(b) => {
+            for f in &b.features {
+                collect_refs(f, out);
+            }
+        }
+        ParsedRuleBody::Calibrate(b) => collect_refs(&b.value, out),
+        ParsedRuleBody::Exp(b) => collect_refs(&b.operand, out),
+        ParsedRuleBody::NormCdf(b) => {
+            collect_refs(&b.x, out);
+            collect_refs(&b.mu, out);
+            collect_refs(&b.sigma, out);
+        }
     }
 }
 

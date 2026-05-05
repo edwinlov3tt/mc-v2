@@ -331,6 +331,18 @@ fn collect_self_refs(expr: &mc_core::Expr) -> std::collections::HashSet<mc_core:
             mc_core::Expr::SumOver(_, m) => {
                 acc.insert(*m);
             }
+            // Phase 3H
+            mc_core::Expr::Predict(_, features) => {
+                for f in features {
+                    walk(f, acc);
+                }
+            }
+            mc_core::Expr::Calibrate(v, _) | mc_core::Expr::Exp(v) => walk(v, acc),
+            mc_core::Expr::NormCdf(x, mu, sigma) => {
+                walk(x, acc);
+                walk(mu, acc);
+                walk(sigma, acc);
+            }
         }
     }
     out

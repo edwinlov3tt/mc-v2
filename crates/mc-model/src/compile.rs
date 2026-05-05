@@ -547,6 +547,29 @@ fn compile_expr(
             let measure = lookup_measure_id(refs, validated, &b.measure)?;
             Ok(Expr::SumOver(dim_id, measure))
         }
+        // Phase 3H: fitted-model evaluation
+        ParsedRuleBody::Predict(b) => {
+            let features = b
+                .features
+                .iter()
+                .map(|f| compile_expr(f, refs, validated).map(Box::new))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Expr::Predict(b.model_id.clone(), features))
+        }
+        ParsedRuleBody::Calibrate(b) => {
+            let v = compile_expr(&b.value, refs, validated)?;
+            Ok(Expr::Calibrate(Box::new(v), b.map_id.clone()))
+        }
+        ParsedRuleBody::Exp(b) => {
+            let inner = compile_expr(&b.operand, refs, validated)?;
+            Ok(Expr::Exp(Box::new(inner)))
+        }
+        ParsedRuleBody::NormCdf(b) => {
+            let x = compile_expr(&b.x, refs, validated)?;
+            let mu = compile_expr(&b.mu, refs, validated)?;
+            let sigma = compile_expr(&b.sigma, refs, validated)?;
+            Ok(Expr::NormCdf(Box::new(x), Box::new(mu), Box::new(sigma)))
+        }
     }
 }
 

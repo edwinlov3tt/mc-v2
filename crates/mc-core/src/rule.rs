@@ -103,6 +103,16 @@ pub enum Expr {
     Lookup(String, Box<Expr>),
     Bucket(Box<Expr>, String),
     SumOver(crate::id::DimensionId, ElementId),
+
+    // -- Phase 3H: Fitted-model evaluation --
+    /// `predict("model_name", feature1, feature2, ...)`
+    Predict(String, Vec<Box<Expr>>),
+    /// `calibrate(value, "map_name")`
+    Calibrate(Box<Expr>, String),
+    /// `exp(x)` — Euler's number raised to the power of x
+    Exp(Box<Expr>),
+    /// `norm_cdf(x, mu, sigma)` — normal distribution CDF
+    NormCdf(Box<Expr>, Box<Expr>, Box<Expr>),
 }
 
 #[derive(Debug)]
@@ -304,6 +314,19 @@ fn collect_self_refs(expr: &Expr) -> AHashSet<ElementId> {
             Expr::SumOver(_, m) => {
                 out.insert(*m);
             }
+            // Phase 3H
+            Expr::Predict(_, features) => {
+                for f in features {
+                    walk(f, out);
+                }
+            }
+            Expr::Calibrate(v, _) => walk(v, out),
+            Expr::Exp(a) => walk(a, out),
+            Expr::NormCdf(x, mu, sigma) => {
+                walk(x, out);
+                walk(mu, out);
+                walk(sigma, out);
+            }
         }
     }
     walk(expr, &mut out);
@@ -350,6 +373,10 @@ pub fn expr_depth(expr: &Expr) -> u32 {
         }
         Expr::Lag(_, periods) | Expr::RollingAvg(_, periods) => 1 + expr_depth(periods),
         Expr::Benchmark(_, key) | Expr::Lookup(_, key) => 1 + expr_depth(key),
+        // Phase 3H
+        Expr::Predict(_, features) => 1 + features.iter().map(|f| expr_depth(f)).max().unwrap_or(0),
+        Expr::Calibrate(v, _) | Expr::Exp(v) => 1 + expr_depth(v),
+        Expr::NormCdf(x, mu, sigma) => 1 + expr_depth(x).max(expr_depth(mu)).max(expr_depth(sigma)),
     }
 }
 
@@ -674,6 +701,68 @@ where
             dimension: *dim,
             measure: *measure,
         }),
+        // -- Phase 3H: Fitted-model evaluation --
+        Expr::Predict(model_id, feature_exprs) => {
+            let mut features = Vec::with_capacity(feature_exprs.len());
+            for fe in feature_exprs {
+                let v = eval_expr(fe, lookup_self, lookup_cross)?;
+                if v.is_null() {
+                    return Ok(ScalarValue::Null); // Null-poisoning
+                }
+                features.push(v);
+            }
+            lookup_cross(&CrossCoordRead::PredictModel {
+                model_id: model_id.clone(),
+                features,
+            })
+        }
+        Expr::Calibrate(value_expr, map_id) => {
+            let v = eval_expr(value_expr, lookup_self, lookup_cross)?;
+            if v.is_null() {
+                return Ok(ScalarValue::Null); // Null-poisoning
+            }
+            lookup_cross(&CrossCoordRead::CalibrateMap {
+                map_id: map_id.clone(),
+                value: v,
+            })
+        }
+        Expr::Exp(inner) => {
+            let v = eval_expr(inner, lookup_self, lookup_cross)?;
+            match to_f64_opt(&v) {
+                None => Ok(ScalarValue::Null),
+                Some(x) => Ok(finite_or_null(x.exp())),
+            }
+        }
+        Expr::NormCdf(x_expr, mu_expr, sigma_expr) => {
+            let xv = eval_expr(x_expr, lookup_self, lookup_cross)?;
+            let muv = eval_expr(mu_expr, lookup_self, lookup_cross)?;
+            let sv = eval_expr(sigma_expr, lookup_self, lookup_cross)?;
+            match (to_f64_opt(&xv), to_f64_opt(&muv), to_f64_opt(&sv)) {
+                (Some(x), Some(mu), Some(sigma)) => {
+                    if sigma <= 0.0 {
+                        Ok(ScalarValue::Null)
+                    } else {
+                        Ok(ScalarValue::F64(norm_cdf_compute(x, mu, sigma)))
+                    }
+                }
+                _ => Ok(ScalarValue::Null),
+            }
+        }
+    }
+}
+
+/// Abramowitz & Stegun 26.2.17 polynomial approximation for the
+/// standard normal CDF. Accuracy ~7.5e-8, zero deps.
+fn norm_cdf_compute(x: f64, mu: f64, sigma: f64) -> f64 {
+    let z = (x - mu) / sigma;
+    let t = 1.0 / (1.0 + 0.2316419 * z.abs());
+    let d = 0.3989422804014327 * (-z * z / 2.0).exp();
+    let p =
+        d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.8212560 + t * 1.330274))));
+    if z > 0.0 {
+        1.0 - p
+    } else {
+        p
     }
 }
 
@@ -706,6 +795,14 @@ pub enum CrossCoordRead {
         dimension: crate::id::DimensionId,
         measure: ElementId,
     },
+    // -- Phase 3H: Fitted-model evaluation --
+    /// Evaluate a fitted model by name with the given feature values.
+    PredictModel {
+        model_id: String,
+        features: Vec<ScalarValue>,
+    },
+    /// Apply a calibration map to a raw value.
+    CalibrateMap { map_id: String, value: ScalarValue },
     // -- Phase 3F.1: Anchor functions --
     /// Period index of the time_anchor element.
     AnchorIndex,
@@ -1714,5 +1811,160 @@ mod tests {
         };
         let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut cross).unwrap();
         assert_eq!(v.as_f64(), Some(7.0));
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 3H: Fitted-model evaluation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn eval_exp_zero() {
+        let body = Expr::Exp(Box::new(Expr::Const(ScalarValue::F64(0.0))));
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert!((v.as_f64().unwrap() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn eval_exp_one() {
+        let body = Expr::Exp(Box::new(Expr::Const(ScalarValue::F64(1.0))));
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert!((v.as_f64().unwrap() - std::f64::consts::E).abs() < 1e-9);
+    }
+
+    #[test]
+    fn eval_exp_negative() {
+        let body = Expr::Exp(Box::new(Expr::Const(ScalarValue::F64(-1.0))));
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert!((v.as_f64().unwrap() - 0.367879441171442).abs() < 1e-9);
+    }
+
+    #[test]
+    fn eval_exp_null_returns_null() {
+        let body = Expr::Exp(Box::new(Expr::Const(ScalarValue::Null)));
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert!(v.is_null());
+    }
+
+    #[test]
+    fn eval_norm_cdf_standard_at_zero() {
+        // norm_cdf(0, 0, 1) ≈ 0.5
+        let body = Expr::NormCdf(
+            Box::new(Expr::Const(ScalarValue::F64(0.0))),
+            Box::new(Expr::Const(ScalarValue::F64(0.0))),
+            Box::new(Expr::Const(ScalarValue::F64(1.0))),
+        );
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert!((v.as_f64().unwrap() - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn eval_norm_cdf_1_96() {
+        // norm_cdf(1.96, 0, 1) ≈ 0.975
+        let body = Expr::NormCdf(
+            Box::new(Expr::Const(ScalarValue::F64(1.96))),
+            Box::new(Expr::Const(ScalarValue::F64(0.0))),
+            Box::new(Expr::Const(ScalarValue::F64(1.0))),
+        );
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert!((v.as_f64().unwrap() - 0.975).abs() < 1e-3);
+    }
+
+    #[test]
+    fn eval_norm_cdf_negative_sigma_returns_null() {
+        let body = Expr::NormCdf(
+            Box::new(Expr::Const(ScalarValue::F64(0.0))),
+            Box::new(Expr::Const(ScalarValue::F64(0.0))),
+            Box::new(Expr::Const(ScalarValue::F64(-1.0))),
+        );
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert!(v.is_null());
+    }
+
+    #[test]
+    fn eval_norm_cdf_zero_sigma_returns_null() {
+        let body = Expr::NormCdf(
+            Box::new(Expr::Const(ScalarValue::F64(0.0))),
+            Box::new(Expr::Const(ScalarValue::F64(0.0))),
+            Box::new(Expr::Const(ScalarValue::F64(0.0))),
+        );
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert!(v.is_null());
+    }
+
+    #[test]
+    fn eval_norm_cdf_null_returns_null() {
+        let body = Expr::NormCdf(
+            Box::new(Expr::Const(ScalarValue::Null)),
+            Box::new(Expr::Const(ScalarValue::F64(0.0))),
+            Box::new(Expr::Const(ScalarValue::F64(1.0))),
+        );
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert!(v.is_null());
+    }
+
+    #[test]
+    fn eval_predict_delegates() {
+        let body = Expr::Predict(
+            "my_model".into(),
+            vec![
+                Box::new(Expr::Const(ScalarValue::F64(99.2))),
+                Box::new(Expr::Const(ScalarValue::F64(113.4))),
+            ],
+        );
+        let mut cross = |read: &CrossCoordRead| -> Result<ScalarValue, EngineError> {
+            match read {
+                CrossCoordRead::PredictModel { model_id, features } => {
+                    assert_eq!(model_id, "my_model");
+                    assert_eq!(features.len(), 2);
+                    assert_eq!(features[0].as_f64(), Some(99.2));
+                    assert_eq!(features[1].as_f64(), Some(113.4));
+                    Ok(ScalarValue::F64(211.34))
+                }
+                _ => Ok(ScalarValue::Null),
+            }
+        };
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut cross).unwrap();
+        assert_eq!(v.as_f64(), Some(211.34));
+    }
+
+    #[test]
+    fn eval_predict_null_feature_returns_null() {
+        let body = Expr::Predict(
+            "m".into(),
+            vec![
+                Box::new(Expr::Const(ScalarValue::F64(1.0))),
+                Box::new(Expr::Const(ScalarValue::Null)),
+                Box::new(Expr::Const(ScalarValue::F64(3.0))),
+            ],
+        );
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert!(v.is_null());
+    }
+
+    #[test]
+    fn eval_calibrate_delegates() {
+        let body = Expr::Calibrate(
+            Box::new(Expr::Const(ScalarValue::F64(0.55))),
+            "my_map".into(),
+        );
+        let mut cross = |read: &CrossCoordRead| -> Result<ScalarValue, EngineError> {
+            match read {
+                CrossCoordRead::CalibrateMap { map_id, value } => {
+                    assert_eq!(map_id, "my_map");
+                    assert_eq!(value.as_f64(), Some(0.55));
+                    Ok(ScalarValue::F64(0.46))
+                }
+                _ => Ok(ScalarValue::Null),
+            }
+        };
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut cross).unwrap();
+        assert_eq!(v.as_f64(), Some(0.46));
+    }
+
+    #[test]
+    fn eval_calibrate_null_returns_null() {
+        let body = Expr::Calibrate(Box::new(Expr::Const(ScalarValue::Null)), "m".into());
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
+        assert!(v.is_null());
     }
 }
