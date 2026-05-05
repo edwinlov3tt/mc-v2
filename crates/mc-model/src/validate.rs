@@ -91,6 +91,9 @@ pub fn validate(parsed: ParsedModel) -> Result<ValidatedModel, Vec<Error>> {
     check_cross_coord_nesting(&validated_rules, &mut errors);
     // Phase 3G: reference-data block validation
     check_reference_data_blocks(&parsed, &mut val_errors);
+    // Phase 3F.1: time metadata + anchor validation
+    check_time_metadata(&parsed, &mut val_errors);
+    check_anchor_requirements(&parsed, &validated_rules, &mut val_errors);
 
     errors.extend(val_errors.into_iter().map(Error::Validation));
 
@@ -552,9 +555,15 @@ fn check_rules_reference_known_measures(
 
 fn check_binop_arity(body: &ParsedRuleBody, rule_name: &str, errors: &mut Vec<ValidationError>) {
     let (op_name, args): (&str, Option<&[ParsedRuleBody]>) = match body {
-        ParsedRuleBody::Const(_) | ParsedRuleBody::Ref(_) | ParsedRuleBody::PeriodIndex(_) => {
-            return
-        }
+        ParsedRuleBody::Const(_)
+        | ParsedRuleBody::Ref(_)
+        | ParsedRuleBody::PeriodIndex(_)
+        | ParsedRuleBody::AnchorIndex(_)
+        | ParsedRuleBody::IsPast(_)
+        | ParsedRuleBody::IsCurrent(_)
+        | ParsedRuleBody::IsFuture(_)
+        | ParsedRuleBody::PeriodsSinceAnchor(_)
+        | ParsedRuleBody::PeriodsToEnd(_) => return,
         ParsedRuleBody::Add(b) => ("add", Some(&b.add[..])),
         ParsedRuleBody::Sub(b) => ("sub", Some(&b.sub[..])),
         ParsedRuleBody::Mul(b) => ("mul", Some(&b.mul[..])),
@@ -643,7 +652,14 @@ fn check_binop_arity(body: &ParsedRuleBody, rule_name: &str, errors: &mut Vec<Va
 
 fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
     match body {
-        ParsedRuleBody::Const(_) | ParsedRuleBody::PeriodIndex(_) => {}
+        ParsedRuleBody::Const(_)
+        | ParsedRuleBody::PeriodIndex(_)
+        | ParsedRuleBody::AnchorIndex(_)
+        | ParsedRuleBody::IsPast(_)
+        | ParsedRuleBody::IsCurrent(_)
+        | ParsedRuleBody::IsFuture(_)
+        | ParsedRuleBody::PeriodsSinceAnchor(_)
+        | ParsedRuleBody::PeriodsToEnd(_) => {}
         ParsedRuleBody::Ref(r) => {
             out.insert(r.measure.clone());
         }
@@ -892,7 +908,13 @@ fn uses_time_series(body: &ParsedRuleBody) -> bool {
         | ParsedRuleBody::Lag(_)
         | ParsedRuleBody::Cumulative(_)
         | ParsedRuleBody::RollingAvg(_)
-        | ParsedRuleBody::PeriodIndex(_) => true,
+        | ParsedRuleBody::PeriodIndex(_)
+        | ParsedRuleBody::AnchorIndex(_)
+        | ParsedRuleBody::IsPast(_)
+        | ParsedRuleBody::IsCurrent(_)
+        | ParsedRuleBody::IsFuture(_)
+        | ParsedRuleBody::PeriodsSinceAnchor(_)
+        | ParsedRuleBody::PeriodsToEnd(_) => true,
         ParsedRuleBody::Const(_) | ParsedRuleBody::Ref(_) => false,
         ParsedRuleBody::Add(b) => b.add.iter().any(uses_time_series),
         ParsedRuleBody::Sub(b) => b.sub.iter().any(uses_time_series),
@@ -935,7 +957,15 @@ fn uses_time_series(body: &ParsedRuleBody) -> bool {
 fn uses_actual_ref(body: &ParsedRuleBody) -> bool {
     match body {
         ParsedRuleBody::ActualRef(_) => true,
-        ParsedRuleBody::Const(_) | ParsedRuleBody::Ref(_) | ParsedRuleBody::PeriodIndex(_) => false,
+        ParsedRuleBody::Const(_)
+        | ParsedRuleBody::Ref(_)
+        | ParsedRuleBody::PeriodIndex(_)
+        | ParsedRuleBody::AnchorIndex(_)
+        | ParsedRuleBody::IsPast(_)
+        | ParsedRuleBody::IsCurrent(_)
+        | ParsedRuleBody::IsFuture(_)
+        | ParsedRuleBody::PeriodsSinceAnchor(_)
+        | ParsedRuleBody::PeriodsToEnd(_) => false,
         ParsedRuleBody::Add(b) => b.add.iter().any(uses_actual_ref),
         ParsedRuleBody::Sub(b) => b.sub.iter().any(uses_actual_ref),
         ParsedRuleBody::Mul(b) => b.mul.iter().any(uses_actual_ref),
@@ -1093,7 +1123,15 @@ fn find_cross_coord_nesting(body: &ParsedRuleBody) -> Option<String> {
         }
         ParsedRuleBody::SumOver(_) => None, // leaf
         // Non-cross-coord nodes: recurse into children
-        ParsedRuleBody::Const(_) | ParsedRuleBody::Ref(_) | ParsedRuleBody::PeriodIndex(_) => None,
+        ParsedRuleBody::Const(_)
+        | ParsedRuleBody::Ref(_)
+        | ParsedRuleBody::PeriodIndex(_)
+        | ParsedRuleBody::AnchorIndex(_)
+        | ParsedRuleBody::IsPast(_)
+        | ParsedRuleBody::IsCurrent(_)
+        | ParsedRuleBody::IsFuture(_)
+        | ParsedRuleBody::PeriodsSinceAnchor(_)
+        | ParsedRuleBody::PeriodsToEnd(_) => None,
         ParsedRuleBody::Add(b) => walk_nesting_args(&b.add),
         ParsedRuleBody::Sub(b) => walk_nesting_args(&b.sub),
         ParsedRuleBody::Mul(b) => walk_nesting_args(&b.mul),
@@ -1288,5 +1326,211 @@ fn check_reference_data_blocks(parsed: &ParsedModel, errors: &mut Vec<Validation
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3F.1: Time metadata validation (MC2043-MC2048) + anchor (MC1017)
+// ---------------------------------------------------------------------------
+
+/// Validates ISO 8601 date format: YYYY-MM-DD (exactly 10 chars).
+fn is_valid_iso_date(s: &str) -> bool {
+    if s.len() != 10 {
+        return false;
+    }
+    let bytes = s.as_bytes();
+    // Pattern: DDDD-DD-DD where D is digit
+    bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[..4].iter().all(|b| b.is_ascii_digit())
+        && bytes[5..7].iter().all(|b| b.is_ascii_digit())
+        && bytes[8..10].iter().all(|b| b.is_ascii_digit())
+}
+
+/// MC2043-MC2048: validate time metadata on Time-kind dimensions.
+fn check_time_metadata(parsed: &ParsedModel, errors: &mut Vec<ValidationError>) {
+    for dim in &parsed.dimensions {
+        if dim.kind != "Time" {
+            continue;
+        }
+
+        // MC2048: time_anchor names a non-existent element
+        if let Some(anchor) = &dim.time_anchor {
+            let elem_names: BTreeSet<&str> = dim.elements.iter().map(|e| e.name.as_str()).collect();
+            if !elem_names.contains(anchor.as_str()) {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "Time dimension {:?}: time_anchor {:?} is not a declared element (MC2048)",
+                        dim.name, anchor
+                    ),
+                });
+            }
+        }
+
+        // Validate granularity legal values
+        if let Some(g) = &dim.granularity {
+            match g.as_str() {
+                "day" | "week" | "month" | "quarter" | "year" => {}
+                other => {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "Time dimension {:?}: unknown granularity {:?} \
+                             (expected day/week/month/quarter/year)",
+                            dim.name, other
+                        ),
+                    });
+                }
+            }
+        }
+
+        // Validate period_start/period_end_exclusive on elements
+        let mut period_intervals: Vec<(&str, &str, &str)> = Vec::new(); // (elem_name, start, end)
+
+        for elem in &dim.elements {
+            // MC2043: period_start must be valid ISO 8601 YYYY-MM-DD
+            if let Some(start) = &elem.period_start {
+                if !is_valid_iso_date(start) {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "Time element {:?}: period_start {:?} is not valid ISO 8601 \
+                             YYYY-MM-DD (MC2043)",
+                            elem.name, start
+                        ),
+                    });
+                }
+            }
+
+            if let Some(end) = &elem.period_end_exclusive {
+                if !is_valid_iso_date(end) {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "Time element {:?}: period_end_exclusive {:?} is not valid ISO 8601 \
+                             YYYY-MM-DD (MC2043)",
+                            elem.name, end
+                        ),
+                    });
+                }
+            }
+
+            // Collect intervals for gap/overlap checks
+            if let (Some(start), Some(end)) = (&elem.period_start, &elem.period_end_exclusive) {
+                if is_valid_iso_date(start) && is_valid_iso_date(end) {
+                    period_intervals.push((&elem.name, start, end));
+                }
+            }
+        }
+
+        // MC2046/MC2047: check for gaps and overlaps between consecutive elements
+        if period_intervals.len() >= 2 {
+            for i in 0..period_intervals.len() - 1 {
+                let (name_a, _start_a, end_a) = period_intervals[i];
+                let (name_b, start_b, _end_b) = period_intervals[i + 1];
+                match end_a.cmp(start_b) {
+                    std::cmp::Ordering::Less => {
+                        errors.push(ValidationError::Schema {
+                            message: format!(
+                                "Time dimension {:?}: gap between elements {:?} (ends {}) \
+                                 and {:?} (starts {}) (MC2046)",
+                                dim.name, name_a, end_a, name_b, start_b
+                            ),
+                        });
+                    }
+                    std::cmp::Ordering::Greater => {
+                        errors.push(ValidationError::Schema {
+                            message: format!(
+                                "Time dimension {:?}: overlap between elements {:?} (ends {}) \
+                                 and {:?} (starts {}) (MC2047)",
+                                dim.name, name_a, end_a, name_b, start_b
+                            ),
+                        });
+                    }
+                    std::cmp::Ordering::Equal => {} // contiguous — correct
+                }
+            }
+        }
+    }
+}
+
+/// Check if any rule body uses an anchor function.
+fn uses_anchor_function(body: &ParsedRuleBody) -> bool {
+    match body {
+        ParsedRuleBody::AnchorIndex(_)
+        | ParsedRuleBody::IsPast(_)
+        | ParsedRuleBody::IsCurrent(_)
+        | ParsedRuleBody::IsFuture(_)
+        | ParsedRuleBody::PeriodsSinceAnchor(_)
+        | ParsedRuleBody::PeriodsToEnd(_) => true,
+        ParsedRuleBody::Const(_) | ParsedRuleBody::Ref(_) | ParsedRuleBody::PeriodIndex(_) => false,
+        ParsedRuleBody::Add(b) => b.add.iter().any(uses_anchor_function),
+        ParsedRuleBody::Sub(b) => b.sub.iter().any(uses_anchor_function),
+        ParsedRuleBody::Mul(b) => b.mul.iter().any(uses_anchor_function),
+        ParsedRuleBody::Div(b) => b.div.iter().any(uses_anchor_function),
+        ParsedRuleBody::IfNull(b) => b.if_null.iter().any(uses_anchor_function),
+        ParsedRuleBody::Gt(b)
+        | ParsedRuleBody::Lt(b)
+        | ParsedRuleBody::Gte(b)
+        | ParsedRuleBody::Lte(b)
+        | ParsedRuleBody::Eq(b)
+        | ParsedRuleBody::Neq(b)
+        | ParsedRuleBody::And(b)
+        | ParsedRuleBody::Or(b) => uses_anchor_function(&b.left) || uses_anchor_function(&b.right),
+        ParsedRuleBody::Not(b) | ParsedRuleBody::Abs(b) => uses_anchor_function(&b.operand),
+        ParsedRuleBody::If(b) => {
+            uses_anchor_function(&b.condition)
+                || uses_anchor_function(&b.then_branch)
+                || uses_anchor_function(&b.else_branch)
+        }
+        ParsedRuleBody::Min(b) | ParsedRuleBody::Max(b) | ParsedRuleBody::Coalesce(b) => {
+            b.args.iter().any(uses_anchor_function)
+        }
+        ParsedRuleBody::SafeDiv(b) => {
+            uses_anchor_function(&b.numerator)
+                || uses_anchor_function(&b.denominator)
+                || uses_anchor_function(&b.default)
+        }
+        ParsedRuleBody::Clamp(b) => {
+            uses_anchor_function(&b.value)
+                || uses_anchor_function(&b.lo)
+                || uses_anchor_function(&b.hi)
+        }
+        ParsedRuleBody::ActualRef(_)
+        | ParsedRuleBody::Prev(_)
+        | ParsedRuleBody::Cumulative(_)
+        | ParsedRuleBody::SumOver(_) => false,
+        ParsedRuleBody::Lag(b) => uses_anchor_function(&b.periods),
+        ParsedRuleBody::RollingAvg(b) => uses_anchor_function(&b.window),
+        ParsedRuleBody::Benchmark(b) => uses_anchor_function(&b.key_expr),
+        ParsedRuleBody::Lookup(b) => uses_anchor_function(&b.key_expr),
+        ParsedRuleBody::Bucket(b) => uses_anchor_function(&b.value),
+    }
+}
+
+/// MC1017: anchor function used but no time_anchor configured.
+/// MC2048 is handled in check_time_metadata.
+fn check_anchor_requirements(
+    parsed: &ParsedModel,
+    validated_rules: &[ValidatedRule],
+    errors: &mut Vec<ValidationError>,
+) {
+    let has_anchor_fn = validated_rules
+        .iter()
+        .any(|r| uses_anchor_function(&r.body));
+    if !has_anchor_fn {
+        return;
+    }
+
+    // Check if any Time dim has a time_anchor
+    let has_time_anchor = parsed
+        .dimensions
+        .iter()
+        .any(|d| d.kind == "Time" && d.time_anchor.is_some());
+
+    if !has_time_anchor {
+        errors.push(ValidationError::Schema {
+            message: "anchor function (anchor_index/is_past/is_current/is_future/\
+                      periods_since_anchor/periods_to_end) used but no time_anchor \
+                      configured on Time dimension (MC1017)"
+                .into(),
+        });
     }
 }

@@ -657,6 +657,48 @@ impl<'a> Parser<'a> {
                         crate::schema::ParsedPeriodIndexBody::new(),
                     ))
                 }
+                "anchor_index" => {
+                    self.skip_ws();
+                    self.expect_close_paren("anchor_index")?;
+                    Ok(ParsedRuleBody::AnchorIndex(
+                        crate::schema::ParsedPeriodIndexBody::new(),
+                    ))
+                }
+                "is_past" => {
+                    self.skip_ws();
+                    self.expect_close_paren("is_past")?;
+                    Ok(ParsedRuleBody::IsPast(
+                        crate::schema::ParsedPeriodIndexBody::new(),
+                    ))
+                }
+                "is_current" => {
+                    self.skip_ws();
+                    self.expect_close_paren("is_current")?;
+                    Ok(ParsedRuleBody::IsCurrent(
+                        crate::schema::ParsedPeriodIndexBody::new(),
+                    ))
+                }
+                "is_future" => {
+                    self.skip_ws();
+                    self.expect_close_paren("is_future")?;
+                    Ok(ParsedRuleBody::IsFuture(
+                        crate::schema::ParsedPeriodIndexBody::new(),
+                    ))
+                }
+                "periods_since_anchor" => {
+                    self.skip_ws();
+                    self.expect_close_paren("periods_since_anchor")?;
+                    Ok(ParsedRuleBody::PeriodsSinceAnchor(
+                        crate::schema::ParsedPeriodIndexBody::new(),
+                    ))
+                }
+                "periods_to_end" => {
+                    self.skip_ws();
+                    self.expect_close_paren("periods_to_end")?;
+                    Ok(ParsedRuleBody::PeriodsToEnd(
+                        crate::schema::ParsedPeriodIndexBody::new(),
+                    ))
+                }
                 "benchmark" => {
                     self.skip_ws();
                     let bname = self.parse_string_literal("benchmark", call_start)?;
@@ -1027,6 +1069,12 @@ fn prec(body: &ParsedRuleBody) -> u8 {
         | ParsedRuleBody::Cumulative(_)
         | ParsedRuleBody::RollingAvg(_)
         | ParsedRuleBody::PeriodIndex(_)
+        | ParsedRuleBody::AnchorIndex(_)
+        | ParsedRuleBody::IsPast(_)
+        | ParsedRuleBody::IsCurrent(_)
+        | ParsedRuleBody::IsFuture(_)
+        | ParsedRuleBody::PeriodsSinceAnchor(_)
+        | ParsedRuleBody::PeriodsToEnd(_)
         | ParsedRuleBody::Benchmark(_)
         | ParsedRuleBody::Lookup(_)
         | ParsedRuleBody::Bucket(_)
@@ -1184,6 +1232,24 @@ fn write_node_bare(out: &mut String, body: &ParsedRuleBody) {
         ParsedRuleBody::PeriodIndex(_) => {
             out.push_str("period_index()");
         }
+        ParsedRuleBody::AnchorIndex(_) => {
+            out.push_str("anchor_index()");
+        }
+        ParsedRuleBody::IsPast(_) => {
+            out.push_str("is_past()");
+        }
+        ParsedRuleBody::IsCurrent(_) => {
+            out.push_str("is_current()");
+        }
+        ParsedRuleBody::IsFuture(_) => {
+            out.push_str("is_future()");
+        }
+        ParsedRuleBody::PeriodsSinceAnchor(_) => {
+            out.push_str("periods_since_anchor()");
+        }
+        ParsedRuleBody::PeriodsToEnd(_) => {
+            out.push_str("periods_to_end()");
+        }
 
         // Phase 3G: reference-data
         ParsedRuleBody::Benchmark(b) => {
@@ -1276,7 +1342,15 @@ pub fn contains_cross_coord(body: &ParsedRuleBody) -> bool {
         | ParsedRuleBody::Cumulative(_)
         | ParsedRuleBody::RollingAvg(_)
         | ParsedRuleBody::SumOver(_) => true,
-        ParsedRuleBody::Const(_) | ParsedRuleBody::Ref(_) | ParsedRuleBody::PeriodIndex(_) => false,
+        ParsedRuleBody::Const(_)
+        | ParsedRuleBody::Ref(_)
+        | ParsedRuleBody::PeriodIndex(_)
+        | ParsedRuleBody::AnchorIndex(_)
+        | ParsedRuleBody::IsPast(_)
+        | ParsedRuleBody::IsCurrent(_)
+        | ParsedRuleBody::IsFuture(_)
+        | ParsedRuleBody::PeriodsSinceAnchor(_)
+        | ParsedRuleBody::PeriodsToEnd(_) => false,
         ParsedRuleBody::Add(b) => b.add.iter().any(contains_cross_coord),
         ParsedRuleBody::Sub(b) => b.sub.iter().any(contains_cross_coord),
         ParsedRuleBody::Mul(b) => b.mul.iter().any(contains_cross_coord),
@@ -1638,5 +1712,51 @@ mod tests {
         ] {
             assert_round_trip(f);
         }
+    }
+
+    // -- Phase 3F.1: anchor function tests --
+
+    #[test]
+    fn parse_anchor_functions() {
+        assert!(matches!(
+            parse("anchor_index()").unwrap(),
+            ParsedRuleBody::AnchorIndex(_)
+        ));
+        assert!(matches!(
+            parse("is_past()").unwrap(),
+            ParsedRuleBody::IsPast(_)
+        ));
+        assert!(matches!(
+            parse("is_current()").unwrap(),
+            ParsedRuleBody::IsCurrent(_)
+        ));
+        assert!(matches!(
+            parse("is_future()").unwrap(),
+            ParsedRuleBody::IsFuture(_)
+        ));
+        assert!(matches!(
+            parse("periods_since_anchor()").unwrap(),
+            ParsedRuleBody::PeriodsSinceAnchor(_)
+        ));
+        assert!(matches!(
+            parse("periods_to_end()").unwrap(),
+            ParsedRuleBody::PeriodsToEnd(_)
+        ));
+    }
+
+    #[test]
+    fn round_trip_anchor_functions() {
+        assert_round_trip_exact("anchor_index()", "anchor_index()");
+        assert_round_trip_exact("is_past()", "is_past()");
+        assert_round_trip_exact("is_current()", "is_current()");
+        assert_round_trip_exact("is_future()", "is_future()");
+        assert_round_trip_exact("periods_since_anchor()", "periods_since_anchor()");
+        assert_round_trip_exact("periods_to_end()", "periods_to_end()");
+    }
+
+    #[test]
+    fn round_trip_anchor_in_expression() {
+        assert_round_trip("if(is_past(), actual_ref(Revenue), Revenue * 1.1)");
+        assert_round_trip("periods_since_anchor() + periods_to_end()");
     }
 }

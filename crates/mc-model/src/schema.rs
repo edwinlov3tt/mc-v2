@@ -81,6 +81,14 @@ pub struct ParsedDimension {
     /// `actual_ref()` reads from. E.g., `actuals_element: "Actual"`.
     #[serde(default)]
     pub actuals_element: Option<String>,
+    /// Phase 3F.1: declared granularity for Time dims.
+    /// Legal values: `"day"` | `"week"` | `"month"` | `"quarter"` | `"year"`.
+    #[serde(default)]
+    pub granularity: Option<String>,
+    /// Phase 3F.1: runtime "now" anchor element name. Anchor functions
+    /// (`anchor_index`, `is_past`, etc.) reference this element.
+    #[serde(default)]
+    pub time_anchor: Option<String>,
     pub elements: Vec<ParsedElement>,
 }
 
@@ -105,6 +113,12 @@ pub struct ParsedElement {
     /// Used by lint MC3010 (non-chronological order warning).
     #[serde(default)]
     pub date: Option<String>,
+    /// Phase 3F.1: ISO 8601 period start date (YYYY-MM-DD).
+    #[serde(default)]
+    pub period_start: Option<String>,
+    /// Phase 3F.1: ISO 8601 period end date, exclusive (YYYY-MM-DD).
+    #[serde(default)]
+    pub period_end_exclusive: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -280,6 +294,18 @@ pub enum ParsedRuleBody {
     /// Wrapped in a struct to prevent serde's untagged dispatch from
     /// matching YAML null as this unit variant.
     PeriodIndex(ParsedPeriodIndexBody),
+    /// `anchor_index()` — period_index of the time_anchor element.
+    AnchorIndex(ParsedPeriodIndexBody),
+    /// `is_past()` — 1.0 if period_index < anchor_index, else 0.0.
+    IsPast(ParsedPeriodIndexBody),
+    /// `is_current()` — 1.0 if period_index == anchor_index, else 0.0.
+    IsCurrent(ParsedPeriodIndexBody),
+    /// `is_future()` — 1.0 if period_index > anchor_index, else 0.0.
+    IsFuture(ParsedPeriodIndexBody),
+    /// `periods_since_anchor()` — period_index - anchor_index.
+    PeriodsSinceAnchor(ParsedPeriodIndexBody),
+    /// `periods_to_end()` — max_period_index - period_index.
+    PeriodsToEnd(ParsedPeriodIndexBody),
 
     // -- Phase 3G: Reference-data (4) --
     /// `benchmark("name", key_expr)`

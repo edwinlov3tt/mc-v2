@@ -278,7 +278,14 @@ fn collect_self_refs(expr: &mc_core::Expr) -> std::collections::HashSet<mc_core:
     walk(expr, &mut out);
     fn walk(e: &mc_core::Expr, acc: &mut std::collections::HashSet<mc_core::ElementId>) {
         match e {
-            mc_core::Expr::Const(_) | mc_core::Expr::PeriodIndex => {}
+            mc_core::Expr::Const(_)
+            | mc_core::Expr::PeriodIndex
+            | mc_core::Expr::AnchorIndex
+            | mc_core::Expr::IsPast
+            | mc_core::Expr::IsCurrent
+            | mc_core::Expr::IsFuture
+            | mc_core::Expr::PeriodsSinceAnchor
+            | mc_core::Expr::PeriodsToEnd => {}
             mc_core::Expr::SelfRef(m)
             | mc_core::Expr::ActualRef(m)
             | mc_core::Expr::Prev(m)
