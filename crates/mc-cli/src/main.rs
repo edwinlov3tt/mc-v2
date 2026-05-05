@@ -22,8 +22,22 @@ use mc_model::{
     ModelPath, Severity, ValidatedModel, ValidationError, SCHEMA_VERSION,
 };
 
+#[allow(unused_variables, unused_assignments)]
+mod diff;
 mod mcp;
+#[allow(unused_variables, unused_assignments)]
+mod query;
+#[allow(unused_variables, unused_assignments)]
+mod sweep;
 mod tessera;
+#[allow(unused_variables, unused_assignments)]
+mod trace;
+#[allow(unused_variables, unused_assignments)]
+mod transform;
+#[allow(unused_variables, unused_assignments)]
+mod whatif;
+#[allow(unused_variables, unused_assignments)]
+mod write;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -36,14 +50,55 @@ fn main() {
             Ok(model_path) => run_demo(model_path.as_deref()),
             Err(e) => fatal(&e),
         },
-        "model" => match parse_model_args(&args[2..]) {
-            Ok(cmd) => run_model(cmd),
-            Err(e) => fatal(&e),
-        },
-        "tessera" => match tessera::parse(&args[2..]) {
-            Ok(cmd) => std::process::exit(tessera::run(cmd)),
-            Err(e) => fatal(&e),
-        },
+        "model" => {
+            // Phase 6A: new verbs dispatched before legacy ModelCommand parsing.
+            if args.len() > 2 {
+                match args[2].as_str() {
+                    "query" => match query::parse(&args[3..]) {
+                        Ok(cmd) => std::process::exit(query::run(cmd)),
+                        Err(e) => fatal(&e),
+                    },
+                    "whatif" => match whatif::parse(&args[3..]) {
+                        Ok(cmd) => std::process::exit(whatif::run(cmd)),
+                        Err(e) => fatal(&e),
+                    },
+                    "trace" => match trace::parse(&args[3..]) {
+                        Ok(cmd) => std::process::exit(trace::run(cmd)),
+                        Err(e) => fatal(&e),
+                    },
+                    "sweep" => match sweep::parse(&args[3..]) {
+                        Ok(cmd) => std::process::exit(sweep::run(cmd)),
+                        Err(e) => fatal(&e),
+                    },
+                    "diff" => match diff::parse(&args[3..]) {
+                        Ok(cmd) => std::process::exit(diff::run(cmd)),
+                        Err(e) => fatal(&e),
+                    },
+                    "write" => match write::parse(&args[3..]) {
+                        Ok(cmd) => std::process::exit(write::run(cmd)),
+                        Err(e) => fatal(&e),
+                    },
+                    _ => {} // Fall through to legacy parse
+                }
+            }
+            match parse_model_args(&args[2..]) {
+                Ok(cmd) => run_model(cmd),
+                Err(e) => fatal(&e),
+            }
+        }
+        "tessera" => {
+            // Phase 6A: intercept "transform" verb before tessera::parse
+            if args.len() > 2 && args[2] == "transform" {
+                match transform::parse(&args[3..]) {
+                    Ok(cmd) => std::process::exit(transform::run(cmd)),
+                    Err(e) => fatal(&e),
+                }
+            }
+            match tessera::parse(&args[2..]) {
+                Ok(cmd) => std::process::exit(tessera::run(cmd)),
+                Err(e) => fatal(&e),
+            }
+        }
         "mcp" => mcp::run(),
         "--help" | "-h" | "help" => print_help(),
         other => {
@@ -70,22 +125,31 @@ fn print_help() {
     println!("    mc model lint     <path> [--format text|json] [--deny-warnings]");
     println!("    mc model test     <path> [--format text|json] [--fixture <name>]");
     println!();
-    println!("    mc tessera apply    <recipe.yaml>            [--format text|json]");
-    println!("    mc tessera dry-run  <recipe.yaml>            [--format text|json]");
-    println!("    mc tessera propose  --source <path> --model <path>");
-    println!("    mc tessera history  <model_dir>              [--format text|json]");
-    println!("    mc tessera rollback <import_id> --model-dir <path> [--format text|json]");
-    println!("    mc tessera audit    <model_dir>              [--format text|json]");
+    println!(
+        "    mc model query  <path> [--where <expr>] [--show <measures>] [--format text|json|csv]"
+    );
+    println!("                           [--coord <coord>] [--aggregate <fns>] [--output <file>]");
+    println!(
+        "    mc model whatif <path> --set <coord> --value <n> --show <measures> [--format ...]"
+    );
+    println!("    mc model trace  <path> --coord <coord> [--depth <n>] [--format text|json|csv]");
+    println!("    mc model sweep  <path> --range <start:end:step> --metric <fn> --goal <min|max>");
+    println!("                           [--model <name> --coefficient <name>] [--set <coord>]");
+    println!(
+        "    mc model diff   <path> --left <filter> --right <filter> [--format text|json|csv]"
+    );
+    println!("    mc model write  <path> --coord <coord> --value <n> [--dry-run] [--format ...]");
     println!();
-    println!("    mc mcp                                  # Phase 4A MCP server (stdio JSON-RPC)");
+    println!("    mc tessera apply      <recipe.yaml>            [--format text|json]");
+    println!("    mc tessera dry-run    <recipe.yaml>            [--format text|json]");
+    println!("    mc tessera propose    --source <path> --model <path>");
+    println!("    mc tessera transform  --source <path|url> --recipe <path> [--output <file>]");
+    println!("                           [--format csv|json|text] [--preview <n>]");
+    println!("    mc tessera history    <model_dir>              [--format text|json]");
+    println!("    mc tessera rollback   <import_id> --model-dir <path> [--format text|json]");
+    println!("    mc tessera audit      <model_dir>              [--format text|json]");
     println!();
-    println!("Per ADR-0005: lint is advisory by default; --deny-warnings flips lint");
-    println!("warnings to a non-zero CLI exit code. mc demo --model does NOT run");
-    println!("goldens — that is exclusively mc model test's responsibility.");
-    println!();
-    println!("Per ADR-0006 Decision 7: --fixture <name> filters `mc model test` to");
-    println!("only the goldens whose `fixture:` field equals that name; other goldens");
-    println!("are reported as skipped.");
+    println!("    mc mcp                                  # MCP server (stdio JSON-RPC)");
 }
 
 // ---------------------------------------------------------------------------

@@ -12,6 +12,19 @@ This cartridge evaluates NBA game totals across three analytical layers:
 | 2 | **Judge** | Grade predictions against actuals: error magnitude, direction accuracy, Brier score |
 | 3 | **Investigator** | Diagnose failure modes: overconfidence, pace-driven misses, bet quality signals |
 
+## Dimension Structure (6 dimensions)
+
+| # | Dimension | Kind | Purpose |
+|---|-----------|------|---------|
+| 1 | Scenario | Scenario | Base scenario (actuals live here) |
+| 2 | Version | Version | Working draft |
+| 3 | Time | Time | Game dates (one per day, 5 sample days) |
+| 4 | Sportsbook | Standard | Per-book lines: Pinnacle, DraftKings, FanDuel |
+| 5 | Game | Standard | 15 individual matchups (Away_at_Home format) |
+| 6 | Measure | Measure | 14 inputs + 12 derived = 26 measures |
+
+**Why Sportsbook is a first-class dimension:** Lines differ per book. P(Over) at Pinnacle != P(Over) at DraftKings because the line is different. The edge-maximization question is "which book has the best line for my prediction?" — that's a cross-Sportsbook comparison. At least 3 games in the sample show 1.5+ point line differences across books, producing materially different EV and bet/no-bet decisions.
+
 ## The Model
 
 **Algorithm:** Lasso regression (L1, alpha=0.7) with StandardScaler  
@@ -188,7 +201,7 @@ The script handles the standardized-to-raw coefficient conversion automatically 
 ```
 examples/sports-betting/
 ├── nba-totals.yaml           # Complete model: dimensions, measures, rules, fitted artifacts
-├── nba-totals.inputs.csv     # 15 sample games with full feature vectors + actuals
+├── nba-totals.inputs.csv     # 15 games × 3 books = 45 game-book combos (630 rows)
 ├── README.md                 # This file
 └── export-from-sklearn.py    # Reference: how to dump sklearn -> Mosaic YAML
 ```
@@ -197,6 +210,4 @@ examples/sports-betting/
 
 This is a demonstration of Mosaic's model-evaluation capabilities using real production weights from a deployed sports-betting system. The model has demonstrated 66.4% directional accuracy and positive expected value on holdout data.
 
-**Past performance does not guarantee future results.** The model may have edge or it may not — Mosaic tells you which, honestly. Layer 2 (Judge) grades every prediction against reality. Layer 3 (Investigator) identifies systematic failure patterns. If the model stops working, Mosaic will show you that clearly through rising Brier scores, declining direction accuracy, and increasing `Overconfidence_Flag` frequency.
-
-Sports betting involves real financial risk. This cartridge is an analytical tool, not financial advice. Use at your own discretion and within your means.
+This cartridge demonstrates Mosaic's model-evaluation capabilities using production-derived weights from a real sports-betting model. It is NOT a guarantee of profitability. The model may have edge or it may not — Mosaic tells you which, honestly, with measured evidence. Past performance does not guarantee future results. Use this as a framework for rigorous self-evaluation, not as betting advice.

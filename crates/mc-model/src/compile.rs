@@ -313,9 +313,10 @@ pub fn compile(validated: ValidatedModel) -> Result<CompiledCube, EngineError> {
 
     // Populate fitted_models
     for fm in &validated.parsed.fitted_models {
-        let standardization = fm.standardization.as_ref().map(|sc| {
-            sc.params.iter().map(|p| (p.mean, p.std)).collect()
-        });
+        let standardization = fm
+            .standardization
+            .as_ref()
+            .map(|sc| sc.params.iter().map(|p| (p.mean, p.std)).collect());
         let data = mc_core::FittedModelData {
             method: fm.method.clone(),
             intercept: fm.intercept,
@@ -323,7 +324,9 @@ pub fn compile(validated: ValidatedModel) -> Result<CompiledCube, EngineError> {
             residual_std: fm.residual_std,
             standardization,
         };
-        cube.reference_data.fitted_models.insert(fm.name.clone(), data);
+        cube.reference_data
+            .fitted_models
+            .insert(fm.name.clone(), data);
     }
 
     // Populate calibration_maps

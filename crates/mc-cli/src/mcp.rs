@@ -187,6 +187,83 @@ fn handle_tools_list() -> JsonValue {
                 ("fixture", "string", "Optional --fixture <name> filter (filter-only semantic).", false),
             ],
         ),
+        // Phase 6A: Agent-Ready CLI tools
+        tool_descriptor(
+            "mosaic.model.query",
+            "Query cells by coordinate filter. Returns matching rows with values. Supports --where filters, --show columns, --aggregate functions.",
+            &[
+                ("path", "string", "Path to a Mosaic YAML model.", true),
+                ("where", "string", "Filter expression (e.g., \"EV_Per_Dollar > 0.03 and Game == 'LAL_at_BOS'\").", false),
+                ("show", "string", "Comma-separated measure names to include in output.", false),
+                ("coord", "string", "Single coordinate for exact lookup (e.g., \"Scenario=Base,Version=Working,...,Measure=EV_Per_Dollar\").", false),
+                ("aggregate", "string", "Comma-separated aggregate functions (e.g., \"mean(Abs_Error),sum(Profit_Units)\").", false),
+                ("format", "string", "Output format: 'json' (default), 'csv', or 'text'.", false),
+                ("limit", "string", "Max rows to return (default 10000).", false),
+            ],
+        ),
+        tool_descriptor(
+            "mosaic.model.whatif",
+            "Override one input cell, report deltas on dependent measures. Read-only operation (auto-rollbacks).",
+            &[
+                ("path", "string", "Path to a Mosaic YAML model.", true),
+                ("set_coord", "string", "Coordinate of the cell to override (e.g., \"Scenario=Base,...,Measure=Market_Line\").", true),
+                ("value", "string", "New numeric value to set.", true),
+                ("show", "string", "Comma-separated measure names to report before/after/delta.", true),
+            ],
+        ),
+        tool_descriptor(
+            "mosaic.model.trace",
+            "Show the hierarchical computation tree for one derived cell. Traces all the way to input values.",
+            &[
+                ("path", "string", "Path to a Mosaic YAML model.", true),
+                ("coord", "string", "Coordinate of the cell to trace (e.g., \"Scenario=Base,...,Measure=EV_Per_Dollar\").", true),
+                ("depth", "string", "Max trace depth (default unlimited).", false),
+            ],
+        ),
+        tool_descriptor(
+            "mosaic.model.sweep",
+            "Parameter sensitivity analysis. Loop over a range of values, evaluate a metric at each point, report optimal.",
+            &[
+                ("path", "string", "Path to a Mosaic YAML model.", true),
+                ("model", "string", "Fitted model name (for coefficient sweep).", false),
+                ("coefficient", "string", "Coefficient feature name to sweep.", false),
+                ("set", "string", "Cell coordinate to override (alternative to coefficient sweep).", false),
+                ("range", "string", "Range spec: start:end:step (e.g., \"0:5:0.5\").", true),
+                ("metric", "string", "Metric function (e.g., \"mean(Abs_Error)\").", true),
+                ("goal", "string", "Optimization goal: 'minimize' or 'maximize'.", true),
+            ],
+        ),
+        tool_descriptor(
+            "mosaic.model.diff",
+            "Compare two cube states. Reports cells where values differ, sorted by |delta|.",
+            &[
+                ("path", "string", "Path to a Mosaic YAML model.", true),
+                ("left", "string", "Left state filter (e.g., \"Scenario=Base\").", true),
+                ("right", "string", "Right state filter (e.g., \"Scenario=Forecast\").", true),
+                ("limit", "string", "Max changes to report (default 50).", false),
+            ],
+        ),
+        tool_descriptor(
+            "mosaic.model.write",
+            "Set one cell value and persist to the .tessera/writes.jsonl sidecar log.",
+            &[
+                ("path", "string", "Path to a Mosaic YAML model.", true),
+                ("coord", "string", "Coordinate of the cell to write.", true),
+                ("value", "string", "New numeric value.", true),
+                ("dry_run", "boolean", "If true, show what would change without writing.", false),
+            ],
+        ),
+        tool_descriptor(
+            "mosaic.tessera.transform",
+            "Convert raw data (file or URL) to model-compatible format using a recipe. Simple GET for URLs.",
+            &[
+                ("source", "string", "Source file path or URL.", true),
+                ("recipe", "string", "Path to the transform recipe YAML.", true),
+                ("output", "string", "Output file path. Omit for stdout.", false),
+                ("format", "string", "Output format: 'csv' (default) or 'json'.", false),
+                ("preview", "string", "Preview N rows without writing output file.", false),
+            ],
+        ),
     ]);
     JsonValue::Object(vec![("tools".into(), tools)])
 }
@@ -236,6 +313,14 @@ fn handle_tools_call(params: &JsonValue) -> Result<JsonValue, (i64, String)> {
         "mosaic.model.inspect" => tool_inspect(&args),
         "mosaic.model.lint" => tool_lint(&args),
         "mosaic.model.test" => tool_test(&args),
+        // Phase 6A tools
+        "mosaic.model.query" => tool_query(&args),
+        "mosaic.model.whatif" => tool_whatif(&args),
+        "mosaic.model.trace" => tool_trace(&args),
+        "mosaic.model.sweep" => tool_sweep(&args),
+        "mosaic.model.diff" => tool_diff(&args),
+        "mosaic.model.write" => tool_write(&args),
+        "mosaic.tessera.transform" => tool_transform(&args),
         other => return Err((-32601, format!("unknown tool: {other}"))),
     };
     Ok(outcome.into_call_result())
@@ -509,6 +594,265 @@ fn tool_test(args: &JsonValue) -> ToolOutcome {
 struct GoldenEntry {
     json: String,
     failed: bool,
+}
+
+// ==========================================================================
+// Phase 6A tool implementations. These delegate to the CLI verb modules,
+// capturing stdout into a ToolOutcome.
+// ==========================================================================
+
+fn tool_query(args: &JsonValue) -> ToolOutcome {
+    let path = match args.get("path").and_then(JsonValue::as_str_owned) {
+        Some(p) => p,
+        None => return error_outcome("missing required argument: path"),
+    };
+    let mut cli_args = vec![path];
+    if let Some(w) = args.get("where").and_then(JsonValue::as_str_owned) {
+        cli_args.push("--where".into());
+        cli_args.push(w);
+    }
+    if let Some(s) = args.get("show").and_then(JsonValue::as_str_owned) {
+        cli_args.push("--show".into());
+        cli_args.push(s);
+    }
+    if let Some(c) = args.get("coord").and_then(JsonValue::as_str_owned) {
+        cli_args.push("--coord".into());
+        cli_args.push(c);
+    }
+    if let Some(a) = args.get("aggregate").and_then(JsonValue::as_str_owned) {
+        cli_args.push("--aggregate".into());
+        cli_args.push(a);
+    }
+    if let Some(l) = args.get("limit").and_then(JsonValue::as_str_owned) {
+        cli_args.push("--limit".into());
+        cli_args.push(l);
+    }
+    cli_args.push("--format".into());
+    cli_args.push("json".into());
+    run_cli_verb(|| {
+        let cmd = crate::query::parse(&cli_args)?;
+        Ok(crate::query::run_captured(cmd))
+    })
+}
+
+fn tool_whatif(args: &JsonValue) -> ToolOutcome {
+    let path = match args.get("path").and_then(JsonValue::as_str_owned) {
+        Some(p) => p,
+        None => return error_outcome("missing required argument: path"),
+    };
+    let set_coord = match args.get("set_coord").and_then(JsonValue::as_str_owned) {
+        Some(s) => s,
+        None => return error_outcome("missing required argument: set_coord"),
+    };
+    let value = match args.get("value").and_then(JsonValue::as_str_owned) {
+        Some(v) => v,
+        None => return error_outcome("missing required argument: value"),
+    };
+    let show = match args.get("show").and_then(JsonValue::as_str_owned) {
+        Some(s) => s,
+        None => return error_outcome("missing required argument: show"),
+    };
+    let cli_args = vec![
+        path,
+        "--set".into(),
+        set_coord,
+        "--value".into(),
+        value,
+        "--show".into(),
+        show,
+        "--format".into(),
+        "json".into(),
+    ];
+    run_cli_verb(|| {
+        let cmd = crate::whatif::parse(&cli_args)?;
+        Ok(crate::whatif::run_captured(cmd))
+    })
+}
+
+fn tool_trace(args: &JsonValue) -> ToolOutcome {
+    let path = match args.get("path").and_then(JsonValue::as_str_owned) {
+        Some(p) => p,
+        None => return error_outcome("missing required argument: path"),
+    };
+    let coord = match args.get("coord").and_then(JsonValue::as_str_owned) {
+        Some(c) => c,
+        None => return error_outcome("missing required argument: coord"),
+    };
+    let mut cli_args = vec![
+        path,
+        "--coord".into(),
+        coord,
+        "--format".into(),
+        "json".into(),
+    ];
+    if let Some(d) = args.get("depth").and_then(JsonValue::as_str_owned) {
+        cli_args.push("--depth".into());
+        cli_args.push(d);
+    }
+    run_cli_verb(|| {
+        let cmd = crate::trace::parse(&cli_args)?;
+        Ok(crate::trace::run_captured(cmd))
+    })
+}
+
+fn tool_sweep(args: &JsonValue) -> ToolOutcome {
+    let path = match args.get("path").and_then(JsonValue::as_str_owned) {
+        Some(p) => p,
+        None => return error_outcome("missing required argument: path"),
+    };
+    let range = match args.get("range").and_then(JsonValue::as_str_owned) {
+        Some(r) => r,
+        None => return error_outcome("missing required argument: range"),
+    };
+    let metric = match args.get("metric").and_then(JsonValue::as_str_owned) {
+        Some(m) => m,
+        None => return error_outcome("missing required argument: metric"),
+    };
+    let goal = match args.get("goal").and_then(JsonValue::as_str_owned) {
+        Some(g) => g,
+        None => return error_outcome("missing required argument: goal"),
+    };
+    let mut cli_args = vec![
+        path,
+        "--range".into(),
+        range,
+        "--metric".into(),
+        metric,
+        "--goal".into(),
+        goal,
+        "--format".into(),
+        "json".into(),
+    ];
+    if let Some(m) = args.get("model").and_then(JsonValue::as_str_owned) {
+        cli_args.push("--model".into());
+        cli_args.push(m);
+    }
+    if let Some(c) = args.get("coefficient").and_then(JsonValue::as_str_owned) {
+        cli_args.push("--coefficient".into());
+        cli_args.push(c);
+    }
+    if let Some(s) = args.get("set").and_then(JsonValue::as_str_owned) {
+        cli_args.push("--set".into());
+        cli_args.push(s);
+    }
+    run_cli_verb(|| {
+        let cmd = crate::sweep::parse(&cli_args)?;
+        Ok(crate::sweep::run_captured(cmd))
+    })
+}
+
+fn tool_diff(args: &JsonValue) -> ToolOutcome {
+    let path = match args.get("path").and_then(JsonValue::as_str_owned) {
+        Some(p) => p,
+        None => return error_outcome("missing required argument: path"),
+    };
+    let left = match args.get("left").and_then(JsonValue::as_str_owned) {
+        Some(l) => l,
+        None => return error_outcome("missing required argument: left"),
+    };
+    let right = match args.get("right").and_then(JsonValue::as_str_owned) {
+        Some(r) => r,
+        None => return error_outcome("missing required argument: right"),
+    };
+    let mut cli_args = vec![
+        path,
+        "--left".into(),
+        left,
+        "--right".into(),
+        right,
+        "--format".into(),
+        "json".into(),
+    ];
+    if let Some(l) = args.get("limit").and_then(JsonValue::as_str_owned) {
+        cli_args.push("--limit".into());
+        cli_args.push(l);
+    }
+    run_cli_verb(|| {
+        let cmd = crate::diff::parse(&cli_args)?;
+        Ok(crate::diff::run_captured(cmd))
+    })
+}
+
+fn tool_write(args: &JsonValue) -> ToolOutcome {
+    let path = match args.get("path").and_then(JsonValue::as_str_owned) {
+        Some(p) => p,
+        None => return error_outcome("missing required argument: path"),
+    };
+    let coord = match args.get("coord").and_then(JsonValue::as_str_owned) {
+        Some(c) => c,
+        None => return error_outcome("missing required argument: coord"),
+    };
+    let value = match args.get("value").and_then(JsonValue::as_str_owned) {
+        Some(v) => v,
+        None => return error_outcome("missing required argument: value"),
+    };
+    let dry_run = args
+        .get("dry_run")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false);
+    let mut cli_args = vec![
+        path,
+        "--coord".into(),
+        coord,
+        "--value".into(),
+        value,
+        "--format".into(),
+        "json".into(),
+    ];
+    if dry_run {
+        cli_args.push("--dry-run".into());
+    }
+    run_cli_verb(|| {
+        let cmd = crate::write::parse(&cli_args)?;
+        Ok(crate::write::run_captured(cmd))
+    })
+}
+
+fn tool_transform(args: &JsonValue) -> ToolOutcome {
+    let source = match args.get("source").and_then(JsonValue::as_str_owned) {
+        Some(s) => s,
+        None => return error_outcome("missing required argument: source"),
+    };
+    let recipe = match args.get("recipe").and_then(JsonValue::as_str_owned) {
+        Some(r) => r,
+        None => return error_outcome("missing required argument: recipe"),
+    };
+    let mut cli_args = vec!["--source".into(), source, "--recipe".into(), recipe];
+    let fmt = args
+        .get("format")
+        .and_then(JsonValue::as_str_owned)
+        .unwrap_or_else(|| "csv".into());
+    cli_args.push("--format".into());
+    cli_args.push(fmt);
+    if let Some(o) = args.get("output").and_then(JsonValue::as_str_owned) {
+        cli_args.push("--output".into());
+        cli_args.push(o);
+    }
+    if let Some(p) = args.get("preview").and_then(JsonValue::as_str_owned) {
+        cli_args.push("--preview".into());
+        cli_args.push(p);
+    }
+    run_cli_verb(|| {
+        let cmd = crate::transform::parse(&cli_args)?;
+        Ok(crate::transform::run_captured(cmd))
+    })
+}
+
+/// Run a CLI verb, capturing its output into a ToolOutcome.
+/// The verb `run_captured` functions return (exit_code, output_string)
+/// instead of printing directly to stdout, preventing MCP stream corruption.
+fn run_cli_verb<F>(f: F) -> ToolOutcome
+where
+    F: FnOnce() -> Result<(i32, String), String>,
+{
+    match f() {
+        Ok((exit_code, output)) => ToolOutcome {
+            exit_code,
+            stdout: output,
+            structured: None,
+        },
+        Err(e) => error_outcome(&e),
+    }
 }
 
 fn run_one(

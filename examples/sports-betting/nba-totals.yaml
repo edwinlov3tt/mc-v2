@@ -11,7 +11,7 @@ metadata:
   created: "2026-05-05"
 
 # =============================================================================
-# DIMENSIONS
+# DIMENSIONS (6 required — all natural to the domain)
 # =============================================================================
 
 dimensions:
@@ -52,18 +52,26 @@ dimensions:
         period_start: "2026-04-19"
         period_end_exclusive: "2026-04-20"
 
+  - name: "Sportsbook"
+    kind: "Standard"
+    description: "Per-book lines enable line-shopping and edge optimization"
+    elements:
+      - name: "Pinnacle"
+      - name: "DraftKings"
+      - name: "FanDuel"
+
   - name: "Game"
     kind: "Standard"
     description: "Individual NBA matchups (Away_at_Home format)"
     elements:
       - name: "LAL_at_BOS"
       - name: "GSW_at_MIL"
-      - name: "PHX_at_DEN"
-      - name: "NYK_at_MIA"
-      - name: "DAL_at_MIN"
       - name: "CLE_at_ORL"
+      - name: "PHX_at_DEN"
       - name: "OKC_at_SAC"
       - name: "PHI_at_IND"
+      - name: "NYK_at_MIA"
+      - name: "DAL_at_MIN"
       - name: "MEM_at_NOP"
       - name: "ATL_at_CHI"
       - name: "LAC_at_POR"
@@ -143,7 +151,7 @@ measures:
     aggregation: "Sum"
     description: "Number of away team top-3 scorers missing (0-3)"
 
-  # --- Market Data (Inputs) ---
+  # --- Market Data (Inputs — vary per Sportsbook) ---
   - name: "Market_Line"
     role: "Input"
     data_type: "F64"
@@ -271,12 +279,6 @@ measures:
     aggregation: "Sum"
     description: "Error severity bucket (1=good, 2=moderate, 3=bad, 4=severe)"
 
-  - name: "Revenue_Share"
-    role: "Derived"
-    data_type: "F64"
-    aggregation: "Sum"
-    description: "This game's profit as share of total portfolio profit"
-
 # =============================================================================
 # RULES
 # =============================================================================
@@ -287,7 +289,7 @@ rules:
   - name: "predict_total"
     target_measure: "Predicted_Total"
     scope: "AllLeaves"
-    description: "V1.6 Lasso prediction using 9 non-zero production coefficients"
+    description: "V1.6 Lasso prediction using 10 production coefficients (1 is zero-weight)"
     body: "predict(\"nba_v16_lasso\", avg_pace, pace_delta, combined_off_rating, combined_def_rating, avg_recent_total_5, avg_recent_total_10, home_recent_total_avg, combined_stl, home_missing_top_scorers, away_missing_top_scorers)"
     declared_dependencies:
       - "avg_pace"
@@ -431,16 +433,8 @@ rules:
     declared_dependencies:
       - "Abs_Error"
 
-  - name: "calc_revenue_share"
-    target_measure: "Revenue_Share"
-    scope: "AllLeaves"
-    description: "This game's profit as fraction of total portfolio profit"
-    body: "safe_div(Profit_Units, 15, 0)"
-    declared_dependencies:
-      - "Profit_Units"
-
 # =============================================================================
-# FITTED MODELS — Real V1.6 Lasso production coefficients
+# FITTED MODELS — Real V1.6 Lasso production coefficients from claw-core
 # =============================================================================
 
 fitted_models:
@@ -475,10 +469,6 @@ calibration_maps:
   - name: "v16_calibration"
     method: "pava"
     points:
-      # These are the bet-side probabilities (not raw P_Over) calibrated against
-      # actual win rate. Source: exp016_fit_calibration.py on 2020-21 + 2021-22
-      # OOD data. The model shows slight overconfidence at high raw probs and
-      # slight underconfidence at low raw probs (conservative bias).
       - { raw: 0.510, calibrated: 0.487 }
       - { raw: 0.535, calibrated: 0.518 }
       - { raw: 0.560, calibrated: 0.542 }
@@ -492,18 +482,12 @@ calibration_maps:
       sample_size: 1312
       raw_brier: 0.2491
       calibrated_brier: 0.2453
-      # source: EXP-016; ood_seasons: 2020-21, 2021-22; 8 buckets
-      # PAVA-enforced monotonicity; slight overconfidence correction
 
 # =============================================================================
-# LOOKUP TABLES — Book tier classification
+# LOOKUP TABLES
 # =============================================================================
 
 lookup_tables: []
-  # Lookup tables removed — this cartridge's Game dimension has per-game leaf
-  # elements, so lookups by game don't add value. Book tier classification and
-  # playoff offset are expressed as inline formula logic or Input measures.
-  # Future: add season-level lookup tables once multi-key lookups are exercised.
 
 # =============================================================================
 # STATUS THRESHOLDS — Confidence bins + error severity
@@ -538,29 +522,26 @@ status_thresholds:
 # =============================================================================
 
 golden_tests:
-  # Game 1: LAL_at_BOS — model predicts OVER, actual confirms (correct)
+  # -------------------------------------------------------------------------
+  # Golden #1: LAL_at_BOS — correct OVER prediction (Pinnacle)
   # Features: avg_pace=100.8, combined_off=226.4, combined_def=222.8,
   #           avg_recent_5=230.0, avg_recent_10=228.5, home_recent=231.0,
-  #           stl=15.2, home_miss=0, away_miss=0, pace_delta=0
-  # Predicted = -435.176757 + 3.015916*100.8 + 0*0 + 0.548263*226.4
-  #           + 0.602389*222.8 + 0.064143*230.0 + 0.331426*228.5
-  #           + 0.046528*231.0 + (-0.017643)*15.2 + (-1.202871)*0 + (-0.054086)*0
-  #           = -435.176757 + 304.004 + 0 + 124.127 + 134.212 + 14.753
-  #           + 75.731 + 10.748 + (-0.268) + 0 + 0
-  #           = 228.130
-  # Market_Line = 224.5, so P_Over = 1 - Phi((224.5 - 228.13) / 17.251)
-  #            = 1 - Phi(-0.2104) = 1 - 0.4167 = 0.5833
-  # Calibrate 0.5833: between raw=0.560 (cal=0.542) and raw=0.590 (cal=0.571)
-  #   t = (0.5833 - 0.560) / (0.590 - 0.560) = 0.777
-  #   cal = 0.542 + 0.777 * (0.571 - 0.542) = 0.542 + 0.0225 = 0.5645
-  # EV = 0.5645 * (1.91 - 1) - (1 - 0.5645) = 0.5645*0.91 - 0.4355 = 0.5137 - 0.4355 = 0.0782
-  # Kelly = (0.5645*1.91 - 1) / (1.91 - 1) * 0.25 = (1.0782 - 1)/0.91 * 0.25 = 0.0859*0.25 = 0.0215
+  #           stl=15.2, home_miss=0, away_miss=0, pace_delta=0.5
+  # Predicted = -435.177 + 3.016*100.8 + 0.548*226.4 + 0.602*222.8
+  #           + 0.064*230.0 + 0.331*228.5 + 0.047*231.0 - 0.018*15.2
+  #           = 228.13
+  # Pinnacle line=224.5, P_Over = 1 - Phi(-0.210) = 0.583
+  # Calibrated (between 0.560/0.542 and 0.590/0.571): ~0.565
+  # EV = 0.565*0.91 - 0.435 = 0.078
+  # Actual=238 > 224.5 → Direction_Correct = 1
+  # -------------------------------------------------------------------------
 
   - name: "lal_bos_predicted_total"
     coord:
       Scenario: "Base"
       Version: "Working"
       Time: "2026_04_15"
+      Sportsbook: "Pinnacle"
       Game: "LAL_at_BOS"
       Measure: "Predicted_Total"
     expect_within_epsilon:
@@ -572,6 +553,7 @@ golden_tests:
       Scenario: "Base"
       Version: "Working"
       Time: "2026_04_15"
+      Sportsbook: "Pinnacle"
       Game: "LAL_at_BOS"
       Measure: "P_Over"
     expect_within_epsilon:
@@ -583,6 +565,7 @@ golden_tests:
       Scenario: "Base"
       Version: "Working"
       Time: "2026_04_15"
+      Sportsbook: "Pinnacle"
       Game: "LAL_at_BOS"
       Measure: "EV_Per_Dollar"
     expect_within_epsilon:
@@ -594,28 +577,23 @@ golden_tests:
       Scenario: "Base"
       Version: "Working"
       Time: "2026_04_15"
+      Sportsbook: "Pinnacle"
       Game: "LAL_at_BOS"
       Measure: "Direction_Correct"
     expect: 1.0
 
-  # Game 2: GSW_at_MIL — model predicts UNDER correctly
-  # Features: avg_pace=98.5, combined_off=221.0, combined_def=224.6,
-  #           avg_recent_5=218.0, avg_recent_10=220.5, home_recent=222.0,
-  #           stl=16.5, home_miss=1, away_miss=0, pace_delta=1.2
-  # Predicted = -435.177 + 3.016*98.5 + 0*1.2 + 0.548*221.0 + 0.602*224.6
-  #           + 0.064*218.0 + 0.331*220.5 + 0.047*222.0 + (-0.018)*16.5
-  #           + (-1.203)*1 + (-0.054)*0
-  #           = -435.177 + 297.07 + 0 + 121.16 + 135.21 + 13.98 + 73.03
-  #           + 10.33 + (-0.29) + (-1.20) + 0
-  #           = 214.10
-  # Market_Line = 219.5, P_Over = 1 - Phi((219.5 - 214.1)/17.251) = 1 - Phi(0.313) = 1 - 0.623 = 0.377
-  # P_Over < 0.5, so model says UNDER. Actual_Total = 208 < 219.5, model correct.
+  # -------------------------------------------------------------------------
+  # Golden #2: GSW_at_MIL — correct UNDER prediction (Pinnacle)
+  # Predicted ~214.1, line=219.5, P_Over ~0.378 (under 0.5 → model says UNDER)
+  # Actual=208 < 219.5 → model correct
+  # -------------------------------------------------------------------------
 
   - name: "gsw_mil_predicts_under"
     coord:
       Scenario: "Base"
       Version: "Working"
       Time: "2026_04_15"
+      Sportsbook: "Pinnacle"
       Game: "GSW_at_MIL"
       Measure: "P_Over"
     expect_within_epsilon:
@@ -627,20 +605,25 @@ golden_tests:
       Scenario: "Base"
       Version: "Working"
       Time: "2026_04_15"
+      Sportsbook: "Pinnacle"
       Game: "GSW_at_MIL"
       Measure: "Direction_Correct"
     expect: 1.0
 
-  # Game 3: PHX_at_DEN — model is WRONG (predicts over, actual goes under)
-  # High pace game with large miss — triggers High_Pace_Miss flag
-  # avg_pace=103.2, Predicted ~ 236, Market_Line=232.5, P_Over ~ 0.58
-  # Actual_Total = 215 (under the line by 17.5 pts)
+  # -------------------------------------------------------------------------
+  # Golden #3: PHX_at_DEN — WRONG prediction (overconfidence + high pace miss)
+  # avg_pace=103.2, Predicted ~238.9, Pinnacle line=232.5
+  # P_Over ~0.645, Calibrated_P ~0.63 (>0.60)
+  # Actual=215 < 232.5 → Direction_Correct=0 → Overconfidence fires
+  # Abs_Error = |238.9 - 215| = 23.9 > 15, pace > 102 → High_Pace_Miss fires
+  # -------------------------------------------------------------------------
 
   - name: "phx_den_overconfidence_flag"
     coord:
       Scenario: "Base"
       Version: "Working"
       Time: "2026_04_16"
+      Sportsbook: "Pinnacle"
       Game: "PHX_at_DEN"
       Measure: "Overconfidence_Flag"
     expect: 1.0
@@ -650,22 +633,104 @@ golden_tests:
       Scenario: "Base"
       Version: "Working"
       Time: "2026_04_16"
+      Sportsbook: "Pinnacle"
       Game: "PHX_at_DEN"
       Measure: "High_Pace_Miss"
     expect: 1.0
 
-  # Calibration test: raw ~0.631 maps to calibrated ~0.611 (between 0.625/0.609 and 0.670/0.652)
+  # -------------------------------------------------------------------------
+  # Golden #4: DAL_at_MIN — cross-book EV differs (HEADLINE TEST)
+  # Same game, same prediction (~228.3), but different lines per book:
+  #   Pinnacle line=224.5 → P_Over ~0.587 → Cal ~0.568 → EV ~0.096
+  #   DraftKings line=226.0 → P_Over ~0.553 → Cal ~0.535 → EV ~0.001
+  # Proves Sportsbook dimension adds real analytical value.
+  # -------------------------------------------------------------------------
+
+  - name: "dal_min_ev_pinnacle"
+    coord:
+      Scenario: "Base"
+      Version: "Working"
+      Time: "2026_04_17"
+      Sportsbook: "Pinnacle"
+      Game: "DAL_at_MIN"
+      Measure: "EV_Per_Dollar"
+    expect_within_epsilon:
+      value: 0.096
+      epsilon: 0.025
+
+  - name: "dal_min_ev_draftkings"
+    coord:
+      Scenario: "Base"
+      Version: "Working"
+      Time: "2026_04_17"
+      Sportsbook: "DraftKings"
+      Game: "DAL_at_MIN"
+      Measure: "EV_Per_Dollar"
+    expect_within_epsilon:
+      value: 0.0
+      epsilon: 0.02
+
+  # -------------------------------------------------------------------------
+  # Golden #5: Calibration check — NYK_at_MIA
+  # Predicted ~233.3, Pinnacle line=227.5 → P_Over ~0.63
+  # Calibrate: between 0.625/0.609 and 0.670/0.652 → ~0.615
   # Verifies PAVA piecewise-linear interpolation is working correctly
+  # -------------------------------------------------------------------------
+
   - name: "calibration_at_known_point"
     coord:
       Scenario: "Base"
       Version: "Working"
       Time: "2026_04_17"
+      Sportsbook: "Pinnacle"
       Game: "NYK_at_MIA"
       Measure: "Calibrated_P"
     expect_within_epsilon:
-      value: 0.612
+      value: 0.615
       epsilon: 0.015
+
+  # -------------------------------------------------------------------------
+  # Golden #6: Kelly = 0 for negative-EV game (GSW_at_MIL, model says UNDER)
+  # P_Over ~0.377 → calibrated clamps to 0.487 → EV = 0.487*0.91 - 0.513 < 0
+  # Kelly = 0 (proves abstention on negative-EV bets)
+  # -------------------------------------------------------------------------
+
+  - name: "gsw_mil_kelly_zero"
+    coord:
+      Scenario: "Base"
+      Version: "Working"
+      Time: "2026_04_15"
+      Sportsbook: "Pinnacle"
+      Game: "GSW_at_MIL"
+      Measure: "Kelly_Fraction"
+    expect: 0.0
+
+  # -------------------------------------------------------------------------
+  # Golden #7: Should_Bet differs across books for same game (HEADLINE TEST)
+  # DAL_at_MIN: Pinnacle has EV=0.096>0.03 and Cal_P=0.568>0.56 → Should_Bet=1
+  #             DraftKings has EV~0.001<0.03 → Should_Bet=0
+  # Different lines at different books → different bet decisions.
+  # -------------------------------------------------------------------------
+
+  - name: "dal_min_should_bet_pinnacle"
+    coord:
+      Scenario: "Base"
+      Version: "Working"
+      Time: "2026_04_17"
+      Sportsbook: "Pinnacle"
+      Game: "DAL_at_MIN"
+      Measure: "Should_Bet"
+    expect: 1.0
+
+  - name: "dal_min_should_bet_draftkings"
+    coord:
+      Scenario: "Base"
+      Version: "Working"
+      Time: "2026_04_17"
+      Sportsbook: "DraftKings"
+      Game: "DAL_at_MIN"
+      Measure: "Should_Bet"
+    expect: 0.0
 
 # =============================================================================
 # CANONICAL INPUTS — loaded from external CSV
@@ -673,4 +738,4 @@ golden_tests:
 
 canonical_inputs:
   source: "nba-totals.inputs.csv"
-  columns: ["Scenario", "Version", "Time", "Game", "Measure", "value"]
+  columns: ["Scenario", "Version", "Time", "Sportsbook", "Game", "Measure", "value"]
