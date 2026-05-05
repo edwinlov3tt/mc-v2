@@ -1,6 +1,6 @@
 # ADR-0012: Phase 3F — Time-Series and Period Operations
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-04
 **Deciders:** project owner
 **Phase:** 3F (per [`../roadmap/MASTER_PHASE_PLAN.md`](../roadmap/MASTER_PHASE_PLAN.md))

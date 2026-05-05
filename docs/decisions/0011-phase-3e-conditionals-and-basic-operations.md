@@ -1,6 +1,6 @@
 # ADR-0011: Phase 3E — Conditionals and Basic Operations
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-04
 **Deciders:** project owner
 **Phase:** 3E (per [`../roadmap/MASTER_PHASE_PLAN.md`](../roadmap/MASTER_PHASE_PLAN.md))

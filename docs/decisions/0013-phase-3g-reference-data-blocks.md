@@ -1,6 +1,6 @@
 # ADR-0013: Phase 3G — Reference-Data Blocks
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-04
 **Deciders:** project owner
 **Phase:** 3G (per [`../roadmap/MASTER_PHASE_PLAN.md`](../roadmap/MASTER_PHASE_PLAN.md))
