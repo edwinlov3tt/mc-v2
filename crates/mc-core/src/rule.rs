@@ -90,6 +90,14 @@ pub enum Expr {
     RollingAvg(ElementId, Box<Expr>),
     PeriodIndex,
 
+    // -- Phase 3F.1: Anchor functions --
+    AnchorIndex,
+    IsPast,
+    IsCurrent,
+    IsFuture,
+    PeriodsSinceAnchor,
+    PeriodsToEnd,
+
     // -- Phase 3G: Reference-data --
     Benchmark(String, Box<Expr>),
     Lookup(String, Box<Expr>),
@@ -245,7 +253,14 @@ fn collect_self_refs(expr: &Expr) -> AHashSet<ElementId> {
     let mut out = AHashSet::new();
     fn walk(expr: &Expr, out: &mut AHashSet<ElementId>) {
         match expr {
-            Expr::Const(_) | Expr::PeriodIndex => {}
+            Expr::Const(_)
+            | Expr::PeriodIndex
+            | Expr::AnchorIndex
+            | Expr::IsPast
+            | Expr::IsCurrent
+            | Expr::IsFuture
+            | Expr::PeriodsSinceAnchor
+            | Expr::PeriodsToEnd => {}
             Expr::SelfRef(m) | Expr::ActualRef(m) | Expr::Prev(m) | Expr::Cumulative(m) => {
                 out.insert(*m);
             }
@@ -306,6 +321,12 @@ pub fn expr_depth(expr: &Expr) -> u32 {
         | Expr::Prev(_)
         | Expr::Cumulative(_)
         | Expr::PeriodIndex
+        | Expr::AnchorIndex
+        | Expr::IsPast
+        | Expr::IsCurrent
+        | Expr::IsFuture
+        | Expr::PeriodsSinceAnchor
+        | Expr::PeriodsToEnd
         | Expr::SumOver(_, _) => 1,
         Expr::Add(a, b)
         | Expr::Sub(a, b)
@@ -622,6 +643,12 @@ where
             }
         }
         Expr::PeriodIndex => lookup_cross(&CrossCoordRead::PeriodIndex),
+        Expr::AnchorIndex => lookup_cross(&CrossCoordRead::AnchorIndex),
+        Expr::IsPast => lookup_cross(&CrossCoordRead::IsPast),
+        Expr::IsCurrent => lookup_cross(&CrossCoordRead::IsCurrent),
+        Expr::IsFuture => lookup_cross(&CrossCoordRead::IsFuture),
+        Expr::PeriodsSinceAnchor => lookup_cross(&CrossCoordRead::PeriodsSinceAnchor),
+        Expr::PeriodsToEnd => lookup_cross(&CrossCoordRead::PeriodsToEnd),
         Expr::Benchmark(name, key_expr) => {
             let key = eval_expr(key_expr, lookup_self, lookup_cross)?;
             lookup_cross(&CrossCoordRead::BenchmarkLookup {
@@ -679,6 +706,19 @@ pub enum CrossCoordRead {
         dimension: crate::id::DimensionId,
         measure: ElementId,
     },
+    // -- Phase 3F.1: Anchor functions --
+    /// Period index of the time_anchor element.
+    AnchorIndex,
+    /// 1.0 if current period_index < anchor_index, else 0.0.
+    IsPast,
+    /// 1.0 if current period_index == anchor_index, else 0.0.
+    IsCurrent,
+    /// 1.0 if current period_index > anchor_index, else 0.0.
+    IsFuture,
+    /// period_index - anchor_index (negative = past).
+    PeriodsSinceAnchor,
+    /// max_period_index - period_index.
+    PeriodsToEnd,
 }
 
 fn eval_comparison<F, G>(
@@ -1605,5 +1645,74 @@ mod tests {
         };
         let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut cross).unwrap();
         assert_eq!(v.as_f64(), Some(1000.0));
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 3F.1: Anchor function eval tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn eval_anchor_index_delegates() {
+        let body = Expr::AnchorIndex;
+        let mut cross = |read: &CrossCoordRead| -> Result<ScalarValue, EngineError> {
+            match read {
+                CrossCoordRead::AnchorIndex => Ok(ScalarValue::F64(5.0)),
+                _ => Ok(ScalarValue::Null),
+            }
+        };
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut cross).unwrap();
+        assert_eq!(v.as_f64(), Some(5.0));
+    }
+
+    #[test]
+    fn eval_is_past_delegates() {
+        let body = Expr::IsPast;
+        let mut cross = |read: &CrossCoordRead| -> Result<ScalarValue, EngineError> {
+            match read {
+                CrossCoordRead::IsPast => Ok(ScalarValue::F64(1.0)),
+                _ => Ok(ScalarValue::Null),
+            }
+        };
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut cross).unwrap();
+        assert_eq!(v.as_f64(), Some(1.0));
+    }
+
+    #[test]
+    fn eval_is_current_delegates() {
+        let body = Expr::IsCurrent;
+        let mut cross = |read: &CrossCoordRead| -> Result<ScalarValue, EngineError> {
+            match read {
+                CrossCoordRead::IsCurrent => Ok(ScalarValue::F64(0.0)),
+                _ => Ok(ScalarValue::Null),
+            }
+        };
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut cross).unwrap();
+        assert_eq!(v.as_f64(), Some(0.0));
+    }
+
+    #[test]
+    fn eval_periods_since_anchor_delegates() {
+        let body = Expr::PeriodsSinceAnchor;
+        let mut cross = |read: &CrossCoordRead| -> Result<ScalarValue, EngineError> {
+            match read {
+                CrossCoordRead::PeriodsSinceAnchor => Ok(ScalarValue::F64(-3.0)),
+                _ => Ok(ScalarValue::Null),
+            }
+        };
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut cross).unwrap();
+        assert_eq!(v.as_f64(), Some(-3.0));
+    }
+
+    #[test]
+    fn eval_periods_to_end_delegates() {
+        let body = Expr::PeriodsToEnd;
+        let mut cross = |read: &CrossCoordRead| -> Result<ScalarValue, EngineError> {
+            match read {
+                CrossCoordRead::PeriodsToEnd => Ok(ScalarValue::F64(7.0)),
+                _ => Ok(ScalarValue::Null),
+            }
+        };
+        let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut cross).unwrap();
+        assert_eq!(v.as_f64(), Some(7.0));
     }
 }

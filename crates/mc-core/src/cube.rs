@@ -1883,7 +1883,13 @@ fn validate_expr_well_typed(expr: &Expr, measure_dim: &Dimension) -> Result<(), 
             validate_expr_well_typed(periods, measure_dim)?;
             Ok(())
         }
-        Expr::PeriodIndex => Ok(()),
+        Expr::PeriodIndex
+        | Expr::AnchorIndex
+        | Expr::IsPast
+        | Expr::IsCurrent
+        | Expr::IsFuture
+        | Expr::PeriodsSinceAnchor
+        | Expr::PeriodsToEnd => Ok(()),
         Expr::Benchmark(_, key) | Expr::Lookup(_, key) => {
             validate_expr_well_typed(key, measure_dim)
         }

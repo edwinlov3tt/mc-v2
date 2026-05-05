@@ -516,6 +516,12 @@ fn compile_expr(
             Ok(Expr::RollingAvg(measure, Box::new(window)))
         }
         ParsedRuleBody::PeriodIndex(_) => Ok(Expr::PeriodIndex),
+        ParsedRuleBody::AnchorIndex(_) => Ok(Expr::AnchorIndex),
+        ParsedRuleBody::IsPast(_) => Ok(Expr::IsPast),
+        ParsedRuleBody::IsCurrent(_) => Ok(Expr::IsCurrent),
+        ParsedRuleBody::IsFuture(_) => Ok(Expr::IsFuture),
+        ParsedRuleBody::PeriodsSinceAnchor(_) => Ok(Expr::PeriodsSinceAnchor),
+        ParsedRuleBody::PeriodsToEnd(_) => Ok(Expr::PeriodsToEnd),
         // Phase 3G: reference-data
         ParsedRuleBody::Benchmark(b) => {
             let key = compile_expr(&b.key_expr, refs, validated)?;

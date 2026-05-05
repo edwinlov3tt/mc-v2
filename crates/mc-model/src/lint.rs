@@ -322,7 +322,14 @@ fn compute_chain_depths(model: &ValidatedModel) -> BTreeMap<String, usize> {
 
 fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
     match body {
-        ParsedRuleBody::Const(_) | ParsedRuleBody::PeriodIndex(_) => {}
+        ParsedRuleBody::Const(_)
+        | ParsedRuleBody::PeriodIndex(_)
+        | ParsedRuleBody::AnchorIndex(_)
+        | ParsedRuleBody::IsPast(_)
+        | ParsedRuleBody::IsCurrent(_)
+        | ParsedRuleBody::IsFuture(_)
+        | ParsedRuleBody::PeriodsSinceAnchor(_)
+        | ParsedRuleBody::PeriodsToEnd(_) => {}
         ParsedRuleBody::Ref(r) => {
             out.insert(r.measure.clone());
         }

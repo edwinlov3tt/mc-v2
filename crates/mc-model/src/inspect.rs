@@ -841,7 +841,14 @@ fn collect_refs(body: &ParsedRuleBody, out: &mut std::collections::BTreeSet<Stri
     // Delegate to validate.rs's exhaustive walker via formula::contains_cross_coord
     // pattern. We only need measure Ref names for chain depth calculation.
     match body {
-        ParsedRuleBody::Const(_) | ParsedRuleBody::PeriodIndex(_) => {}
+        ParsedRuleBody::Const(_)
+        | ParsedRuleBody::PeriodIndex(_)
+        | ParsedRuleBody::AnchorIndex(_)
+        | ParsedRuleBody::IsPast(_)
+        | ParsedRuleBody::IsCurrent(_)
+        | ParsedRuleBody::IsFuture(_)
+        | ParsedRuleBody::PeriodsSinceAnchor(_)
+        | ParsedRuleBody::PeriodsToEnd(_) => {}
         ParsedRuleBody::Ref(r) => {
             out.insert(r.measure.clone());
         }
