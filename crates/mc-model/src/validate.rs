@@ -91,6 +91,8 @@ pub fn validate(parsed: ParsedModel) -> Result<ValidatedModel, Vec<Error>> {
     check_cross_coord_nesting(&validated_rules, &mut errors);
     // Phase 3G: reference-data block validation
     check_reference_data_blocks(&parsed, &mut val_errors);
+    // Phase 3H: fitted-model + calibration-map validation
+    check_fitted_model_blocks(&parsed, &mut val_errors);
     // Phase 3F.1: time metadata + anchor validation
     check_time_metadata(&parsed, &mut val_errors);
     check_anchor_requirements(&parsed, &validated_rules, &mut val_errors);
@@ -634,6 +636,27 @@ fn check_binop_arity(body: &ParsedRuleBody, rule_name: &str, errors: &mut Vec<Va
             check_binop_arity(&b.value, rule_name, errors);
             return;
         }
+        // Phase 3H
+        ParsedRuleBody::Predict(b) => {
+            for f in &b.features {
+                check_binop_arity(f, rule_name, errors);
+            }
+            return;
+        }
+        ParsedRuleBody::Calibrate(b) => {
+            check_binop_arity(&b.value, rule_name, errors);
+            return;
+        }
+        ParsedRuleBody::Exp(b) => {
+            check_binop_arity(&b.operand, rule_name, errors);
+            return;
+        }
+        ParsedRuleBody::NormCdf(b) => {
+            check_binop_arity(&b.x, rule_name, errors);
+            check_binop_arity(&b.mu, rule_name, errors);
+            check_binop_arity(&b.sigma, rule_name, errors);
+            return;
+        }
     };
     if let Some(args) = args {
         if args.len() != 2 {
@@ -721,6 +744,19 @@ fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
         ParsedRuleBody::Bucket(b) => collect_body_refs(&b.value, out),
         ParsedRuleBody::SumOver(b) => {
             out.insert(b.measure.clone());
+        }
+        // Phase 3H
+        ParsedRuleBody::Predict(b) => {
+            for f in &b.features {
+                collect_body_refs(f, out);
+            }
+        }
+        ParsedRuleBody::Calibrate(b) => collect_body_refs(&b.value, out),
+        ParsedRuleBody::Exp(b) => collect_body_refs(&b.operand, out),
+        ParsedRuleBody::NormCdf(b) => {
+            collect_body_refs(&b.x, out);
+            collect_body_refs(&b.mu, out);
+            collect_body_refs(&b.sigma, out);
         }
     }
 }
@@ -950,6 +986,13 @@ fn uses_time_series(body: &ParsedRuleBody) -> bool {
         ParsedRuleBody::Benchmark(b) => uses_time_series(&b.key_expr),
         ParsedRuleBody::Lookup(b) => uses_time_series(&b.key_expr),
         ParsedRuleBody::Bucket(b) => uses_time_series(&b.value),
+        // Phase 3H
+        ParsedRuleBody::Predict(b) => b.features.iter().any(|f| uses_time_series(f)),
+        ParsedRuleBody::Calibrate(b) => uses_time_series(&b.value),
+        ParsedRuleBody::Exp(b) => uses_time_series(&b.operand),
+        ParsedRuleBody::NormCdf(b) => {
+            uses_time_series(&b.x) || uses_time_series(&b.mu) || uses_time_series(&b.sigma)
+        }
     }
 }
 
@@ -1004,6 +1047,13 @@ fn uses_actual_ref(body: &ParsedRuleBody) -> bool {
         ParsedRuleBody::Benchmark(b) => uses_actual_ref(&b.key_expr),
         ParsedRuleBody::Lookup(b) => uses_actual_ref(&b.key_expr),
         ParsedRuleBody::Bucket(b) => uses_actual_ref(&b.value),
+        // Phase 3H
+        ParsedRuleBody::Predict(b) => b.features.iter().any(|f| uses_actual_ref(f)),
+        ParsedRuleBody::Calibrate(b) => uses_actual_ref(&b.value),
+        ParsedRuleBody::Exp(b) => uses_actual_ref(&b.operand),
+        ParsedRuleBody::NormCdf(b) => {
+            uses_actual_ref(&b.x) || uses_actual_ref(&b.mu) || uses_actual_ref(&b.sigma)
+        }
     }
 }
 
@@ -1163,6 +1213,13 @@ fn find_cross_coord_nesting(body: &ParsedRuleBody) -> Option<String> {
         ParsedRuleBody::Benchmark(b) => find_cross_coord_nesting(&b.key_expr),
         ParsedRuleBody::Lookup(b) => find_cross_coord_nesting(&b.key_expr),
         ParsedRuleBody::Bucket(b) => find_cross_coord_nesting(&b.value),
+        // Phase 3H
+        ParsedRuleBody::Predict(b) => b.features.iter().find_map(|f| find_cross_coord_nesting(f)),
+        ParsedRuleBody::Calibrate(b) => find_cross_coord_nesting(&b.value),
+        ParsedRuleBody::Exp(b) => find_cross_coord_nesting(&b.operand),
+        ParsedRuleBody::NormCdf(b) => find_cross_coord_nesting(&b.x)
+            .or_else(|| find_cross_coord_nesting(&b.mu))
+            .or_else(|| find_cross_coord_nesting(&b.sigma)),
     }
 }
 
@@ -1587,6 +1644,15 @@ fn uses_anchor_function(body: &ParsedRuleBody) -> bool {
         ParsedRuleBody::Benchmark(b) => uses_anchor_function(&b.key_expr),
         ParsedRuleBody::Lookup(b) => uses_anchor_function(&b.key_expr),
         ParsedRuleBody::Bucket(b) => uses_anchor_function(&b.value),
+        // Phase 3H
+        ParsedRuleBody::Predict(b) => b.features.iter().any(|f| uses_anchor_function(f)),
+        ParsedRuleBody::Calibrate(b) => uses_anchor_function(&b.value),
+        ParsedRuleBody::Exp(b) => uses_anchor_function(&b.operand),
+        ParsedRuleBody::NormCdf(b) => {
+            uses_anchor_function(&b.x)
+                || uses_anchor_function(&b.mu)
+                || uses_anchor_function(&b.sigma)
+        }
     }
 }
 
@@ -1617,5 +1683,151 @@ fn check_anchor_requirements(
                       configured on Time dimension (MC1017)"
                 .into(),
         });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3H: Fitted-model + calibration-map validation
+// ---------------------------------------------------------------------------
+
+fn check_fitted_model_blocks(parsed: &ParsedModel, errors: &mut Vec<ValidationError>) {
+    // Collect names for uniqueness check (MC2053)
+    let mut all_names: BTreeMap<&str, &str> = BTreeMap::new(); // name → block type
+
+    for fm in &parsed.fitted_models {
+        // MC2053: duplicate name
+        if let Some(existing) = all_names.get(fm.name.as_str()) {
+            errors.push(ValidationError::Schema {
+                message: format!(
+                    "duplicate fitted-artifact name {:?} (already in {existing} block) (MC2053)",
+                    fm.name
+                ),
+            });
+        } else {
+            all_names.insert(&fm.name, "fitted_models");
+        }
+
+        // Validate method
+        match fm.method.as_str() {
+            "linear" | "logistic" => {}
+            other => {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "fitted_model {:?}: unknown method {:?} (expected \"linear\" or \"logistic\")",
+                        fm.name, other
+                    ),
+                });
+            }
+        }
+
+        // Validate coefficients not empty
+        if fm.coefficients.is_empty() {
+            errors.push(ValidationError::Schema {
+                message: format!("fitted_model {:?}: coefficients list is empty", fm.name),
+            });
+        }
+
+        // MC2056: standardization declares a feature not in coefficients list
+        if let Some(std_config) = &fm.standardization {
+            let coeff_features: BTreeSet<&str> =
+                fm.coefficients.iter().map(|c| c.feature.as_str()).collect();
+            for param in &std_config.params {
+                if !coeff_features.contains(param.feature.as_str()) {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "fitted_model {:?}: standardization param feature {:?} \
+                             is not in coefficients list (MC2056)",
+                            fm.name, param.feature
+                        ),
+                    });
+                }
+                // Validate std > 0
+                if param.std <= 0.0 {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "fitted_model {:?}: standardization param for {:?} \
+                             has std <= 0 ({})",
+                            fm.name, param.feature, param.std
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    for cm in &parsed.calibration_maps {
+        // MC2053: duplicate name (shared namespace with fitted_models)
+        if let Some(existing) = all_names.get(cm.name.as_str()) {
+            errors.push(ValidationError::Schema {
+                message: format!(
+                    "duplicate fitted-artifact name {:?} (already in {existing} block) (MC2053)",
+                    cm.name
+                ),
+            });
+        } else {
+            all_names.insert(&cm.name, "calibration_maps");
+        }
+
+        match cm.method.as_str() {
+            "pava" => {
+                match &cm.points {
+                    None => {
+                        errors.push(ValidationError::Schema {
+                            message: format!(
+                                "calibration_map {:?}: method \"pava\" requires points (MC2055)",
+                                cm.name
+                            ),
+                        });
+                    }
+                    Some(points) => {
+                        // MC2055: < 2 points
+                        if points.len() < 2 {
+                            errors.push(ValidationError::Schema {
+                                message: format!(
+                                    "calibration_map {:?}: must have at least 2 points, got {} (MC2055)",
+                                    cm.name,
+                                    points.len()
+                                ),
+                            });
+                        }
+                        // MC2054: points not in ascending raw order
+                        for i in 1..points.len() {
+                            if points[i].raw <= points[i - 1].raw {
+                                errors.push(ValidationError::Schema {
+                                    message: format!(
+                                        "calibration_map {:?}: points not in ascending raw order \
+                                         (raw[{}]={} <= raw[{}]={}) (MC2054)",
+                                        cm.name,
+                                        i,
+                                        points[i].raw,
+                                        i - 1,
+                                        points[i - 1].raw
+                                    ),
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            "platt" => {
+                if cm.platt_params.is_none() {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "calibration_map {:?}: method \"platt\" requires platt_params",
+                            cm.name
+                        ),
+                    });
+                }
+            }
+            other => {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "calibration_map {:?}: unknown method {:?} (expected \"pava\" or \"platt\")",
+                        cm.name, other
+                    ),
+                });
+            }
+        }
     }
 }

@@ -77,6 +77,8 @@ pub fn lint_with_file(
     out.extend(mc3010_unused_derived_measure(model, &file));
     out.extend(mc3011_hierarchy_root_ambiguity(model, &file));
     out.extend(mc3016_time_chronological_order(model, &file));
+    out.extend(mc3017_stale_fitted_model(model, &file));
+    out.extend(mc3018_stale_calibration_map(model, &file));
     sort_diagnostics(&mut out);
     out
 }
@@ -390,6 +392,19 @@ fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
         ParsedRuleBody::Bucket(b) => collect_body_refs(&b.value, out),
         ParsedRuleBody::SumOver(b) => {
             out.insert(b.measure.clone());
+        }
+        // Phase 3H
+        ParsedRuleBody::Predict(b) => {
+            for f in &b.features {
+                collect_body_refs(f, out);
+            }
+        }
+        ParsedRuleBody::Calibrate(b) => collect_body_refs(&b.value, out),
+        ParsedRuleBody::Exp(b) => collect_body_refs(&b.operand, out),
+        ParsedRuleBody::NormCdf(b) => {
+            collect_body_refs(&b.x, out);
+            collect_body_refs(&b.mu, out);
+            collect_body_refs(&b.sigma, out);
         }
     }
 }
@@ -733,6 +748,82 @@ fn mc3016_time_chronological_order(
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// MC3017 — stale fitted_model metadata.fitted_at (> 6 months old)
+// MC3018 — stale calibration_map metadata.fitted_at (> 6 months old)
+// ---------------------------------------------------------------------------
+
+fn mc3017_stale_fitted_model(model: &ValidatedModel, file: &std::path::Path) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for (i, fm) in model.parsed.fitted_models.iter().enumerate() {
+        if let Some(ref meta) = fm.metadata {
+            if let Some(ref fitted_at) = meta.fitted_at {
+                if is_stale_date(fitted_at) {
+                    out.push(Diagnostic {
+                        code: "MC3017",
+                        severity: Severity::Warning,
+                        path: ModelPath::new(
+                            file,
+                            format!("/fitted_models/{i}"),
+                            format!("fitted_models.{}", fm.name),
+                        ),
+                        message: format!(
+                            "Fitted model '{}' has fitted_at '{}' which is > 6 months old",
+                            fm.name, fitted_at
+                        ),
+                        suggestion: Some(
+                            "Consider retraining the model with recent data to avoid concept drift"
+                                .into(),
+                        ),
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+fn mc3018_stale_calibration_map(model: &ValidatedModel, file: &std::path::Path) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for (i, cm) in model.parsed.calibration_maps.iter().enumerate() {
+        if let Some(ref meta) = cm.metadata {
+            if let Some(ref fitted_at) = meta.fitted_at {
+                if is_stale_date(fitted_at) {
+                    out.push(Diagnostic {
+                        code: "MC3018",
+                        severity: Severity::Warning,
+                        path: ModelPath::new(
+                            file,
+                            format!("/calibration_maps/{i}"),
+                            format!("calibration_maps.{}", cm.name),
+                        ),
+                        message: format!(
+                            "Calibration map '{}' has fitted_at '{}' which is > 6 months old",
+                            cm.name, fitted_at
+                        ),
+                        suggestion: Some(
+                            "Consider recalibrating with recent data to maintain accuracy".into(),
+                        ),
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Check if a date string (ISO 8601 prefix, e.g. "2025-10-01T...") is
+/// older than ~6 months. Simple heuristic: compare the first 10 chars
+/// against a "6 months ago" threshold computed from today (2026-05-05).
+fn is_stale_date(date_str: &str) -> bool {
+    if date_str.len() < 10 {
+        return false;
+    }
+    // ~6 months ago from today
+    let threshold = "2025-11-05";
+    &date_str[..10] < threshold
 }
 
 // ---------------------------------------------------------------------------

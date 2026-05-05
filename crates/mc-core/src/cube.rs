@@ -1899,6 +1899,20 @@ fn validate_expr_well_typed(expr: &Expr, measure_dim: &Dimension) -> Result<(), 
                 .ok_or(EngineError::ElementNotFound(*m, measure_dim.id))?;
             Ok(())
         }
+        // Phase 3H: fitted-model evaluation
+        Expr::Predict(_, features) => {
+            for f in features {
+                validate_expr_well_typed(f, measure_dim)?;
+            }
+            Ok(())
+        }
+        Expr::Calibrate(v, _) | Expr::Exp(v) => validate_expr_well_typed(v, measure_dim),
+        Expr::NormCdf(x, mu, sigma) => {
+            validate_expr_well_typed(x, measure_dim)?;
+            validate_expr_well_typed(mu, measure_dim)?;
+            validate_expr_well_typed(sigma, measure_dim)?;
+            Ok(())
+        }
     }
 }
 

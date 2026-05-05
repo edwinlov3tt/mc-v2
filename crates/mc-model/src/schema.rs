@@ -42,6 +42,13 @@ pub struct ParsedModel {
     pub status_thresholds: Vec<ParsedStatusThreshold>,
     #[serde(default)]
     pub golden_tests: Vec<ParsedGoldenTest>,
+    // -- Phase 3H: Fitted-model blocks (optional) --
+    /// Pre-fitted model coefficients for `predict()` evaluation.
+    #[serde(default)]
+    pub fitted_models: Vec<ParsedFittedModel>,
+    /// Calibration maps for `calibrate()` evaluation.
+    #[serde(default)]
+    pub calibration_maps: Vec<ParsedCalibrationMap>,
     /// Phase 3C: optional always-load input set (sibling CSV or inline
     /// rows). Replaces the `mc-cli/main.rs` Acme-name special case.
     /// Models without this block load identically to Phase 3B.
@@ -316,6 +323,16 @@ pub enum ParsedRuleBody {
     Bucket(ParsedBucketBody),
     /// `sum_over(dimension, measure)`
     SumOver(ParsedSumOverBody),
+
+    // -- Phase 3H: Fitted-model evaluation (4) --
+    /// `predict("model_name", feature1, feature2, ...)`
+    Predict(ParsedPredictBody),
+    /// `calibrate(value, "map_name")`
+    Calibrate(ParsedCalibrateBody),
+    /// `exp(x)` — Euler's number raised to the power of x
+    Exp(ParsedUnaryBody),
+    /// `norm_cdf(x, mu, sigma)` — normal distribution CDF
+    NormCdf(ParsedNormCdfBody),
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -488,6 +505,32 @@ pub struct ParsedSumOverBody {
     pub measure: String,
 }
 
+// ---------------------------------------------------------------------------
+// Phase 3H body structs
+// ---------------------------------------------------------------------------
+
+/// `predict("model_name", feature1, feature2, ...)`
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedPredictBody {
+    pub model_id: String,
+    pub features: Vec<Box<ParsedRuleBody>>,
+}
+
+/// `calibrate(value, "map_name")`
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedCalibrateBody {
+    pub value: Box<ParsedRuleBody>,
+    pub map_id: String,
+}
+
+/// `norm_cdf(x, mu, sigma)` — normal distribution CDF
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedNormCdfBody {
+    pub x: Box<ParsedRuleBody>,
+    pub mu: Box<ParsedRuleBody>,
+    pub sigma: Box<ParsedRuleBody>,
+}
+
 /// `Const` payload. `f64` and `i64` are the common shapes; `bool` is
 /// included for forward-compat. Phase 3E adds `Null` so formulas can
 /// reference it explicitly (e.g., `if(cond, value, Null)`).
@@ -578,6 +621,114 @@ pub struct ParsedThresholdBand {
     pub label: String,
     #[serde(default)]
     pub max: Option<f64>,
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3H: fitted-model + calibration-map schema types
+// ---------------------------------------------------------------------------
+
+/// Pre-fitted model coefficients for `predict()` evaluation (Phase 3H).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedFittedModel {
+    pub name: String,
+    /// `"linear"` | `"logistic"`
+    pub method: String,
+    pub intercept: f64,
+    pub coefficients: Vec<ParsedFittedCoefficient>,
+    #[serde(default)]
+    pub standardization: Option<ParsedStandardizationConfig>,
+    #[serde(default)]
+    pub residual_std: Option<f64>,
+    #[serde(default)]
+    pub metadata: Option<ParsedFittedModelMetadata>,
+}
+
+/// One coefficient in a fitted model.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedFittedCoefficient {
+    pub feature: String,
+    pub weight: f64,
+}
+
+/// Standardization configuration (z-score normalization).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedStandardizationConfig {
+    /// `"zscore"` (only supported method for now).
+    pub method: String,
+    pub params: Vec<ParsedStandardizationParam>,
+}
+
+/// Per-feature standardization parameters.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedStandardizationParam {
+    pub feature: String,
+    pub mean: f64,
+    pub std: f64,
+}
+
+/// Optional metadata for fitted models.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedFittedModelMetadata {
+    #[serde(default)]
+    pub fitted_at: Option<String>,
+    #[serde(default)]
+    pub algorithm: Option<String>,
+    #[serde(default)]
+    pub alpha: Option<f64>,
+    #[serde(default)]
+    pub n_train: Option<usize>,
+    #[serde(default)]
+    pub holdout_mae: Option<f64>,
+}
+
+/// Calibration map for `calibrate()` evaluation (Phase 3H).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedCalibrationMap {
+    pub name: String,
+    /// `"pava"` | `"platt"`
+    pub method: String,
+    #[serde(default)]
+    pub points: Option<Vec<ParsedCalibrationPoint>>,
+    #[serde(default)]
+    pub platt_params: Option<ParsedPlattParams>,
+    #[serde(default)]
+    pub metadata: Option<ParsedCalibrationMetadata>,
+}
+
+/// One point in a PAVA calibration map.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedCalibrationPoint {
+    pub raw: f64,
+    pub calibrated: f64,
+}
+
+/// Platt sigmoid parameters.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedPlattParams {
+    pub a: f64,
+    pub b: f64,
+}
+
+/// Optional metadata for calibration maps.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedCalibrationMetadata {
+    #[serde(default)]
+    pub fitted_at: Option<String>,
+    #[serde(default)]
+    pub sample_size: Option<usize>,
+    #[serde(default)]
+    pub raw_brier: Option<f64>,
+    #[serde(default)]
+    pub calibrated_brier: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------

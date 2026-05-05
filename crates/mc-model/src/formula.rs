@@ -25,10 +25,11 @@
 
 use crate::schema::{
     ParsedActualRefBody, ParsedAddBody, ParsedBenchmarkRefBody, ParsedBinopBody, ParsedBucketBody,
-    ParsedClampBody, ParsedConstBody, ParsedDivBody, ParsedIfBody, ParsedIfNullBody, ParsedLagBody,
-    ParsedLookupRefBody, ParsedMeasureRefBody, ParsedMulBody, ParsedRefBody, ParsedRollingAvgBody,
-    ParsedRuleBody, ParsedSafeDivBody, ParsedScalar, ParsedSubBody, ParsedSumOverBody,
-    ParsedUnaryBody, ParsedVarargBody,
+    ParsedCalibrateBody, ParsedClampBody, ParsedConstBody, ParsedDivBody, ParsedIfBody,
+    ParsedIfNullBody, ParsedLagBody, ParsedLookupRefBody, ParsedMeasureRefBody, ParsedMulBody,
+    ParsedNormCdfBody, ParsedPredictBody, ParsedRefBody, ParsedRollingAvgBody, ParsedRuleBody,
+    ParsedSafeDivBody, ParsedScalar, ParsedSubBody, ParsedSumOverBody, ParsedUnaryBody,
+    ParsedVarargBody,
 };
 
 // ---------------------------------------------------------------------------
@@ -776,6 +777,73 @@ impl<'a> Parser<'a> {
                         measure,
                     }))
                 }
+                // Phase 3H: fitted-model evaluation
+                "predict" => {
+                    self.skip_ws();
+                    let model_id = self.parse_string_literal("predict", call_start)?;
+                    self.skip_ws();
+                    let mut features = Vec::new();
+                    while self.peek_byte() == Some(b',') {
+                        self.advance(); // consume ','
+                        let feature = self.parse_or_expression()?;
+                        features.push(Box::new(feature));
+                        self.skip_ws();
+                    }
+                    self.expect_close_paren("predict")?;
+                    Ok(ParsedRuleBody::Predict(ParsedPredictBody {
+                        model_id,
+                        features,
+                    }))
+                }
+                "calibrate" => {
+                    let value = self.parse_or_expression()?;
+                    self.skip_ws();
+                    if self.peek_byte() != Some(b',') {
+                        return Err(FormulaError::wrong_arg_count(
+                            call_start,
+                            "calibrate expects 2 arguments: calibrate(value, \"map_name\")".into(),
+                        ));
+                    }
+                    self.advance(); // consume ','
+                    self.skip_ws();
+                    let map_id = self.parse_string_literal("calibrate", call_start)?;
+                    self.skip_ws();
+                    self.expect_close_paren("calibrate")?;
+                    Ok(ParsedRuleBody::Calibrate(ParsedCalibrateBody {
+                        value: Box::new(value),
+                        map_id,
+                    }))
+                }
+                "exp" => {
+                    let args = self.parse_arg_list()?;
+                    self.expect_close_paren("exp")?;
+                    if args.len() != 1 {
+                        return Err(FormulaError::wrong_arg_count(
+                            call_start,
+                            format!("exp expects exactly 1 argument, got {}", args.len()),
+                        ));
+                    }
+                    let [operand] = take1(args);
+                    Ok(ParsedRuleBody::Exp(ParsedUnaryBody {
+                        operand: Box::new(operand),
+                    }))
+                }
+                "norm_cdf" => {
+                    let args = self.parse_arg_list()?;
+                    self.expect_close_paren("norm_cdf")?;
+                    if args.len() != 3 {
+                        return Err(FormulaError::wrong_arg_count(
+                            call_start,
+                            format!("norm_cdf expects exactly 3 arguments, got {}", args.len()),
+                        ));
+                    }
+                    let [x, mu, sigma] = take3(args);
+                    Ok(ParsedRuleBody::NormCdf(ParsedNormCdfBody {
+                        x: Box::new(x),
+                        mu: Box::new(mu),
+                        sigma: Box::new(sigma),
+                    }))
+                }
                 _ => Err(FormulaError::unknown_function(
                     call_start,
                     format!("unknown function '{name}'"),
@@ -1078,7 +1146,11 @@ fn prec(body: &ParsedRuleBody) -> u8 {
         | ParsedRuleBody::Benchmark(_)
         | ParsedRuleBody::Lookup(_)
         | ParsedRuleBody::Bucket(_)
-        | ParsedRuleBody::SumOver(_) => 8,
+        | ParsedRuleBody::SumOver(_)
+        | ParsedRuleBody::Predict(_)
+        | ParsedRuleBody::Calibrate(_)
+        | ParsedRuleBody::Exp(_)
+        | ParsedRuleBody::NormCdf(_) => 8,
         // Multiplicative
         ParsedRuleBody::Mul(_) | ParsedRuleBody::Div(_) => 7,
         // Additive
@@ -1280,6 +1352,39 @@ fn write_node_bare(out: &mut String, body: &ParsedRuleBody) {
             out.push_str(&b.measure);
             out.push(')');
         }
+
+        // Phase 3H: fitted-model evaluation
+        ParsedRuleBody::Predict(b) => {
+            out.push_str("predict(\"");
+            out.push_str(&b.model_id);
+            out.push('"');
+            for f in &b.features {
+                out.push_str(", ");
+                write_node(out, f, 0, false);
+            }
+            out.push(')');
+        }
+        ParsedRuleBody::Calibrate(b) => {
+            out.push_str("calibrate(");
+            write_node(out, &b.value, 0, false);
+            out.push_str(", \"");
+            out.push_str(&b.map_id);
+            out.push_str("\")");
+        }
+        ParsedRuleBody::Exp(b) => {
+            out.push_str("exp(");
+            write_node(out, &b.operand, 0, false);
+            out.push(')');
+        }
+        ParsedRuleBody::NormCdf(b) => {
+            out.push_str("norm_cdf(");
+            write_node(out, &b.x, 0, false);
+            out.push_str(", ");
+            write_node(out, &b.mu, 0, false);
+            out.push_str(", ");
+            write_node(out, &b.sigma, 0, false);
+            out.push(')');
+        }
     }
 }
 
@@ -1386,6 +1491,16 @@ pub fn contains_cross_coord(body: &ParsedRuleBody) -> bool {
         ParsedRuleBody::Benchmark(b) => contains_cross_coord(&b.key_expr),
         ParsedRuleBody::Lookup(b) => contains_cross_coord(&b.key_expr),
         ParsedRuleBody::Bucket(b) => contains_cross_coord(&b.value),
+        // Phase 3H: predict/calibrate/exp/norm_cdf are not cross-coord functions
+        // themselves, but their arguments may contain cross-coord functions.
+        ParsedRuleBody::Predict(b) => b.features.iter().any(|f| contains_cross_coord(f)),
+        ParsedRuleBody::Calibrate(b) => contains_cross_coord(&b.value),
+        ParsedRuleBody::Exp(b) => contains_cross_coord(&b.operand),
+        ParsedRuleBody::NormCdf(b) => {
+            contains_cross_coord(&b.x)
+                || contains_cross_coord(&b.mu)
+                || contains_cross_coord(&b.sigma)
+        }
     }
 }
 
@@ -1758,5 +1873,111 @@ mod tests {
     fn round_trip_anchor_in_expression() {
         assert_round_trip("if(is_past(), actual_ref(Revenue), Revenue * 1.1)");
         assert_round_trip("periods_since_anchor() + periods_to_end()");
+    }
+
+    // -- Phase 3H: fitted-model evaluation tests --
+
+    #[test]
+    fn parse_predict() {
+        let b = parse("predict(\"my_model\", a, b, c)").unwrap();
+        match &b {
+            ParsedRuleBody::Predict(p) => {
+                assert_eq!(p.model_id, "my_model");
+                assert_eq!(p.features.len(), 3);
+            }
+            _ => panic!("expected Predict"),
+        }
+    }
+
+    #[test]
+    fn parse_predict_no_features() {
+        let b = parse("predict(\"my_model\")").unwrap();
+        match &b {
+            ParsedRuleBody::Predict(p) => {
+                assert_eq!(p.model_id, "my_model");
+                assert_eq!(p.features.len(), 0);
+            }
+            _ => panic!("expected Predict"),
+        }
+    }
+
+    #[test]
+    fn parse_calibrate() {
+        let b = parse("calibrate(x, \"my_map\")").unwrap();
+        match &b {
+            ParsedRuleBody::Calibrate(c) => {
+                assert_eq!(c.map_id, "my_map");
+            }
+            _ => panic!("expected Calibrate"),
+        }
+    }
+
+    #[test]
+    fn parse_calibrate_missing_map_fires_mc1004() {
+        let err = parse("calibrate(x)").unwrap_err();
+        assert_eq!(err.code, "MC1008");
+    }
+
+    #[test]
+    fn parse_exp() {
+        let b = parse("exp(x)").unwrap();
+        assert!(matches!(b, ParsedRuleBody::Exp(_)));
+    }
+
+    #[test]
+    fn parse_exp_arity_fires_mc1008() {
+        let err = parse("exp(a, b)").unwrap_err();
+        assert_eq!(err.code, "MC1008");
+    }
+
+    #[test]
+    fn parse_norm_cdf() {
+        let b = parse("norm_cdf(x, 0, 1)").unwrap();
+        assert!(matches!(b, ParsedRuleBody::NormCdf(_)));
+    }
+
+    #[test]
+    fn parse_norm_cdf_arity_fires_mc1008() {
+        let err = parse("norm_cdf(x, y)").unwrap_err();
+        assert_eq!(err.code, "MC1008");
+    }
+
+    #[test]
+    fn round_trip_predict() {
+        assert_round_trip_exact(
+            "predict(\"nba_model\", pace, rating, total)",
+            "predict(\"nba_model\", pace, rating, total)",
+        );
+    }
+
+    #[test]
+    fn round_trip_predict_no_features() {
+        assert_round_trip_exact("predict(\"model\")", "predict(\"model\")");
+    }
+
+    #[test]
+    fn round_trip_calibrate() {
+        assert_round_trip_exact(
+            "calibrate(raw_prob, \"my_map\")",
+            "calibrate(raw_prob, \"my_map\")",
+        );
+    }
+
+    #[test]
+    fn round_trip_exp() {
+        assert_round_trip_exact("exp(x)", "exp(x)");
+        assert_round_trip("exp(x + 1)");
+    }
+
+    #[test]
+    fn round_trip_norm_cdf() {
+        assert_round_trip_exact("norm_cdf(x, 0, 1)", "norm_cdf(x, 0, 1)");
+        assert_round_trip("norm_cdf(Market_Line, Predicted_Total, 17.251)");
+    }
+
+    #[test]
+    fn round_trip_fitted_model_complex() {
+        assert_round_trip("1 - norm_cdf(Market_Line, predict(\"model\", a, b), 17.25)");
+        assert_round_trip("calibrate(predict(\"model\", x), \"cal_map\")");
     }
 }
