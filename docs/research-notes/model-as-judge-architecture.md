@@ -69,6 +69,50 @@ Every Mosaic model that evaluates a fitted model (Phase 3H's `predict()` / `cali
 
 ---
 
+## Architectural invariants (from GPT + Desktop review)
+
+### Cross-layer dependency graph
+
+The three layers are conceptually distinct but architecturally they're all derived measures in the same cube. Layer 2 references Layer 1 outputs; Layer 3 references Layer 2 outputs. This means:
+
+- When a fitted-model weight changes, the dirty-propagation cascade MUST flow through all three layers deterministically and completely
+- Layer 1 must finish before Layer 2 evaluates; Layer 2 before Layer 3
+- The kernel's existing topological-sort guarantees handle this (derived measures evaluate in dependency order)
+- If Phase 7+ ever introduces parallel evaluation (rayon), layer ordering must be preserved
+
+**The "all three layers recalculate in <50ms" claim is an architectural commitment**, not just a feature. It relies on the dirty-propagation work from Phases 2D + 3E/3F (cross-coordinate reads). Worth testing explicitly in the integration suite.
+
+### Null-actuals handling (Layer 2/3 graceful degradation)
+
+The grading layer assumes actuals exist. But for forward-looking predictions (next month's revenue, next week's NBA total), actuals don't exist yet. Layer 2/3 MUST be null-safe:
+
+```yaml
+# Layer 2: only grade if actuals are present
+- name: abs_error
+  body: "if(Actual_Total == Null, Null, abs(Predicted_Total - Actual_Total))"
+  # OR equivalently (Null arithmetic propagates):
+  body: "abs(Predicted_Total - Actual_Total)"
+  # (returns Null when Actual_Total is Null — correct by default)
+
+# Layer 2 aggregate: count of games that CAN be graded
+- name: is_graded
+  body: "if(Actual_Total == Null, 0, 1)"
+```
+
+Diagnostic rules (Layer 3) similarly only fire on graded coordinates. Cumulative metrics (`cumulative(Profit_Units)`) automatically skip Nulls (cumulative treats Null as 0). This is mechanical but important — the three-layer pattern works for both historical grading AND forward-looking prediction without modification.
+
+### Calibration aggregation depends on `sum_over`
+
+Per-row grading works today (Layer 2: abs_error, brier_component per game). But **full calibration-bucket reporting** — "of all games in the 60-65% bucket, the empirical win rate is X" — requires aggregation across a set of predictions:
+
+1. Bucket predictions by stated confidence
+2. For each bucket, count wins / count total → empirical win rate
+3. Compare empirical vs stated
+
+This requires `sum_over` (Phase 3G, shipped) or a similar cross-coordinate aggregation. The note should be explicit: **basic per-row grading works now; full calibration-by-bucket reporting depends on the Phase 3G aggregation primitives already shipped.** If `sum_over` performance limits (MC3011 at >50 elements) become a concern for large game datasets, the calibration step may need a dedicated aggregation path.
+
+---
+
 ## Why this is domain-agnostic
 
 The three layers map to ANY domain that has predictions + outcomes:
@@ -343,50 +387,124 @@ If the metric is flat across the range, the coefficient doesn't matter much. If 
 
 This is **sensitivity analysis**, not optimization. It tells you where to look, not what to do. The actual re-fitting (with proper regularization and cross-validation) stays in Python.
 
-### Implementation approach
+### CLI interface (revised per GPT + Desktop review)
+
+Parameters are addressed by **name**, not array index — indices are brittle and break silently when YAML order changes:
+
+```bash
+# Sweep one coefficient by name:
+mc model sweep model.yaml \
+  --model nba_v16_lasso \
+  --coefficient avg_recent_total_10 \
+  --range "0:5:0.5" \
+  --metric "mean(Abs_Error)" \
+  --goal minimize
+
+# Sweep the intercept:
+mc model sweep model.yaml \
+  --model nba_v16_lasso \
+  --intercept \
+  --range "200:240:2" \
+  --metric "mean(Abs_Error)" \
+  --goal minimize
+
+# Sweep a lookup table value:
+mc model sweep model.yaml \
+  --lookup seasonal_factor \
+  --key "Playoff" \
+  --range "-30:0:3" \
+  --metric "mean(Playoff_Abs_Error)" \
+  --goal minimize
+
+# With time-anchor (only grade future periods):
+mc model sweep model.yaml \
+  --model nba_v16_lasso \
+  --coefficient avg_pace \
+  --range "0:5:0.5" \
+  --metric "mean(Abs_Error)" \
+  --goal minimize \
+  --time-anchor "2024_01"
+```
+
+**Flags:**
+- `--goal minimize|maximize` — required; don't guess metric direction
+- `--no-baseline` — skip comparison to original value (default: compare)
+- `--format json|csv|text` — JSON is canonical artifact; CSV is flattened; text for terminal
+- `--output <path>` — write report to file (default: stdout)
+
+### Implementation approach (revised: in-memory override, NO YAML patching)
 
 ```rust
 // In mc-cli/src/sweep.rs (new module)
-pub fn run_sweep(
-    model_path: &str,
-    parameter_path: &str,     // JSONPath-like: "fitted_models[0].coefficients[2].weight"
-    range: SweepRange,        // start, end, step
-    metric_measure: &str,     // name of a derived measure to aggregate
-    aggregation: Aggregation, // Mean, Median, Sum, Max, Min
-    time_anchor: Option<&str>,
-) -> SweepResult {
-    let base_yaml = std::fs::read_to_string(model_path)?;
-    let mut results = Vec::new();
+pub fn run_sweep(args: SweepArgs) -> SweepResult {
+    // 1. Parse + validate the model ONCE
+    let base_yaml = std::fs::read_to_string(&args.model_path)?;
+    let parsed = mc_model::parse(&base_yaml)?;
+    let validated = mc_model::validate(parsed)?;
     
-    for value in range.iter() {
-        // 1. Patch the YAML at the parameter path with the new value
-        let patched_yaml = patch_yaml(&base_yaml, parameter_path, value);
-        
-        // 2. Parse + validate + compile + load inputs + evaluate
-        let parsed = mc_model::parse(&patched_yaml)?;
-        let validated = mc_model::validate(parsed)?;
-        let compiled = mc_model::compile(validated)?;
-        let mut cube = compiled.cube;
-        // ... apply inputs, set time_anchor ...
-        
-        // 3. Read the metric measure across all relevant coordinates
-        let metric_values = read_all_leaf_values(&cube, metric_measure);
-        
-        // 4. Aggregate
-        let aggregated = aggregate(metric_values, aggregation);
-        results.push((value, aggregated));
+    // 2. Resolve the named parameter selector
+    let selector = resolve_selector(&validated, &args)?;
+    // e.g., ModelSelector::Coefficient { model: "nba_v16_lasso", feature: "avg_pace" }
+    
+    // 3. Evaluate the ORIGINAL value as baseline (default behavior)
+    let baseline_metric = evaluate_with_override(&validated, &selector, selector.original_value(), &args)?;
+    
+    let mut results = Vec::new();
+    for value in args.range.iter() {
+        // 4. Clone the validated model, override the parameter IN MEMORY
+        //    (no YAML write, no disk I/O, no comment loss)
+        let metric = evaluate_with_override(&validated, &selector, value, &args)?;
+        results.push(SweepPoint { value, metric });
     }
     
-    // 5. Find optimal
-    let optimal = results.iter().min_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-    SweepResult { results, optimal }
+    // 5. Find optimal per --goal direction
+    let optimal = match args.goal {
+        Goal::Minimize => results.iter().min_by(|a, b| a.metric.partial_cmp(&b.metric).unwrap()),
+        Goal::Maximize => results.iter().max_by(|a, b| a.metric.partial_cmp(&b.metric).unwrap()),
+    };
+    
+    SweepResult {
+        parameter: selector.display_name(),
+        original_value: selector.original_value(),
+        baseline_metric,
+        sweep: results,
+        optimal,
+        improvement_vs_original: optimal.metric - baseline_metric,
+    }
+}
+
+fn evaluate_with_override(
+    validated: &ValidatedModel,
+    selector: &ModelSelector,
+    override_value: f64,
+    args: &SweepArgs,
+) -> Result<f64, Error> {
+    // Clone validated, apply override to the parsed fitted_models/lookup_tables/etc
+    let mut model = validated.clone();
+    selector.apply_override(&mut model, override_value);
+    
+    // Compile + load inputs + set time_anchor + evaluate
+    let compiled = mc_model::compile(model)?;
+    let mut cube = compiled.cube;
+    // ... apply canonical_inputs, set time_anchor from args ...
+    
+    // Read the metric measure across all graded coordinates (non-Null actuals)
+    let metric_values = read_graded_values(&cube, &args.metric_measure);
+    aggregate(metric_values, args.aggregation)
 }
 ```
 
+**Critical: NO YAML patching.** The sweep operates entirely in-memory via struct-level override on the `ValidatedModel`. The source YAML file is never modified. This:
+- Preserves comments and formatting
+- Avoids `serde_yaml` round-trip lossyness
+- Is faster (no disk I/O per sweep point)
+- Reuses the existing parse/compile pipeline
+- Makes `sweep` conceptually a "loop of whatif evaluations" (per Desktop's suggestion)
+
 **Effort estimate:** ~2-3 days.
-- Day 1: YAML patching (parse the parameter path, modify the value, re-serialize)
-- Day 2: sweep loop + metric aggregation + output formatting
-- Day 3: CLI wiring + tests + edge cases (invalid paths, non-numeric parameters, empty sweep ranges)
+- Day 1: Named selector resolution (model name → coefficient name → field path in the parsed struct)
+- Day 2: sweep loop with in-memory override + metric aggregation + output formatting
+- Day 3: CLI wiring + JSON/CSV output + tests + edge cases
 
 **Dependencies:** mc-model (parse/validate/compile), mc-core (cube read). No new kernel primitives. No new formula functions. Pure orchestration.
 
@@ -526,12 +644,68 @@ The cartridge README should teach:
 
 ---
 
+## Sweep-vs-goldens workflow (per GPT + Desktop review)
+
+**Sweep does NOT mutate the model YAML and does NOT update goldens.**
+
+If a user runs `mc model sweep` and finds that reducing `avg_pace` from 3.016 to 2.0 improves MAE by 0.4, the workflow is:
+
+```
+1. RUN SWEEP → "value 2.0 minimizes MAE on this evaluation set"
+2. DECIDE → user reviews the sweep curve; decides whether to accept
+3. UPDATE (manual) → user edits fitted_models YAML: avg_pace weight = 2.0
+4. RE-RUN TESTS → mc model test; existing goldens FAIL (predictions changed)
+5. REGENERATE GOLDENS → user verifies new predictions, updates golden expected values
+6. VERIFY → new goldens pass; model is accepted at new weights
+```
+
+**Why not auto-update:** sweep results are evaluation-set-specific and CAN overfit. A weight that minimizes MAE on 2024 data may not generalize to 2025. The decision to accept a new weight requires human judgment (or a proper walk-forward validation in Python). Sweep provides the evidence; the human makes the call.
+
+**Holdout warning:** the sweep report should include a note:
+> "These results are specific to the data currently loaded. For production model updates, evaluate sweep candidates against a holdout period (use `--time-anchor` to restrict grading to out-of-sample data)."
+
+---
+
+## Abstention as a diagnostic pattern (not Phase 3H.1 scope)
+
+**The strongest version of the "judge" framing (per Desktop review):**
+
+> "Most tools tell you what to predict. Mosaic tells you whether you should be predicting at all."
+
+The diagnostic layer's job isn't just to find where the model fails — it's to identify regimes where the model has **no signal** and shouldn't be used. Knowing when to abstain is more valuable than knowing when to act.
+
+**Abstention is expressed through model rules, not through the sweep:**
+
+```yaml
+# Abstention rule: only bet when edge AND confidence are both sufficient
+- name: should_bet
+  body: "if(EV_Per_Dollar > 0.03 and Calibrated_P > 0.56, 1, 0)"
+
+# Abstention diagnostic: why NOT betting?
+- name: abstain_reason
+  body: |
+    if(EV_Per_Dollar <= 0, 0,
+    if(Calibrated_P <= 0.56, 1,
+    2))
+  # 0 = negative EV, 1 = insufficient confidence, 2 = should bet
+
+# Selectivity metric: what fraction of opportunities do we actually bet?
+- name: bet_rate
+  body: "safe_div(sum_over('Game', Should_Bet), sum_over('Game', Is_Graded), 0)"
+```
+
+**The "selectivity > volume" lesson from claw-core generalizes.** The best model might be one that says "no bet" 90% of the time. The diagnostic layer surfaces this as data: "model recommends action on 10% of opportunities; those 10% have 62% win rate; the other 90% are noise." That's the output that sophisticated users actually want.
+
+**Phase 3H.1 scope boundary:** abstention thresholds CAN be swept later ("what if the edge threshold was 0.05 instead of 0.03?"), but abstention optimization is NOT a Phase 3H.1 requirement. The sweep is general; abstention is one application of it.
+
+---
+
 ## Implementation phasing
 
 | Phase | What ships | Effort |
 |---|---|---|
 | **Now** (cartridge) | NBA totals model with all 3 layers, using actual claw-core weights + calibration | ~1 day |
-| **Phase 3H.1** | `mc model sweep` CLI verb (single-parameter exhaustive grid search) | ~2-3 days |
+| **Phase 3H.1** | `mc model sweep` CLI verb (single-parameter sensitivity analysis; named selectors; in-memory override; JSON canonical output) | ~2-3 days |
 | **Phase 3H.2** (future) | Multi-parameter sweep (2D grid search), Pareto-front reporting | ~1 week |
 | **Phase 3I** (future) | `pow`, `ln`, `sqrt` (enables more complex grading metrics like Sharpe ratio) | Already planned |
 | **Phase 3J** (future) | Distributional cells (enables prediction intervals: "221.5 ± 17.3" as a single cell value) | Already planned |
@@ -549,8 +723,10 @@ The cartridge README should teach:
 
 ---
 
-## The one-liner
+## The one-liner (revised per Desktop review)
 
-> **Mosaic doesn't just compute your prediction — it tells you if you should believe it, where it fails, and what to change to make it better. Then it recalculates in 25ms so you can try the change and see if it worked.**
+> **Most tools tell you what to predict. Mosaic tells you whether you should be predicting at all — and when you do predict, it tells you if you should believe it, where it fails, what to change, and recalculates in 25ms so you can try the change and see if it worked.**
+
+That's the "calculator AND judge" capability. The architecture is domain-agnostic; the three-layer pattern applies to any domain where predictions meet reality. Phase 3H.1's sweep verb is the automation that turns manual weight-poking into systematic sensitivity analysis. Abstention as a first-class diagnostic output is what makes Mosaic genuinely useful for sophisticated users who've seen too many tools that push toward action when the honest answer is "no signal here."
 
 That's the "calculator AND judge" capability the project owner asked for. The architecture is domain-agnostic; the three-layer pattern applies to any domain where predictions meet reality. Phase 3H.1's sweep verb is the automation that turns manual weight-poking into systematic sensitivity analysis.
