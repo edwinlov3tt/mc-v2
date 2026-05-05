@@ -29,6 +29,45 @@ use mc_model::ValidatedModel;
 use crate::error::{ColumnTargetIssue, RecipeError};
 use crate::schema::{ColumnMapping, Recipe, SourceFormat};
 
+/// A minimal set of common IANA timezone identifiers for MC5032 validation.
+/// This is not exhaustive — a complete list would have 500+ entries — but
+/// covers the most commonly referenced timezones. If a value isn't in this
+/// list, it's still accepted if it matches the `Area/Location` pattern.
+const IANA_TIMEZONE_PREFIXES: &[&str] = &[
+    "Africa/",
+    "America/",
+    "Antarctica/",
+    "Arctic/",
+    "Asia/",
+    "Atlantic/",
+    "Australia/",
+    "Europe/",
+    "Indian/",
+    "Pacific/",
+    "Etc/",
+    "UTC",
+];
+
+/// Common non-IANA abbreviations and their IANA suggestions.
+const TIMEZONE_SUGGESTIONS: &[(&str, &str)] = &[
+    ("EST", "America/New_York"),
+    ("EDT", "America/New_York"),
+    ("CST", "America/Chicago"),
+    ("CDT", "America/Chicago"),
+    ("MST", "America/Denver"),
+    ("MDT", "America/Denver"),
+    ("PST", "America/Los_Angeles"),
+    ("PDT", "America/Los_Angeles"),
+    ("GMT", "Europe/London"),
+    ("BST", "Europe/London"),
+    ("CET", "Europe/Paris"),
+    ("CEST", "Europe/Paris"),
+    ("IST", "Asia/Kolkata"),
+    ("JST", "Asia/Tokyo"),
+    ("AEST", "Australia/Sydney"),
+    ("AEDT", "Australia/Sydney"),
+];
+
 /// Optional file-system context for validation. When supplied, enables
 /// MC5017 path-escape detection. When `None`, the path-escape check is
 /// skipped — appropriate for in-memory recipes (e.g., LLM-emitted, no
@@ -110,6 +149,28 @@ pub fn validate_recipe(
                 mapped_dimensions
                     .entry(dim)
                     .or_insert_with(|| format!("{path}/dimension"));
+            }
+        }
+    }
+
+    // Per ADR-0014 Decision 5: MC5032 — validate time_timezone is IANA.
+    for (idx, col) in recipe.columns.iter().enumerate() {
+        if column_is_skipped(col) {
+            continue;
+        }
+        if let Some(tz) = &col.time_timezone {
+            if !is_iana_timezone(tz) {
+                let suggestion = TIMEZONE_SUGGESTIONS
+                    .iter()
+                    .find(|(abbr, _)| abbr.eq_ignore_ascii_case(tz))
+                    .map(|(_, iana)| (*iana).to_string())
+                    .unwrap_or_else(|| "America/New_York".to_string());
+                errors.push(RecipeError::TimeTimezoneNotIana {
+                    path: format!("/columns/{idx}/time_timezone"),
+                    source_column: col.source.clone(),
+                    timezone: tz.clone(),
+                    suggestion,
+                });
             }
         }
     }
@@ -274,6 +335,18 @@ fn validate_column(
 /// Whether a column mapping is explicitly skipped.
 fn column_is_skipped(col: &ColumnMapping) -> bool {
     matches!(col.skip, Some(true))
+}
+
+/// Check if a timezone string looks like a valid IANA timezone identifier.
+/// Accepts "UTC" and anything matching the `Area/Location` pattern with
+/// known area prefixes. Does NOT do an exhaustive database lookup.
+fn is_iana_timezone(tz: &str) -> bool {
+    if tz == "UTC" {
+        return true;
+    }
+    IANA_TIMEZONE_PREFIXES
+        .iter()
+        .any(|prefix| tz.starts_with(prefix) && tz.len() > prefix.len())
 }
 
 /// Case-insensitive type-name compatibility check. The recipe's

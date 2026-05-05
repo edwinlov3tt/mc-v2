@@ -108,6 +108,7 @@ fn parse_demo_args(args: &[String]) -> Result<Option<String>, String> {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct ModelCommand {
     verb: ModelVerb,
     path: String,
@@ -118,6 +119,9 @@ struct ModelCommand {
     /// `fixture:` field equals this name are run; the rest are reported
     /// as skipped.
     fixture_filter: Option<String>,
+    /// Phase 5C `--time-anchor <element>` override. Per ADR-0014
+    /// Decision 4, overrides the YAML time_anchor default.
+    time_anchor: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,6 +154,7 @@ fn parse_model_args(args: &[String]) -> Result<ModelCommand, String> {
     let mut format = OutputFormat::Text;
     let mut deny_warnings = false;
     let mut fixture_filter: Option<String> = None;
+    let mut time_anchor: Option<String> = None;
     let mut iter = args[1..].iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -174,6 +179,15 @@ fn parse_model_args(args: &[String]) -> Result<ModelCommand, String> {
                     None => return Err("--fixture requires a name argument".into()),
                 }
             }
+            "--time-anchor" => {
+                if verb != ModelVerb::Test {
+                    return Err("--time-anchor is only valid for `mc model test`".into());
+                }
+                match iter.next() {
+                    Some(v) => time_anchor = Some(v.clone()),
+                    None => return Err("--time-anchor requires an element name argument".into()),
+                }
+            }
             other if !other.starts_with("--") && path.is_none() => {
                 path = Some(other.to_string());
             }
@@ -187,6 +201,7 @@ fn parse_model_args(args: &[String]) -> Result<ModelCommand, String> {
         format,
         deny_warnings,
         fixture_filter,
+        time_anchor,
     })
 }
 

@@ -78,7 +78,8 @@ pub use diagnostic::{
 pub use error::{ColumnTargetIssue, RecipeError};
 pub use parse::{parse, to_yaml};
 pub use schema::{
-    BatchConfig, ColumnMapping, DriverKind, LongFormatConfig, OnError, OnMissingElement, Recipe,
-    SourceConfig, SourceFormat, WriteDisposition,
+    BatchConfig, ColumnMapping, DriverKind, IncrementalConfig, IncrementalStrategy,
+    LongFormatConfig, OnError, OnMissingElement, Recipe, SourceConfig, SourceFormat,
+    WriteDisposition,
 };
 pub use validate::{validate_recipe, PathContext};

@@ -218,6 +218,44 @@ pub enum RecipeError {
         source_column: String,
         measure: String,
     },
+
+    // === Phase 5C ADR-0014 time_format enforcement ===
+    /// **MC5030** — A column mapping targets a Time dimension but the
+    /// source values are non-ISO and no `time_format` is specified.
+    /// Per ADR-0014 Decision 5: non-ISO date columns require explicit
+    /// `time_format` in the recipe.
+    #[error("column {source_column:?} at {path} maps to Time dimension but has non-ISO date values without explicit time_format (add time_format to specify the source date format)")]
+    TimeFormatRequired { path: String, source_column: String },
+
+    /// **MC5031** — A column mapping has a timezone-less timestamp
+    /// (no Z suffix, no offset) but no `time_timezone` is specified.
+    /// Per ADR-0014 Decision 5: timezone-less timestamps require
+    /// explicit `time_timezone`.
+    #[error("column {source_column:?} at {path} has timezone-less timestamp without time_timezone (add time_timezone with an IANA identifier like 'America/New_York')")]
+    TimeTimezoneRequired { path: String, source_column: String },
+
+    /// **MC5032** — The `time_timezone` value is not a valid IANA
+    /// timezone identifier. Per ADR-0014 Decision 5: only IANA
+    /// identifiers are accepted (not abbreviations like "EST" or
+    /// fixed offsets like "-05:00").
+    #[error("column {source_column:?} at {path} has non-IANA time_timezone {timezone:?} (use IANA identifier like {suggestion:?})")]
+    TimeTimezoneNotIana {
+        path: String,
+        source_column: String,
+        timezone: String,
+        suggestion: String,
+    },
+
+    /// **MC5033** — A parsed date from a Time-dimension column doesn't
+    /// map to any declared Time element in the model. Fired when
+    /// `map_to_period` is set but the resulting period name has no
+    /// matching element.
+    #[error("column {source_column:?} at {path}: date value doesn't map to any Time element in the model (period: {period:?})")]
+    TimeElementNotFound {
+        path: String,
+        source_column: String,
+        period: String,
+    },
 }
 
 /// Sub-classifier for [`RecipeError::ColumnNoSingleTarget`] — disambiguates
@@ -271,6 +309,10 @@ impl RecipeError {
             RecipeError::ModelPathEscapesWorkspace { .. } => "MC5017",
             RecipeError::DerivedMeasureWriteRejected { .. } => "MC5018",
             RecipeError::LongFormatMeasureColumnConflict { .. } => "MC5021",
+            RecipeError::TimeFormatRequired { .. } => "MC5030",
+            RecipeError::TimeTimezoneRequired { .. } => "MC5031",
+            RecipeError::TimeTimezoneNotIana { .. } => "MC5032",
+            RecipeError::TimeElementNotFound { .. } => "MC5033",
         }
     }
 
@@ -297,6 +339,10 @@ impl RecipeError {
             RecipeError::ModelPathEscapesWorkspace { path, .. } => path,
             RecipeError::DerivedMeasureWriteRejected { path, .. } => path,
             RecipeError::LongFormatMeasureColumnConflict { path, .. } => path,
+            RecipeError::TimeFormatRequired { path, .. } => path,
+            RecipeError::TimeTimezoneRequired { path, .. } => path,
+            RecipeError::TimeTimezoneNotIana { path, .. } => path,
+            RecipeError::TimeElementNotFound { path, .. } => path,
         }
     }
 
@@ -407,14 +453,33 @@ mod tests {
                 source_column: "x".into(),
                 measure: "x".into(),
             },
+            RecipeError::TimeFormatRequired {
+                path: "/columns/0".into(),
+                source_column: "x".into(),
+            },
+            RecipeError::TimeTimezoneRequired {
+                path: "/columns/0".into(),
+                source_column: "x".into(),
+            },
+            RecipeError::TimeTimezoneNotIana {
+                path: "/columns/0".into(),
+                source_column: "x".into(),
+                timezone: "EST".into(),
+                suggestion: "America/New_York".into(),
+            },
+            RecipeError::TimeElementNotFound {
+                path: "/columns/0".into(),
+                source_column: "x".into(),
+                period: "2026-05".into(),
+            },
         ];
 
         let mut codes: Vec<&'static str> = variants.iter().map(|v| v.code()).collect();
         codes.sort_unstable();
         codes.dedup();
-        assert_eq!(codes.len(), 19, "expected 19 distinct MC5xxx codes");
+        assert_eq!(codes.len(), 23, "expected 23 distinct MC5xxx codes");
         assert_eq!(codes[0], "MC5001");
-        assert_eq!(codes[18], "MC5021");
+        assert_eq!(codes[22], "MC5033");
     }
 
     #[test]

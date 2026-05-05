@@ -76,6 +76,7 @@ pub fn lint_with_file(
     out.extend(mc3009_unused_input_measure(model, &file));
     out.extend(mc3010_unused_derived_measure(model, &file));
     out.extend(mc3011_hierarchy_root_ambiguity(model, &file));
+    out.extend(mc3016_time_chronological_order(model, &file));
     sort_diagnostics(&mut out);
     out
 }
@@ -672,6 +673,63 @@ fn mc3011_hierarchy_root_ambiguity(
                         .into(),
                 ),
             });
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// MC3016 — time elements not in chronological order
+//
+// Fires when adjacent Time elements (that have period_start metadata) are
+// not in ascending chronological order. Advisory only — some models may
+// intentionally list elements in non-chronological order.
+// ---------------------------------------------------------------------------
+
+fn mc3016_time_chronological_order(
+    model: &ValidatedModel,
+    file: &std::path::Path,
+) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for (dim_idx, dim) in model.parsed.dimensions.iter().enumerate() {
+        if dim.kind != "Time" {
+            continue;
+        }
+        // Collect elements that have period_start, preserving declaration order
+        let with_start: Vec<(usize, &str, &str)> = dim
+            .elements
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| {
+                e.period_start
+                    .as_ref()
+                    .map(|ps| (i, e.name.as_str(), ps.as_str()))
+            })
+            .collect();
+
+        for pair in with_start.windows(2) {
+            let (_, name_a, start_a) = pair[0];
+            let (elem_idx_b, name_b, start_b) = pair[1];
+            // Lexicographic comparison works for ISO 8601 date strings
+            if start_a > start_b {
+                out.push(Diagnostic {
+                    code: "MC3016",
+                    severity: Severity::Warning,
+                    path: ModelPath::new(
+                        file,
+                        format!("/dimensions/{dim_idx}/elements/{elem_idx_b}"),
+                        format!("dimensions.{}.elements.{}", dim.name, name_b),
+                    ),
+                    message: format!(
+                        "Time element '{}' (period_start: {}) appears after '{}' (period_start: {}) \
+                         but is chronologically earlier (MC3016)",
+                        name_b, start_b, name_a, start_a
+                    ),
+                    suggestion: Some(
+                        "Reorder Time elements in chronological order for clarity".into(),
+                    ),
+                });
+            }
         }
     }
     out
