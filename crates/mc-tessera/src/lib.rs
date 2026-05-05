@@ -61,19 +61,27 @@
 #![cfg_attr(not(test), deny(clippy::expect_used))]
 
 pub mod error;
+pub mod incremental;
 pub mod prepare;
 pub mod runner;
+pub mod schedule;
 pub mod secrets;
 pub mod sidecar;
 pub mod transform;
 
 pub use error::TesseraError;
+pub use incremental::{
+    compute_new_watermark, inject_watermark, load_state, reset_state, save_state, IncrementalState,
+};
 pub use prepare::{
     prepare_from_path, prepare_from_yaml, MappingTarget, PreparedImport, ResolvedColumnMapping,
     ResolvedDefault,
 };
 pub use runner::{
     DryRunReport, ImportReport, LoadedActive, Tessera, TimingBreakdown, DEFAULT_BATCH_SIZE,
+};
+pub use schedule::{
+    schedule_add, schedule_list, schedule_remove, CronExpr, Daemon, Schedule, ScheduleRegistry,
 };
 pub use secrets::{interpolate, EnvVarSecretResolver, SecretError, SecretResolver};
 pub use sidecar::{
@@ -82,5 +90,6 @@ pub use sidecar::{
     CellRecord, CellValueJson, QuarantineCell, QuarantineRecord, Sidecar,
 };
 pub use transform::{
-    transform_batch, transform_batch_long, RowFailure, TesseraErrorOwned, TransformedBatch,
+    transform_batch, transform_batch_long, transform_batch_long_with_policy,
+    transform_batch_with_policy, RowFailure, TesseraErrorOwned, TransformedBatch,
 };

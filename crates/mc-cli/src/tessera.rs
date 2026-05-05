@@ -30,11 +30,13 @@ pub enum Command {
         recipe: String,
         format: Format,
         workspace: Option<String>,
+        time_anchor: Option<String>,
     },
     DryRun {
         recipe: String,
         format: Format,
         workspace: Option<String>,
+        time_anchor: Option<String>,
     },
     History {
         model_dir: String,
@@ -53,6 +55,35 @@ pub enum Command {
         source: String,
         model: String,
     },
+    // Phase 5C: cron scheduling + incremental state
+    Schedule {
+        sub: ScheduleSubcommand,
+    },
+    Daemon {
+        model_dir: String,
+        once: bool,
+    },
+    ResetState {
+        recipe_name: String,
+        model_dir: String,
+    },
+}
+
+/// Sub-commands for `mc tessera schedule`.
+#[derive(Debug)]
+pub enum ScheduleSubcommand {
+    Add {
+        recipe_path: String,
+        cron: String,
+        model_dir: String,
+    },
+    List {
+        model_dir: String,
+    },
+    Remove {
+        schedule_id: String,
+        model_dir: String,
+    },
 }
 
 pub fn parse(args: &[String]) -> Result<Command, String> {
@@ -64,7 +95,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
 
     match verb {
         "apply" | "dry-run" => {
-            let (positional, format, workspace) =
+            let (positional, format, workspace, time_anchor) =
                 parse_positional_with_format_and_workspace(rest, 1)?;
             let recipe = positional[0].clone();
             Ok(if verb == "apply" {
@@ -72,12 +103,14 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                     recipe,
                     format,
                     workspace,
+                    time_anchor,
                 }
             } else {
                 Command::DryRun {
                     recipe,
                     format,
                     workspace,
+                    time_anchor,
                 }
             })
         }
@@ -153,6 +186,98 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                 model.ok_or_else(|| "`mc tessera propose` requires --model <path>".to_string())?;
             Ok(Command::Propose { source, model })
         }
+        "schedule" => {
+            if rest.is_empty() {
+                return Err("`mc tessera schedule` requires a sub-verb (add|list|remove) or a positional recipe path with --cron".into());
+            }
+            match rest[0].as_str() {
+                "list" => {
+                    let model_dir = rest.get(1).cloned().unwrap_or_else(|| ".".to_string());
+                    Ok(Command::Schedule {
+                        sub: ScheduleSubcommand::List { model_dir },
+                    })
+                }
+                "remove" => {
+                    let schedule_id = rest
+                        .get(1)
+                        .ok_or_else(|| {
+                            "`mc tessera schedule remove <id>` requires a schedule ID".to_string()
+                        })?
+                        .clone();
+                    let model_dir = rest.get(2).cloned().unwrap_or_else(|| ".".to_string());
+                    Ok(Command::Schedule {
+                        sub: ScheduleSubcommand::Remove {
+                            schedule_id,
+                            model_dir,
+                        },
+                    })
+                }
+                _ => {
+                    // `mc tessera schedule <recipe_path> --cron "<expr>" [--model-dir <path>]`
+                    let recipe_path = rest[0].clone();
+                    let mut cron: Option<String> = None;
+                    let mut model_dir = ".".to_string();
+                    let mut iter = rest[1..].iter();
+                    while let Some(arg) = iter.next() {
+                        match arg.as_str() {
+                            "--cron" => match iter.next() {
+                                Some(v) => cron = Some(v.clone()),
+                                None => return Err("--cron requires an expression argument".into()),
+                            },
+                            "--model-dir" => match iter.next() {
+                                Some(v) => model_dir.clone_from(v),
+                                None => return Err("--model-dir requires an argument".into()),
+                            },
+                            _ => {}
+                        }
+                    }
+                    let cron = cron.ok_or_else(|| {
+                        "`mc tessera schedule <recipe> --cron <expr>` requires --cron".to_string()
+                    })?;
+                    Ok(Command::Schedule {
+                        sub: ScheduleSubcommand::Add {
+                            recipe_path,
+                            cron,
+                            model_dir,
+                        },
+                    })
+                }
+            }
+        }
+        "daemon" => {
+            let mut model_dir = ".".to_string();
+            let mut once = false;
+            for arg in rest {
+                match arg.as_str() {
+                    "--once" => once = true,
+                    other if !other.starts_with("--") => model_dir = other.to_string(),
+                    other => return Err(format!("unknown argument for daemon: {other:?}")),
+                }
+            }
+            Ok(Command::Daemon { model_dir, once })
+        }
+        "reset-state" => {
+            let recipe_name = rest
+                .first()
+                .ok_or_else(|| {
+                    "`mc tessera reset-state <recipe_name>` requires a recipe name".to_string()
+                })?
+                .clone();
+            let mut model_dir = ".".to_string();
+            let mut iter = rest[1..].iter();
+            while let Some(arg) = iter.next() {
+                if arg == "--model-dir" {
+                    match iter.next() {
+                        Some(v) => model_dir.clone_from(v),
+                        None => return Err("--model-dir requires an argument".into()),
+                    }
+                }
+            }
+            Ok(Command::ResetState {
+                recipe_name,
+                model_dir,
+            })
+        }
         other => Err(format!("unknown tessera verb: {other:?}")),
     }
 }
@@ -185,13 +310,15 @@ fn parse_positional_with_format(
     Ok((positional, format))
 }
 
+#[allow(clippy::type_complexity)]
 fn parse_positional_with_format_and_workspace(
     args: &[String],
     expected_positional: usize,
-) -> Result<(Vec<String>, Format, Option<String>), String> {
+) -> Result<(Vec<String>, Format, Option<String>, Option<String>), String> {
     let mut positional: Vec<String> = Vec::new();
     let mut format = Format::Text;
     let mut workspace: Option<String> = None;
+    let mut time_anchor: Option<String> = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -205,6 +332,10 @@ fn parse_positional_with_format_and_workspace(
                 Some(v) => workspace = Some(v.clone()),
                 None => return Err("--workspace requires an argument".into()),
             },
+            "--time-anchor" => match iter.next() {
+                Some(v) => time_anchor = Some(v.clone()),
+                None => return Err("--time-anchor requires an argument".into()),
+            },
             other if !other.starts_with("--") => positional.push(other.to_string()),
             other => return Err(format!("unknown argument: {other:?}")),
         }
@@ -215,7 +346,7 @@ fn parse_positional_with_format_and_workspace(
             positional.len()
         ));
     }
-    Ok((positional, format, workspace))
+    Ok((positional, format, workspace, time_anchor))
 }
 
 /// Run the parsed command. Returns the process exit code.
@@ -225,12 +356,24 @@ pub fn run(cmd: Command) -> i32 {
             recipe,
             format,
             workspace,
-        } => run_apply(&recipe, format, workspace.as_deref()),
+            time_anchor,
+        } => run_apply(
+            &recipe,
+            format,
+            workspace.as_deref(),
+            time_anchor.as_deref(),
+        ),
         Command::DryRun {
             recipe,
             format,
             workspace,
-        } => run_dry_run(&recipe, format, workspace.as_deref()),
+            time_anchor,
+        } => run_dry_run(
+            &recipe,
+            format,
+            workspace.as_deref(),
+            time_anchor.as_deref(),
+        ),
         Command::History { model_dir, format } => run_history(&model_dir, format),
         Command::Rollback {
             import_id,
@@ -239,10 +382,21 @@ pub fn run(cmd: Command) -> i32 {
         } => run_rollback(&import_id, &model_dir, format),
         Command::Audit { model_dir, format } => run_audit(&model_dir, format),
         Command::Propose { source, model } => run_propose(&source, &model),
+        Command::Schedule { sub } => run_schedule(sub),
+        Command::Daemon { model_dir, once } => run_daemon(&model_dir, once),
+        Command::ResetState {
+            recipe_name,
+            model_dir,
+        } => run_reset_state(&recipe_name, &model_dir),
     }
 }
 
-fn run_apply(recipe_path: &str, format: Format, workspace: Option<&str>) -> i32 {
+fn run_apply(
+    recipe_path: &str,
+    format: Format,
+    workspace: Option<&str>,
+    _time_anchor: Option<&str>,
+) -> i32 {
     let recipe_path = Path::new(recipe_path);
     let prepared = match Tessera::prepare_with_workspace(recipe_path, workspace.map(Path::new)) {
         Ok(p) => p,
@@ -290,7 +444,12 @@ fn run_apply(recipe_path: &str, format: Format, workspace: Option<&str>) -> i32 
     0
 }
 
-fn run_dry_run(recipe_path: &str, format: Format, workspace: Option<&str>) -> i32 {
+fn run_dry_run(
+    recipe_path: &str,
+    format: Format,
+    workspace: Option<&str>,
+    _time_anchor: Option<&str>,
+) -> i32 {
     let recipe_path = Path::new(recipe_path);
     let prepared = match Tessera::prepare_with_workspace(recipe_path, workspace.map(Path::new)) {
         Ok(p) => p,
@@ -623,5 +782,93 @@ fn truncate(s: &str, n: usize) -> String {
         s.to_string()
     } else {
         format!("{}…", &s[..n.saturating_sub(1)])
+    }
+}
+
+// ============================================================================
+// Phase 5C: Cron scheduling + incremental state CLI handlers
+// ============================================================================
+
+fn run_schedule(sub: ScheduleSubcommand) -> i32 {
+    use mc_tessera::schedule::commands;
+    match sub {
+        ScheduleSubcommand::Add {
+            recipe_path,
+            cron,
+            model_dir,
+        } => match commands::schedule_add(Path::new(&model_dir), &recipe_path, &cron) {
+            Ok(id) => {
+                println!("Schedule registered: {id}");
+                println!("  recipe: {recipe_path}");
+                println!("  cron:   {cron}");
+                println!("\nStart the daemon with: mc tessera daemon {model_dir}");
+                0
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                1
+            }
+        },
+        ScheduleSubcommand::List { model_dir } => {
+            match commands::schedule_list(Path::new(&model_dir)) {
+                Ok(schedules) => {
+                    if schedules.is_empty() {
+                        println!("No schedules registered.");
+                    } else {
+                        println!("{:<40} {:<12} {:<20} RECIPE", "ID", "STATUS", "CRON");
+                        for s in &schedules {
+                            println!(
+                                "{:<40} {:<12} {:<20} {}",
+                                s.id, s.status, s.cron, s.recipe_path
+                            );
+                        }
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    1
+                }
+            }
+        }
+        ScheduleSubcommand::Remove {
+            schedule_id,
+            model_dir,
+        } => match commands::schedule_remove(Path::new(&model_dir), &schedule_id) {
+            Ok(()) => {
+                println!("Schedule removed: {schedule_id}");
+                0
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                1
+            }
+        },
+    }
+}
+
+fn run_daemon(model_dir: &str, once: bool) -> i32 {
+    use mc_tessera::schedule::daemon::Daemon;
+    let d = Daemon::new(Path::new(model_dir), once);
+    match d.run() {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("daemon error: {e}");
+            1
+        }
+    }
+}
+
+fn run_reset_state(recipe_name: &str, model_dir: &str) -> i32 {
+    match mc_tessera::incremental::reset_state(Path::new(model_dir), recipe_name) {
+        Ok(()) => {
+            println!("Incremental state cleared for recipe: {recipe_name}");
+            println!("Next run will perform a full load.");
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
     }
 }

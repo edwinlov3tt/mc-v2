@@ -1347,6 +1347,39 @@ fn is_valid_iso_date(s: &str) -> bool {
         && bytes[8..10].iter().all(|b| b.is_ascii_digit())
 }
 
+/// Returns true if the string looks like a timestamp (contains 'T'),
+/// indicating it's an ISO 8601 date-time rather than just a date.
+fn is_timestamp_shaped(s: &str) -> bool {
+    s.contains('T')
+}
+
+/// Convert a YYYY-MM-DD date string to days since a reference epoch using
+/// Hinnant's algorithm (civil_from_days inverse). Returns None if the string
+/// is not a valid 10-char ISO date.
+fn date_to_days(s: &str) -> Option<i64> {
+    if s.len() < 10 {
+        return None;
+    }
+    let y: i64 = s[..4].parse().ok()?;
+    let m: u32 = s[5..7].parse().ok()?;
+    let d: u32 = s[8..10].parse().ok()?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    // Hinnant's algorithm: days_from_civil
+    let y_adj = if m <= 2 { y - 1 } else { y };
+    let era = if y_adj >= 0 {
+        y_adj / 400
+    } else {
+        (y_adj - 399) / 400
+    };
+    let yoe = (y_adj - era * 400) as u32; // year of era [0, 399]
+    let m_adj = if m > 2 { m - 3 } else { m + 9 }; // [0, 11]
+    let doy = (153 * m_adj + 2) / 5 + d - 1; // day of year [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // day of era [0, 146096]
+    Some(era * 146097 + doe as i64 - 719468)
+}
+
 /// MC2043-MC2048: validate time metadata on Time-kind dimensions.
 fn check_time_metadata(parsed: &ParsedModel, errors: &mut Vec<ValidationError>) {
     for dim in &parsed.dimensions {
@@ -1398,6 +1431,16 @@ fn check_time_metadata(parsed: &ParsedModel, errors: &mut Vec<ValidationError>) 
                         ),
                     });
                 }
+                // MC2044: timestamps must be UTC (end with Z)
+                if is_timestamp_shaped(start) && !start.ends_with('Z') {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "Time element {:?}: period_start {:?} is a timestamp but does not \
+                             end with 'Z' (must be UTC) (MC2044)",
+                            elem.name, start
+                        ),
+                    });
+                }
             }
 
             if let Some(end) = &elem.period_end_exclusive {
@@ -1410,12 +1453,54 @@ fn check_time_metadata(parsed: &ParsedModel, errors: &mut Vec<ValidationError>) 
                         ),
                     });
                 }
+                // MC2044: timestamps must be UTC (end with Z)
+                if is_timestamp_shaped(end) && !end.ends_with('Z') {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "Time element {:?}: period_end_exclusive {:?} is a timestamp but \
+                             does not end with 'Z' (must be UTC) (MC2044)",
+                            elem.name, end
+                        ),
+                    });
+                }
             }
 
             // Collect intervals for gap/overlap checks
             if let (Some(start), Some(end)) = (&elem.period_start, &elem.period_end_exclusive) {
                 if is_valid_iso_date(start) && is_valid_iso_date(end) {
                     period_intervals.push((&elem.name, start, end));
+                }
+            }
+        }
+
+        // MC2045: granularity mismatch — check that each element's interval
+        // matches the declared granularity (approximate ranges for calendar
+        // months/quarters/years).
+        if let Some(g) = &dim.granularity {
+            let (min_days, max_days): (i64, i64) = match g.as_str() {
+                "day" => (1, 1),
+                "week" => (7, 7),
+                "month" => (28, 31),
+                "quarter" => (89, 92),
+                "year" => (365, 366),
+                _ => (0, i64::MAX), // unknown granularity; already flagged above
+            };
+            if min_days > 0 && max_days < i64::MAX {
+                for &(elem_name, start, end) in &period_intervals {
+                    if let (Some(start_days), Some(end_days)) =
+                        (date_to_days(start), date_to_days(end))
+                    {
+                        let interval = end_days - start_days;
+                        if interval < min_days || interval > max_days {
+                            errors.push(ValidationError::Schema {
+                                message: format!(
+                                    "Time element {:?}: interval is {} days but granularity \
+                                     {:?} expects {}-{} days (MC2045)",
+                                    elem_name, interval, g, min_days, max_days
+                                ),
+                            });
+                        }
+                    }
                 }
             }
         }
