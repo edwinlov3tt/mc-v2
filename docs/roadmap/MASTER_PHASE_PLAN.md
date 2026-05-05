@@ -4,7 +4,7 @@
 >
 > Read this before inventing a phase name or starting work that isn't already on the list. If a new phase is needed and it isn't here, add it here first (and link the ADR explaining the decision).
 
-**Last updated:** 2026-05-03 (post-Phase 4A)
+**Last updated:** 2026-05-05 (post-Phase 3H + 5C)
 **Maintained by:** project lead. New sub-phases require an ADR in [`../decisions/`](../decisions/).
 
 ---
@@ -45,7 +45,10 @@ Productization beyond the first usable product (multi-tenancy, customer-facing a
 | **3B** | Model QA, Linter, and Diagnostics — `mc model {validate,inspect,lint,test}` + 10 lint rules + JSON diagnostics envelope (per ADR-0005) | **complete** (report at [`../reports/phase-3b-completion-report.md`](../reports/phase-3b-completion-report.md)) | `phase-3b-lint-and-diagnostics` (`f4f7fa8`) |
 | **3C** | Model Test Fixtures and Input Sets — `canonical_inputs` + `test_fixtures`, sibling CSV + tabular inline YAML, 14 new validators (MC2012–MC2025), `mc model test --fixture <name>` (per ADR-0006) | **complete** (report at [`../reports/phase-3c-completion-report.md`](../reports/phase-3c-completion-report.md)) | `phase-3c-fixtures-and-inputs` (`8d2691a`) |
 | **3D** | Friendly formula syntax — `Revenue = Customers * AOV` strings compile to `ParsedRuleBody`'s structured tree (per ADR-0007; originally ADR-0004's Phase 3C — renamed to 3D per ADR-0006 roadmap impact) | **complete** (report at [`../reports/phase-3d-completion-report.md`](../reports/phase-3d-completion-report.md)) | `phase-3d-friendly-formula-syntax` (`d5ab355`) |
-| **3E–3N** | Further model layer extensions (TBD) | not started | — |
+| **3E–3G** | Formula language expansion (conditionals + time-series + reference-data blocks) | **complete** | `phase-3e-3f-3g-formula-expansion` |
+| **3F.1** | Runtime time anchor + metadata validation | **complete** (bundled with 3E–3G merge) | — |
+| **3H** | Fitted-model evaluation (predict / calibrate / exp / norm_cdf) | **complete** | `phase-3h-fitted-model-evaluation` |
+| **3I–3N** | Further model layer extensions (TBD) | not started | — |
 | **4A** | LLM-assisted authoring — Mosaic Claude Code plugin (skills + agents + commands + MCP server + marketing-mix domain schema) per ADR-0008 | **complete** (report at [`../reports/phase-4a-completion-report.md`](../reports/phase-4a-completion-report.md)) | `phase-4a-mosaic-plugin` (`36af56c`) |
 | **4B** | Python reference adapters under `mosaic-plugin/examples/adapters/` (`anthropic-python/` + `openai-python/` ~150 lines each) | **complete** (report at [`../reports/phase-4b-completion-report.md`](../reports/phase-4b-completion-report.md); both adapters cleared best-of-3 gate — Anthropic 3/3, OpenAI 3/3) | `phase-4b-python-adapters` (`b5b6229`) |
 | **5** | Data integration & actuals | not started | — |
@@ -211,7 +214,22 @@ Rule: bump `rust-toolchain.toml` past 1.78 **before any new runtime dep lands th
 - **API adjustment (project-owner-approved):** `validate()` return type widened from `Result<_, Vec<ValidationError>>` to `Result<_, Vec<Error>>` so MC1003–MC1006 (parse-stage codes) and MC2xxx (validate-stage codes) coexist in the unified error pile. `Diagnostic` struct shape unchanged; JSON envelope `schema_version` stays `"1.0"`. See [`../reports/phase-3d-completion-report.md`](../reports/phase-3d-completion-report.md) §3–§4 for the rationale.
 - **Out of scope (explicit):** no kernel changes (`mc-core` locked); no fixture changes (`mc-fixtures` locked); no new dependencies; no toolchain bump; no `Cargo.lock` pin drift; no new `ParsedRuleBody` AST variants (formulas compile DOWN to the existing 7 variants); no `Diagnostic` struct shape change; MC3008 stays permanently retired; no LLM authoring (Phase 4); no actuals import (Phase 5); no UI (Phase 6).
 
-### 3E, 3F, … (TBD)
+### 3E–3G — Formula language expansion (complete)
+
+- **Status:** **complete.** Shipped and tagged `phase-3e-3f-3g-formula-expansion`.
+- **Purpose:** Extend the formula AST from Phase 3D's 7 nodes to the full expression surface needed for real-world planning models — conditionals (`IF`/`IFS`/`SWITCH`), time-series lookups (`LAG`, `LEAD`, `PERIOD_AGG`, `CUMSUM`), and reference-data blocks (`LOOKUP`/`VLOOKUP`/`MATCH`/`INDEX`).
+- **What it proves:** The formula expansion arc (3D → 3E–3H) achieves ~30+ AST node coverage, reaching the 98–99% real-world formula coverage threshold for planning models in the marketing-finance domain.
+- **3F.1 (bundled):** Runtime time anchor + time metadata validation shipped in the same merge commit. Adds `time_anchor` resolution at parse time and validates time-series dimension metadata (MC codes for missing/mismatched time metadata).
+- **Deliverables:** new AST nodes in `mc-model/src/formula.rs`; MC diagnostic codes for new parse/validate failure modes; updated `mc model inspect` rendering; Acme formula smoke tests at the new nodes.
+
+### 3H — Fitted-model evaluation (complete)
+
+- **Status:** **complete.** Shipped and tagged `phase-3h-fitted-model-evaluation`.
+- **Purpose:** Add `PREDICT()`, `CALIBRATE()`, `EXP()`, and `NORM_CDF()` so model cells can reference fitted statistical models (regression coefficients, calibration curves) inline in a formula. Closes the "model-backed cell" capability gap for deterministic statistical formulas (as distinct from stochastic / ML-backed cells, which are a future phase).
+- **What it proves:** The formula layer can express marketing-mix attribution (media-mix model response curves, S-curve calibration) without dropping to raw Rust. Completes the 3D → 3H formula expansion arc.
+- **Formula expansion arc summary (3D → 3H):** 7 AST nodes (3D) → ~30+ nodes (3H); 98–99% real-world formula coverage for planning-model rules in the marketing-finance domain. The arc is complete; further formula additions are demand-driven (file an ADR first).
+
+### 3I, 3J, … (TBD)
 
 Likely follow-ons (placeholders, do not pre-name without an ADR):
 
@@ -270,7 +288,7 @@ Likely follow-ons (placeholders, do not pre-name without an ADR):
 | **5A.1 — Long-Format Recipe Support** | Schema extension (`format: long` + `long_format:`); Acme equivalence-test switch from generated-wide to actual `acme.inputs.csv`; MC5019–MC5022 codes | Filed per [ADR-0010 Amendment 2](../decisions/0010-amendment-2-long-format-recipe-support.md); pending implementation after 5A Stream D ships. |
 | **5B — LLM-Assisted Recipe Authoring** | Plugin skills for import mapping (csv / sql / api); `mosaic-importer` agent; `/mosaic-import` command; Phase 4B adapter `--mode propose-recipe` | **Complete pending user review** on branch `phase-5b/llm-recipe-authoring`. Best-of-3 gate: Anthropic 3/3 ✓, OpenAI 3/3 ✓. See [`../reports/phase-5b-completion-report.md`](../reports/phase-5b-completion-report.md). NOT committed. |
 | **5B.1 — `mc tessera propose` CLI verb** | Native CLI verb that wraps the LLM authoring loop (Rust-side); requires `mc-tessera` (Stream D's deliverable) | Deferred until Stream D ships. Phase 5B confined to plugin + adapter (no Rust crate modifications). |
-| **5C — Driver Expansion** | MySQL native, D1 REST, Snowflake/BigQuery via ODBC; cron scheduling; incremental loads; element auto-creation | Future ADR(s) after 5B. Demand-driven; each driver independent. |
+| **5C — Driver Expansion** | MySQL native, D1 REST, Snowflake/BigQuery via ODBC; cron scheduling; incremental loads; element auto-creation; time_format | **complete** — tag `phase-5c-driver-expansion`. |
 | **5D — Document/OCR Ingestion** | Document ingestion (open-weight OCR + vision-language models + LLM-assisted field mapping) | Placeholder. Full scope in a future ADR. |
 | **5E — Grout Proper** | Full secrets layer (vault, rotation, audit log, external secret-manager integrations) | Placeholder. Phase 5A ships the `SecretResolver` trait + `EnvVarSecretResolver` only. |
 

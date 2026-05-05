@@ -32,6 +32,48 @@ dimensions:
 
 The kernel doesn't care that Channel has one element; the dim still exists.
 
+### Time dimension metadata (ADR-0014)
+
+The `Time` dimension supports optional metadata fields that enable time-aware formula functions (`is_past()`, `is_future()`, `actual_ref()`):
+
+```yaml
+- name: "Time"
+  kind: "Time"
+  granularity: "month"              # day | week | month | quarter | year
+  time_anchor: "2025_10"            # which element is "now" (for is_past/is_future)
+  elements:
+    - name: "2025_01"
+      period_start: "2025-01-01"
+      period_end_exclusive: "2025-02-01"
+    - name: "2025_02"
+      period_start: "2025-02-01"
+      period_end_exclusive: "2025-03-01"
+    # ...
+```
+
+**Rules:**
+- All dates must be ISO 8601 (`YYYY-MM-DD`). Non-ISO dates fire MC2043.
+- Intervals are half-open: `[period_start, period_end_exclusive)`. A `period_end_exclusive` that equals the next element's `period_start` is correct; gaps fire MC2044 and overlaps fire MC2045.
+- `granularity` lives at the dimension level, not per-element. Elements inconsistent with the declared granularity fire MC2046.
+- `time_anchor` must match an element name. An unknown anchor fires MC2047. If omitted, `is_past()` / `is_future()` are unavailable and any formula using them fires MC2048.
+- `period_start` / `period_end_exclusive` are optional for non-Time dims but required for elements of a `kind: "Time"` dimension that participates in interval-aware formulas.
+
+### Scenario dimension: `actuals_element`
+
+The `Scenario` dimension supports an `actuals_element` field that identifies which scenario holds observed (actuals) data. This enables the `actual_ref()` formula function:
+
+```yaml
+- name: "Scenario"
+  kind: "Scenario"
+  actuals_element: "Actual"         # what actual_ref() reads from
+  elements:
+    - { name: "Actual" }
+    - { name: "Budget" }
+    - { name: "Forecast" }
+```
+
+`actual_ref(Spend)` in a rule body reads `Spend` from the element named here, regardless of which Scenario the formula is being evaluated for. If `actuals_element` is omitted and a formula calls `actual_ref()`, the engine fires MC2049 at lint time.
+
 ## Rule 2: each dim has at most one default hierarchy in Phase 1
 
 A *hierarchy* is a tree of parent → child rollup edges over a dim's elements. The kernel auto-consolidates from leaves up to consolidated elements when you read a non-leaf coord.
@@ -183,6 +225,174 @@ A rule has six fields:
 - The rule graph (rule_X depends on rule_Y depends on rule_X) must be acyclic. Cycles fire MC2008.
 
 For body grammar see `skills/formulas/SKILL.md`.
+
+## Phase 3G: Reference-Data Blocks
+
+These are OPTIONAL top-level YAML blocks that live alongside `dimensions:`, `measures:`, and `rules:`. They provide static lookup data that rule formulas can reference.
+
+### `benchmarks:`
+
+External benchmark values (industry data, competitive research) that formulas can compare against.
+
+```yaml
+benchmarks:
+  - name: "industry_ctr"
+    range: { low: 0.06, mid: 0.07, high: 0.08 }
+    source: "WordStream Q3 2025"
+    last_updated: "2025-09-15"
+  - name: "target_roas"
+    range: { low: 3.0, mid: 4.0, high: 6.0 }
+    source: "Internal Q4 goal"
+    last_updated: "2025-10-01"
+```
+
+Use with the `benchmark()` formula function:
+
+```yaml
+body: "benchmark(\"industry_ctr\", \"mid\")"
+```
+
+Valid tier names are `low`, `mid`, and `high`. The `source` and `last_updated` fields are metadata only — they don't affect computation but trigger lint MC3015 when the date in `last_updated` is more than 12 months before the cube's `time_anchor`. Stale benchmarks may be silent errors; the lint forces a review decision.
+
+### `lookup_tables:`
+
+Key → value tables for mapping dimension element names to scalars (seasonal factors, regional coefficients, tax rates, etc.).
+
+**Single-key lookup:**
+
+```yaml
+lookup_tables:
+  - name: "seasonal_factor"
+    key_dimension: "Time"
+    values:
+      "2025_01": 0.81
+      "2025_02": 0.92
+      "2025_03": 1.05
+      "2025_04": 1.12
+      # ...
+```
+
+Use with `lookup("seasonal_factor", Time)` in a formula. The value is exact-match only — if the current Time element is not a key, the function returns `Null`.
+
+**Multi-key lookup:**
+
+```yaml
+lookup_tables:
+  - name: "market_seasonal_factor"
+    key_dimensions: ["Market", "Time"]
+    values:
+      "Houston|2025_01": 0.81
+      "Houston|2025_02": 0.92
+      "Austin|2025_01": 0.77
+      "Austin|2025_02": 0.88
+      # ...
+```
+
+Composite keys are `|`-separated, in the same order as `key_dimensions`. Use with `lookup("market_seasonal_factor", Market, Time)`. The pipe character is reserved as the separator; element names must not contain `|`.
+
+**Design guidance:**
+- Lookup tables are static at schema load time. They are not cells; they cannot be written back to.
+- Use lookup tables for data that varies by dimension element but is the same regardless of Scenario or Version (e.g., seasonal factors, regional tax rates). If the data should vary by Scenario, model it as an Input measure instead.
+- An element that appears in a lookup table but not in the dimension, or vice versa, is a lint warning (MC3016) — not an error, because partial coverage is valid.
+
+### `status_thresholds:`
+
+Banded classification rules that map a continuous measure value to a discrete label or index. Used with the `bucket()` formula function.
+
+```yaml
+status_thresholds:
+  - name: "cac_health"
+    bands:
+      - { label: "Excellent", max: 25.0 }
+      - { label: "Good",      max: 50.0 }
+      - { label: "Warning",   max: 100.0 }
+      - { label: "Critical" }             # no max = open upper bound
+```
+
+Use with `bucket(CAC, "cac_health")` in a formula. Returns the **zero-based band index** (0, 1, 2, 3 in the example above). The label strings are metadata for display; the numeric index is what flows into the cell.
+
+**Band exhaustiveness rules:**
+- Bands are evaluated in declaration order. The first band whose `max` exceeds the value wins.
+- The final band must have no `max` (open upper bound), making the classification exhaustive for all positive values.
+- A final band that has a `max` fires MC5025 (non-exhaustive threshold set).
+- Overlapping `max` values (a later band's `max` ≤ a previous band's `max`) fire MC5026.
+- Values below 0 are classified into the first band by convention; if your domain has negative values that need distinct treatment, add a negative-range band at the start.
+
+## Phase 3H: Fitted Models & Calibration
+
+These optional top-level blocks allow the schema to embed statistical models for use in rule formulas.
+
+### `fitted_models:`
+
+Pre-trained regression models (linear or logistic) stored directly in the schema for inference at rule evaluation time.
+
+```yaml
+fitted_models:
+  - name: "roas_predictor_v1"
+    method: "linear"               # or "logistic"
+    intercept: 2.34
+    coefficients:
+      - { feature: "ad_spend",  weight: 0.0015 }
+      - { feature: "prev_roas", weight: 0.82 }
+    standardization:               # optional — z-score inputs before applying weights
+      method: "zscore"
+      params:
+        - { feature: "ad_spend",  mean: 15000.0, std: 8000.0 }
+        - { feature: "prev_roas", mean: 4.2,     std: 1.1 }
+    residual_std: 0.45             # metadata; reserved for future distributional output
+    metadata:
+      fitted_at: "2026-04-01T00:00:00Z"
+      algorithm: "lasso"
+      n_train: 500
+```
+
+Use with the `predict()` formula function:
+
+```yaml
+body: "predict(\"roas_predictor_v1\", ad_spend, prev_roas)"
+declared_dependencies: ["ad_spend", "prev_roas"]
+```
+
+**Key constraints:**
+- Feature arguments to `predict()` are **positional** — they must appear in the same order as the `coefficients` list. Positional mismatch is a silent logic error, not a runtime error.
+- MC2050 fires if the model name is not found in `fitted_models:`.
+- MC2051 fires if the number of arguments to `predict()` does not match the number of coefficients.
+- MC3017 lint fires if `metadata.fitted_at` is more than 6 months before the cube's `time_anchor`. Stale models may be predicting on out-of-distribution data.
+
+**`method` semantics:**
+- `linear`: output = intercept + Σ(weight × feature). If `standardization` is present, each feature is z-scored before weighting: `(feature − mean) / std`.
+- `logistic`: same linear combination, then `1 / (1 + exp(-z))` applied. Output is always in `(0, 1)`.
+
+**When to use `fitted_models:` vs. a rule formula:**
+Use `fitted_models:` when the relationship was estimated from historical data and cannot be expressed as a simple arithmetic formula. Use a rule formula for deterministic business logic (e.g., `Spend / Clicks` for CPC). Embedding a model in the schema keeps the coefficients version-controlled alongside the data model.
+
+### `calibration_maps:`
+
+Isotonic (PAVA) or Platt sigmoid calibration tables that convert raw model outputs (e.g., uncalibrated probabilities) to calibrated values.
+
+```yaml
+calibration_maps:
+  - name: "win_prob_calibration"
+    method: "pava"                 # or "platt"
+    points:
+      - { raw: 0.50, calibrated: 0.42 }
+      - { raw: 0.60, calibrated: 0.50 }
+      - { raw: 0.70, calibrated: 0.61 }
+      - { raw: 0.80, calibrated: 0.74 }
+      - { raw: 0.90, calibrated: 0.85 }
+```
+
+Use with the `calibrate()` formula function:
+
+```yaml
+body: "calibrate(predict(\"win_model_v2\", spend, prev_roas), \"win_prob_calibration\")"
+```
+
+**Method semantics:**
+- `pava`: linear interpolation between the nearest `raw` points on either side. Values below the lowest `raw` point clamp to the first `calibrated` value; values above the highest clamp to the last.
+- `platt`: fits `1 / (1 + exp(-(A * raw + B)))` using the two Platt parameters. When `method: "platt"`, replace `points:` with `platt_params: { A: -1.23, B: 0.45 }`.
+
+**Design guidance:** calibration maps are typically applied after `predict()` when the raw model output is known to be mis-scaled (common with logistic regression trained on imbalanced data). Chaining `calibrate(predict(...), "...")` is the expected pattern.
 
 ## Rule 6: name everything consistently
 

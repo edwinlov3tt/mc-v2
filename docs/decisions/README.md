@@ -36,6 +36,11 @@ Use [`../templates/adr.md`](../templates/adr.md) as the starting point.
 | [0007](./0007-phase-3d-friendly-formula-syntax.md) | Phase 3D — Friendly Formula Syntax | Accepted (with acceptance amendments; first ADR drafted under the "handoff-first parallel flow" — see [`process-notes.md`](../process-notes.md) §1 for when to use which flow) |
 | [0008](./0008-phase-4-llm-authoring-and-plugin-ecosystem.md) | Phase 4 — LLM-Assisted Authoring + Mosaic Plugin Ecosystem | Accepted (with 9 acceptance amendments; major restructure dropped the Rust LLM client crate — Phase 4B is Python reference adapters under `mosaic-plugin/examples/adapters/`; plugin = institutional knowledge / actual moat) |
 | [0009](./0009-lnm-substrate-as-product-vision.md) | LNM substrate — AI-native planning kernel as the product vision | Accepted (originally drafted as ADR-0003 on macmini2 2026-05-01; renumbered to ADR-0009 on 2026-05-03 to avoid clash with the workload-sketch ADR-0003 that landed first on the primary branch — content unchanged. Strategic framing for Phases 3–7; complementary to and predates [`../strategy/POSITIONING.md`](../strategy/POSITIONING.md).) |
+| [0010](./0010-phase-5-tessera-architecture.md) | Phase 5 — Tessera Architecture (data ingestion engine) | Accepted (with 2 amendments) |
+| [0011](./0011-phase-3e-conditionals-and-basic-operations.md) | Phase 3E — Conditionals and Basic Operations | Accepted |
+| [0012](./0012-phase-3f-time-series-operations.md) | Phase 3F — Time-Series and Period Operations | Accepted |
+| [0013](./0013-phase-3g-reference-data-blocks.md) | Phase 3G — Reference-Data Blocks | Accepted |
+| [0014](./0014-time-representation.md) | Time Representation in Mosaic | Accepted |
 
 ## When to write an ADR
 
