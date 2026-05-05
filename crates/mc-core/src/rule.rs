@@ -103,6 +103,9 @@ pub enum Expr {
     Lookup(String, Box<Expr>),
     Bucket(Box<Expr>, String),
     SumOver(crate::id::DimensionId, ElementId),
+    /// Resolves to the name of the current coordinate's element in the
+    /// given dimension. Used as a key expression in `lookup()`/`benchmark()`.
+    DimElement(crate::id::DimensionId),
 
     // -- Phase 3H: Fitted-model evaluation --
     /// `predict("model_name", feature1, feature2, ...)`
@@ -314,6 +317,7 @@ fn collect_self_refs(expr: &Expr) -> AHashSet<ElementId> {
             Expr::SumOver(_, m) => {
                 out.insert(*m);
             }
+            Expr::DimElement(_) => {} // no measure dependency
             // Phase 3H
             Expr::Predict(_, features) => {
                 for f in features {
@@ -350,7 +354,8 @@ pub fn expr_depth(expr: &Expr) -> u32 {
         | Expr::IsFuture
         | Expr::PeriodsSinceAnchor
         | Expr::PeriodsToEnd
-        | Expr::SumOver(_, _) => 1,
+        | Expr::SumOver(_, _)
+        | Expr::DimElement(_) => 1,
         Expr::Add(a, b)
         | Expr::Sub(a, b)
         | Expr::Mul(a, b)
@@ -482,6 +487,10 @@ fn detect_cycle_in_rule_graph(
 ///
 /// Phase 3E extends the signature with `lookup_cross` for cross-coordinate reads.
 /// Callers that don't use cross-coord functions pass a no-op closure.
+///
+/// See also [`eval_expr_unified`] for call sites that need a single closure
+/// (e.g., when both self-ref and cross-coord reads must access the same
+/// mutable state).
 pub fn eval_expr<F, G>(
     expr: &Expr,
     lookup_self: &mut F,
@@ -701,6 +710,9 @@ where
             dimension: *dim,
             measure: *measure,
         }),
+        Expr::DimElement(dim) => {
+            lookup_cross(&CrossCoordRead::CurrentElementName { dimension: *dim })
+        }
         // -- Phase 3H: Fitted-model evaluation --
         Expr::Predict(model_id, feature_exprs) => {
             let mut features = Vec::with_capacity(feature_exprs.len());
@@ -816,6 +828,8 @@ pub enum CrossCoordRead {
     PeriodsSinceAnchor,
     /// max_period_index - period_index.
     PeriodsToEnd,
+    /// Resolve the current coordinate's element name in the given dimension.
+    CurrentElementName { dimension: crate::id::DimensionId },
 }
 
 fn eval_comparison<F, G>(
@@ -857,6 +871,294 @@ fn finite_or_null(v: f64) -> ScalarValue {
         ScalarValue::F64(v)
     } else {
         ScalarValue::Null
+    }
+}
+
+// ===========================================================================
+// Unified eval — single-closure variant for call sites where both self-ref
+// and cross-coord reads must go through the same mutable state.
+// ===========================================================================
+
+/// A lookup request dispatched during expression evaluation.
+#[derive(Debug)]
+pub enum EvalLookup<'a> {
+    /// Resolve a self-ref measure (same coordinate, different measure slot).
+    SelfRef(ElementId),
+    /// Resolve a cross-coordinate read.
+    Cross(&'a CrossCoordRead),
+}
+
+/// Like [`eval_expr`] but uses a single closure for both self-ref and
+/// cross-coord reads. This avoids the borrow-checker conflict when both
+/// kinds of reads need `&mut` access to the same state (e.g., the Cube's
+/// `read_inner` method).
+pub fn eval_expr_unified<H>(expr: &Expr, handler: &mut H) -> Result<ScalarValue, EngineError>
+where
+    H: FnMut(EvalLookup<'_>) -> Result<ScalarValue, EngineError>,
+{
+    // Delegate to eval_expr by splitting the single handler into two closures.
+    // This works because both closures forward to the same handler (no split borrow).
+    //
+    // We use a Cell<Option<&mut H>> dance to share the handler between two closures.
+    // Actually simpler: just re-implement the match arms inline.
+    eval_expr_unified_inner(expr, handler)
+}
+
+fn eval_expr_unified_inner<H>(expr: &Expr, handler: &mut H) -> Result<ScalarValue, EngineError>
+where
+    H: FnMut(EvalLookup<'_>) -> Result<ScalarValue, EngineError>,
+{
+    match expr {
+        Expr::Const(v) => Ok(v.clone()),
+        Expr::SelfRef(measure) => handler(EvalLookup::SelfRef(*measure)),
+        Expr::Add(a, b) => {
+            let lhs = eval_expr_unified_inner(a, handler)?;
+            let rhs = eval_expr_unified_inner(b, handler)?;
+            Ok(null_add(lhs, rhs))
+        }
+        Expr::Sub(a, b) => {
+            let lhs = eval_expr_unified_inner(a, handler)?;
+            let rhs = eval_expr_unified_inner(b, handler)?;
+            Ok(null_sub(lhs, rhs))
+        }
+        Expr::Mul(a, b) => {
+            let lhs = eval_expr_unified_inner(a, handler)?;
+            let rhs = eval_expr_unified_inner(b, handler)?;
+            Ok(null_mul(lhs, rhs))
+        }
+        Expr::Div(a, b) => {
+            let lhs = eval_expr_unified_inner(a, handler)?;
+            let rhs = eval_expr_unified_inner(b, handler)?;
+            Ok(null_div(lhs, rhs))
+        }
+        Expr::IfNull(primary, fallback) => {
+            let p = eval_expr_unified_inner(primary, handler)?;
+            if !p.is_null() {
+                Ok(p)
+            } else {
+                eval_expr_unified_inner(fallback, handler)
+            }
+        }
+        Expr::Gt(a, b) => eval_comparison_unified(a, b, handler, |l, r| l > r),
+        Expr::Lt(a, b) => eval_comparison_unified(a, b, handler, |l, r| l < r),
+        Expr::Gte(a, b) => eval_comparison_unified(a, b, handler, |l, r| l >= r),
+        Expr::Lte(a, b) => eval_comparison_unified(a, b, handler, |l, r| l <= r),
+        Expr::Eq(a, b) => eval_comparison_unified(a, b, handler, |l, r| (l - r).abs() < 1e-9),
+        Expr::Neq(a, b) => eval_comparison_unified(a, b, handler, |l, r| (l - r).abs() >= 1e-9),
+        Expr::And(a, b) => {
+            let lhs = eval_expr_unified_inner(a, handler)?;
+            let rhs = eval_expr_unified_inner(b, handler)?;
+            match (to_f64_opt(&lhs), to_f64_opt(&rhs)) {
+                (Some(l), Some(r)) => Ok(bool_to_scalar(l != 0.0 && r != 0.0)),
+                _ => Ok(ScalarValue::Null),
+            }
+        }
+        Expr::Or(a, b) => {
+            let lhs = eval_expr_unified_inner(a, handler)?;
+            let rhs = eval_expr_unified_inner(b, handler)?;
+            match (to_f64_opt(&lhs), to_f64_opt(&rhs)) {
+                (Some(l), Some(r)) => Ok(bool_to_scalar(l != 0.0 || r != 0.0)),
+                _ => Ok(ScalarValue::Null),
+            }
+        }
+        Expr::Not(a) => {
+            let v = eval_expr_unified_inner(a, handler)?;
+            match to_f64_opt(&v) {
+                Some(x) => Ok(bool_to_scalar(x == 0.0)),
+                None => Ok(ScalarValue::Null),
+            }
+        }
+        Expr::If(cond, then_b, else_b) => {
+            let c = eval_expr_unified_inner(cond, handler)?;
+            match to_f64_opt(&c) {
+                None => eval_expr_unified_inner(else_b, handler),
+                Some(x) if x == 0.0 => eval_expr_unified_inner(else_b, handler),
+                Some(_) => eval_expr_unified_inner(then_b, handler),
+            }
+        }
+        Expr::Min(args) => {
+            let mut min_val: Option<f64> = None;
+            for arg in args {
+                if let ScalarValue::F64(v) = eval_expr_unified_inner(arg, handler)? {
+                    min_val = Some(match min_val {
+                        Some(cur) => cur.min(v),
+                        None => v,
+                    });
+                }
+            }
+            Ok(min_val.map_or(ScalarValue::Null, ScalarValue::F64))
+        }
+        Expr::Max(args) => {
+            let mut max_val: Option<f64> = None;
+            for arg in args {
+                if let ScalarValue::F64(v) = eval_expr_unified_inner(arg, handler)? {
+                    max_val = Some(match max_val {
+                        Some(cur) => cur.max(v),
+                        None => v,
+                    });
+                }
+            }
+            Ok(max_val.map_or(ScalarValue::Null, ScalarValue::F64))
+        }
+        Expr::Abs(a) => match eval_expr_unified_inner(a, handler)? {
+            ScalarValue::F64(v) => Ok(ScalarValue::F64(v.abs())),
+            other => Ok(other),
+        },
+        Expr::SafeDiv(n, d, def) => {
+            let nv = eval_expr_unified_inner(n, handler)?;
+            let dv = eval_expr_unified_inner(d, handler)?;
+            match (to_f64_opt(&nv), to_f64_opt(&dv)) {
+                (Some(num), Some(den)) if den.abs() >= 1e-300 => Ok(finite_or_null(num / den)),
+                (Some(_), Some(_)) => eval_expr_unified_inner(def, handler),
+                _ => eval_expr_unified_inner(def, handler),
+            }
+        }
+        Expr::Clamp(v, lo, hi) => {
+            let vv = eval_expr_unified_inner(v, handler)?;
+            let lov = eval_expr_unified_inner(lo, handler)?;
+            let hiv = eval_expr_unified_inner(hi, handler)?;
+            match (to_f64_opt(&vv), to_f64_opt(&lov), to_f64_opt(&hiv)) {
+                (Some(x), Some(l), Some(h)) => Ok(ScalarValue::F64(x.max(l).min(h))),
+                _ => Ok(ScalarValue::Null),
+            }
+        }
+        Expr::Coalesce(args) => {
+            for arg in args {
+                let v = eval_expr_unified_inner(arg, handler)?;
+                if !v.is_null() {
+                    return Ok(v);
+                }
+            }
+            Ok(ScalarValue::Null)
+        }
+        // -- Cross-coordinate reads: delegate to handler --
+        Expr::ActualRef(measure) => handler(EvalLookup::Cross(&CrossCoordRead::ScenarioShift {
+            measure: *measure,
+        })),
+        Expr::Prev(measure) => handler(EvalLookup::Cross(&CrossCoordRead::TimeOffset {
+            offset: -1,
+            measure: *measure,
+        })),
+        Expr::Lag(measure, periods_expr) => {
+            let periods_val = eval_expr_unified_inner(periods_expr, handler)?;
+            match to_f64_opt(&periods_val) {
+                Some(n) => {
+                    let offset = -(n as i32);
+                    handler(EvalLookup::Cross(&CrossCoordRead::TimeOffset {
+                        offset,
+                        measure: *measure,
+                    }))
+                }
+                None => Ok(ScalarValue::Null),
+            }
+        }
+        Expr::Cumulative(measure) => handler(EvalLookup::Cross(&CrossCoordRead::Cumulative {
+            measure: *measure,
+        })),
+        Expr::RollingAvg(measure, window_expr) => {
+            let window_val = eval_expr_unified_inner(window_expr, handler)?;
+            match to_f64_opt(&window_val) {
+                Some(w) if w >= 1.0 => handler(EvalLookup::Cross(&CrossCoordRead::RollingAvg {
+                    measure: *measure,
+                    window: w as u32,
+                })),
+                _ => Ok(ScalarValue::Null),
+            }
+        }
+        Expr::PeriodIndex => handler(EvalLookup::Cross(&CrossCoordRead::PeriodIndex)),
+        Expr::AnchorIndex => handler(EvalLookup::Cross(&CrossCoordRead::AnchorIndex)),
+        Expr::IsPast => handler(EvalLookup::Cross(&CrossCoordRead::IsPast)),
+        Expr::IsCurrent => handler(EvalLookup::Cross(&CrossCoordRead::IsCurrent)),
+        Expr::IsFuture => handler(EvalLookup::Cross(&CrossCoordRead::IsFuture)),
+        Expr::PeriodsSinceAnchor => handler(EvalLookup::Cross(&CrossCoordRead::PeriodsSinceAnchor)),
+        Expr::PeriodsToEnd => handler(EvalLookup::Cross(&CrossCoordRead::PeriodsToEnd)),
+        Expr::Benchmark(name, key_expr) => {
+            let key = eval_expr_unified_inner(key_expr, handler)?;
+            handler(EvalLookup::Cross(&CrossCoordRead::BenchmarkLookup {
+                name: name.clone(),
+                key,
+            }))
+        }
+        Expr::Lookup(table, key_expr) => {
+            let key = eval_expr_unified_inner(key_expr, handler)?;
+            handler(EvalLookup::Cross(&CrossCoordRead::TableLookup {
+                table: table.clone(),
+                key,
+            }))
+        }
+        Expr::Bucket(value_expr, threshold_name) => {
+            let v = eval_expr_unified_inner(value_expr, handler)?;
+            handler(EvalLookup::Cross(&CrossCoordRead::BucketLookup {
+                threshold: threshold_name.clone(),
+                value: v,
+            }))
+        }
+        Expr::SumOver(dim, measure) => handler(EvalLookup::Cross(&CrossCoordRead::DimensionScan {
+            dimension: *dim,
+            measure: *measure,
+        })),
+        Expr::DimElement(dim) => handler(EvalLookup::Cross(&CrossCoordRead::CurrentElementName {
+            dimension: *dim,
+        })),
+        Expr::Predict(model_id, feature_exprs) => {
+            let mut features = Vec::with_capacity(feature_exprs.len());
+            for fe in feature_exprs {
+                let v = eval_expr_unified_inner(fe, handler)?;
+                if v.is_null() {
+                    return Ok(ScalarValue::Null);
+                }
+                features.push(v);
+            }
+            handler(EvalLookup::Cross(&CrossCoordRead::PredictModel {
+                model_id: model_id.clone(),
+                features,
+            }))
+        }
+        Expr::Calibrate(value_expr, map_id) => {
+            let v = eval_expr_unified_inner(value_expr, handler)?;
+            if v.is_null() {
+                return Ok(ScalarValue::Null);
+            }
+            handler(EvalLookup::Cross(&CrossCoordRead::CalibrateMap {
+                map_id: map_id.clone(),
+                value: v,
+            }))
+        }
+        Expr::Exp(inner) => {
+            let v = eval_expr_unified_inner(inner, handler)?;
+            match to_f64_opt(&v) {
+                None => Ok(ScalarValue::Null),
+                Some(x) => Ok(finite_or_null(x.exp())),
+            }
+        }
+        Expr::NormCdf(x_expr, mu_expr, sigma_expr) => {
+            let xv = eval_expr_unified_inner(x_expr, handler)?;
+            let muv = eval_expr_unified_inner(mu_expr, handler)?;
+            let sv = eval_expr_unified_inner(sigma_expr, handler)?;
+            match (to_f64_opt(&xv), to_f64_opt(&muv), to_f64_opt(&sv)) {
+                (Some(x), Some(mu), Some(sigma)) if sigma > 0.0 => {
+                    Ok(ScalarValue::F64(norm_cdf_compute(x, mu, sigma)))
+                }
+                _ => Ok(ScalarValue::Null),
+            }
+        }
+    }
+}
+
+fn eval_comparison_unified<H>(
+    a: &Expr,
+    b: &Expr,
+    handler: &mut H,
+    cmp: impl Fn(f64, f64) -> bool,
+) -> Result<ScalarValue, EngineError>
+where
+    H: FnMut(EvalLookup<'_>) -> Result<ScalarValue, EngineError>,
+{
+    let lhs = eval_expr_unified_inner(a, handler)?;
+    let rhs = eval_expr_unified_inner(b, handler)?;
+    match (to_f64_opt(&lhs), to_f64_opt(&rhs)) {
+        (Some(l), Some(r)) => Ok(bool_to_scalar(cmp(l, r))),
+        _ => Ok(ScalarValue::Null),
     }
 }
 

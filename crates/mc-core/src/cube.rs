@@ -44,7 +44,7 @@ use crate::hierarchy::Hierarchy;
 use crate::id::{CubeId, DimensionId, ElementId, PrincipalId, Revision};
 use crate::lock::{Lock, LockTable};
 use crate::permission::{capability, PermissionTable};
-use crate::rule::{eval_expr, expr_depth, CrossCoordRead, Expr, Rule, RuleSet};
+use crate::rule::{expr_depth, CrossCoordRead, Expr, Rule, RuleSet};
 use crate::slice::{SliceBinding, SliceQuery, SliceResult, PHASE_1_SLICE_LIMIT};
 use crate::snapshot::Snapshot;
 use crate::store::HashMapStore;
@@ -81,6 +81,9 @@ pub struct Cube {
     revision: Revision,
     deps: DependencyGraph,
     dirty: DirtyTracker,
+    /// Model-layer reference data (benchmarks, lookup tables, thresholds)
+    /// used by cross-coordinate eval. Empty for cubes built without model data.
+    pub reference_data: ReferenceData,
 }
 
 impl Cube {
@@ -432,35 +435,37 @@ impl Cube {
 
         let target_coord = coord.clone();
         let cube_id = self.id;
-        // We can't pass `self` directly into the closure (mutable borrow
-        // conflict), so we wrap the recursive call via a helper that
-        // reborrows `self` cleanly.
+        // Use the unified eval to avoid the two-closure borrow conflict:
+        // both SelfRef reads and cross-coordinate reads need `&mut self`.
         let value = {
-            // Build a SelfRef lookup closure that recursively calls
-            // Cube::read_inner. Each invocation re-acquires `&mut self`
-            // through the wrapper.
-            let mut lookup = |measure: ElementId| -> Result<ScalarValue, EngineError> {
-                // Build the sibling coord (same coord, replace measure).
-                let mut elements: smallvec::SmallVec<[ElementId; 8]> =
-                    target_coord.elements().iter().copied().collect();
-                elements[measure_dim_position] = measure;
-                let sibling_coord = CellCoordinate::from_parts(cube_id, elements.iter().copied());
-                let cv = self.read_inner(&sibling_coord, principal, request_trace)?;
-                if request_trace {
-                    if let Some(t) = &cv.trace {
-                        child_traces.push(t.root.clone());
+            use crate::rule::{eval_expr_unified, EvalLookup};
+            let mut handler = |req: EvalLookup<'_>| -> Result<ScalarValue, EngineError> {
+                match req {
+                    EvalLookup::SelfRef(measure) => {
+                        // Build the sibling coord (same coord, replace measure).
+                        let mut elements: SmallVec<[ElementId; 8]> =
+                            target_coord.elements().iter().copied().collect();
+                        elements[measure_dim_position] = measure;
+                        let sibling_coord =
+                            CellCoordinate::from_parts(cube_id, elements.iter().copied());
+                        let cv = self.read_inner(&sibling_coord, principal, request_trace)?;
+                        if request_trace {
+                            if let Some(t) = &cv.trace {
+                                child_traces.push(t.root.clone());
+                            }
+                        }
+                        actual_reads.push((measure, cv.clone()));
+                        Ok(cv.value)
                     }
+                    EvalLookup::Cross(cross_read) => self.resolve_cross_coord_read(
+                        cross_read,
+                        &target_coord,
+                        measure_dim_position,
+                        principal,
+                    ),
                 }
-                actual_reads.push((measure, cv.clone()));
-                Ok(cv.value)
             };
-            // Cross-coordinate reads are resolved by the caller context.
-            // Phase 3E+: the Cube layer does not yet implement full
-            // cross-coordinate resolution; return Null for unresolved reads.
-            let mut cross_lookup = |_read: &CrossCoordRead| -> Result<ScalarValue, EngineError> {
-                Ok(ScalarValue::Null)
-            };
-            eval_expr(&rule_body, &mut lookup, &mut cross_lookup)?
+            eval_expr_unified(&rule_body, &mut handler)?
         };
 
         // After eval, validate the declared-dep superset for THIS
@@ -736,6 +741,347 @@ impl Cube {
             revision: stored.revision,
             elapsed_us: 0,
         }
+    }
+
+    // --- Cross-coordinate read resolution ---
+
+    /// Resolve a `CrossCoordRead` in the context of `target_coord`.
+    /// Called during rule evaluation to handle actual_ref, prev, lag,
+    /// cumulative, rolling_avg, sum_over, benchmark, lookup, bucket, etc.
+    fn resolve_cross_coord_read(
+        &mut self,
+        read: &CrossCoordRead,
+        target_coord: &CellCoordinate,
+        measure_dim_position: usize,
+        principal: PrincipalId,
+    ) -> Result<ScalarValue, EngineError> {
+        let cube_id = self.id;
+        match read {
+            CrossCoordRead::ScenarioShift { measure } => {
+                // Find the Scenario dimension and its "Default" (actuals) element.
+                let scenario_pos = self
+                    .dimensions
+                    .iter()
+                    .position(|d| d.kind == DimensionKind::Scenario);
+                let scenario_pos = match scenario_pos {
+                    Some(p) => p,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let actuals_element = self.dimensions[scenario_pos]
+                    .elements
+                    .iter()
+                    .find(|e| e.scenario_meta() == Some(crate::element::ScenarioMeta::Default))
+                    .map(|e| e.id);
+                let actuals_element = match actuals_element {
+                    Some(id) => id,
+                    None => return Ok(ScalarValue::Null),
+                };
+                // Build coord with scenario shifted to actuals + measure replaced.
+                let mut elements: SmallVec<[ElementId; 8]> =
+                    target_coord.elements().iter().copied().collect();
+                elements[scenario_pos] = actuals_element;
+                elements[measure_dim_position] = *measure;
+                let shifted_coord = CellCoordinate::from_parts(cube_id, elements.iter().copied());
+                let cv = self.read_inner(&shifted_coord, principal, false)?;
+                Ok(cv.value)
+            }
+            CrossCoordRead::TimeOffset { offset, measure } => {
+                // Find the Time dimension (Standard kind, usually named "Time").
+                let time_pos = self.find_time_dimension_position();
+                let time_pos = match time_pos {
+                    Some(p) => p,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let time_dim = &self.dimensions[time_pos];
+                let current_element = target_coord.element_at(time_pos);
+                let current_idx = time_dim.element_index.get(&current_element).copied();
+                let current_idx = match current_idx {
+                    Some(i) => i,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let target_idx = current_idx as i64 + *offset as i64;
+                if target_idx < 0 || target_idx >= time_dim.elements.len() as i64 {
+                    return Ok(ScalarValue::Null);
+                }
+                let target_element = time_dim.elements[target_idx as usize].id;
+                let mut elements: SmallVec<[ElementId; 8]> =
+                    target_coord.elements().iter().copied().collect();
+                elements[time_pos] = target_element;
+                elements[measure_dim_position] = *measure;
+                let shifted_coord = CellCoordinate::from_parts(cube_id, elements.iter().copied());
+                let cv = self.read_inner(&shifted_coord, principal, false)?;
+                Ok(cv.value)
+            }
+            CrossCoordRead::Cumulative { measure } => {
+                let time_pos = match self.find_time_dimension_position() {
+                    Some(p) => p,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let current_element = target_coord.element_at(time_pos);
+                let (current_idx, time_element_ids) = {
+                    let time_dim = &self.dimensions[time_pos];
+                    let ci = match time_dim.element_index.get(&current_element).copied() {
+                        Some(i) => i,
+                        None => return Ok(ScalarValue::Null),
+                    };
+                    let ids: Vec<ElementId> = time_dim.elements.iter().map(|e| e.id).collect();
+                    (ci, ids)
+                };
+                let mut sum = 0.0_f64;
+                let mut any_non_null = false;
+                for &target_element in time_element_ids.iter().take(current_idx + 1) {
+                    let mut elements: SmallVec<[ElementId; 8]> =
+                        target_coord.elements().iter().copied().collect();
+                    elements[time_pos] = target_element;
+                    elements[measure_dim_position] = *measure;
+                    let c = CellCoordinate::from_parts(cube_id, elements.iter().copied());
+                    let cv = self.read_inner(&c, principal, false)?;
+                    if let ScalarValue::F64(v) = cv.value {
+                        sum += v;
+                        any_non_null = true;
+                    }
+                }
+                if any_non_null {
+                    Ok(ScalarValue::F64(sum))
+                } else {
+                    Ok(ScalarValue::Null)
+                }
+            }
+            CrossCoordRead::RollingAvg { measure, window } => {
+                let time_pos = match self.find_time_dimension_position() {
+                    Some(p) => p,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let current_element = target_coord.element_at(time_pos);
+                let (current_idx, time_element_ids) = {
+                    let time_dim = &self.dimensions[time_pos];
+                    let ci = match time_dim.element_index.get(&current_element).copied() {
+                        Some(i) => i,
+                        None => return Ok(ScalarValue::Null),
+                    };
+                    let ids: Vec<ElementId> = time_dim.elements.iter().map(|e| e.id).collect();
+                    (ci, ids)
+                };
+                let w = *window as usize;
+                let start = if current_idx >= w {
+                    current_idx - w + 1
+                } else {
+                    0
+                };
+                let mut sum = 0.0_f64;
+                let mut count = 0u32;
+                for &target_element in time_element_ids.iter().take(current_idx + 1).skip(start) {
+                    let mut elements: SmallVec<[ElementId; 8]> =
+                        target_coord.elements().iter().copied().collect();
+                    elements[time_pos] = target_element;
+                    elements[measure_dim_position] = *measure;
+                    let c = CellCoordinate::from_parts(cube_id, elements.iter().copied());
+                    let cv = self.read_inner(&c, principal, false)?;
+                    if let ScalarValue::F64(v) = cv.value {
+                        sum += v;
+                        count += 1;
+                    }
+                }
+                if count > 0 {
+                    Ok(ScalarValue::F64(sum / count as f64))
+                } else {
+                    Ok(ScalarValue::Null)
+                }
+            }
+            CrossCoordRead::PeriodIndex => {
+                let time_pos = match self.find_time_dimension_position() {
+                    Some(p) => p,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let time_dim = &self.dimensions[time_pos];
+                let current_element = target_coord.element_at(time_pos);
+                match time_dim.element_index.get(&current_element).copied() {
+                    Some(i) => Ok(ScalarValue::F64(i as f64)),
+                    None => Ok(ScalarValue::Null),
+                }
+            }
+            CrossCoordRead::AnchorIndex => {
+                // Time anchor is the element marked with time_anchor metadata.
+                // For now, default to index 0 if no anchor is explicitly set.
+                // The model layer should set this via reference_data or cube config.
+                Ok(ScalarValue::F64(0.0))
+            }
+            CrossCoordRead::IsPast => {
+                let time_pos = match self.find_time_dimension_position() {
+                    Some(p) => p,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let time_dim = &self.dimensions[time_pos];
+                let current_element = target_coord.element_at(time_pos);
+                let current_idx = match time_dim.element_index.get(&current_element).copied() {
+                    Some(i) => i as f64,
+                    None => return Ok(ScalarValue::Null),
+                };
+                // anchor_index defaults to 0
+                Ok(ScalarValue::F64(if current_idx < 0.0 { 1.0 } else { 0.0 }))
+            }
+            CrossCoordRead::IsCurrent => {
+                let time_pos = match self.find_time_dimension_position() {
+                    Some(p) => p,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let time_dim = &self.dimensions[time_pos];
+                let current_element = target_coord.element_at(time_pos);
+                let current_idx = match time_dim.element_index.get(&current_element).copied() {
+                    Some(i) => i as f64,
+                    None => return Ok(ScalarValue::Null),
+                };
+                Ok(ScalarValue::F64(if current_idx == 0.0 { 1.0 } else { 0.0 }))
+            }
+            CrossCoordRead::IsFuture => {
+                let time_pos = match self.find_time_dimension_position() {
+                    Some(p) => p,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let time_dim = &self.dimensions[time_pos];
+                let current_element = target_coord.element_at(time_pos);
+                let current_idx = match time_dim.element_index.get(&current_element).copied() {
+                    Some(i) => i as f64,
+                    None => return Ok(ScalarValue::Null),
+                };
+                Ok(ScalarValue::F64(if current_idx > 0.0 { 1.0 } else { 0.0 }))
+            }
+            CrossCoordRead::PeriodsSinceAnchor => {
+                let time_pos = match self.find_time_dimension_position() {
+                    Some(p) => p,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let time_dim = &self.dimensions[time_pos];
+                let current_element = target_coord.element_at(time_pos);
+                match time_dim.element_index.get(&current_element).copied() {
+                    Some(i) => Ok(ScalarValue::F64(i as f64)), // anchor=0
+                    None => Ok(ScalarValue::Null),
+                }
+            }
+            CrossCoordRead::PeriodsToEnd => {
+                let time_pos = match self.find_time_dimension_position() {
+                    Some(p) => p,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let time_dim = &self.dimensions[time_pos];
+                let current_element = target_coord.element_at(time_pos);
+                let max_idx = time_dim.elements.len().saturating_sub(1);
+                match time_dim.element_index.get(&current_element).copied() {
+                    Some(i) => Ok(ScalarValue::F64((max_idx - i) as f64)),
+                    None => Ok(ScalarValue::Null),
+                }
+            }
+            CrossCoordRead::BenchmarkLookup { name, key } => {
+                let table = match self.reference_data.benchmarks.get(name) {
+                    Some(t) => t,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let key_str = scalar_to_lookup_key(key);
+                match table.get(&key_str) {
+                    Some(v) => Ok(ScalarValue::F64(*v)),
+                    None => Ok(ScalarValue::Null),
+                }
+            }
+            CrossCoordRead::TableLookup { table, key } => {
+                let tbl = match self.reference_data.lookup_tables.get(table) {
+                    Some(t) => t,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let key_str = scalar_to_lookup_key(key);
+                match tbl.get(&key_str) {
+                    Some(v) => Ok(ScalarValue::F64(*v)),
+                    None => Ok(ScalarValue::Null),
+                }
+            }
+            CrossCoordRead::BucketLookup { threshold, value } => {
+                let bands = match self.reference_data.thresholds.get(threshold) {
+                    Some(b) => b,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let v = match to_f64_opt_cube(value) {
+                    Some(f) => f,
+                    None => return Ok(ScalarValue::Null),
+                };
+                // Find the first band where value <= band.max, or the last
+                // band (unbounded above).
+                for (i, band) in bands.iter().enumerate() {
+                    match band.max {
+                        Some(max) if v <= max => return Ok(ScalarValue::F64(i as f64)),
+                        Some(_) => continue,
+                        None => return Ok(ScalarValue::F64(i as f64)),
+                    }
+                }
+                // Fallback: last band
+                Ok(ScalarValue::F64(bands.len().saturating_sub(1) as f64))
+            }
+            CrossCoordRead::DimensionScan { dimension, measure } => {
+                // Sum across all leaf elements of the named dimension.
+                let dim_pos = match self.dimensions.iter().position(|d| d.id == *dimension) {
+                    Some(p) => p,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let dim = &self.dimensions[dim_pos];
+                let hierarchy = dim.default_hierarchy();
+                // Collect leaf element IDs.
+                let leaf_ids: Vec<ElementId> = dim
+                    .elements
+                    .iter()
+                    .filter(|e| hierarchy.is_leaf(e.id) || hierarchy.edges.is_empty())
+                    .map(|e| e.id)
+                    .collect();
+                let mut sum = 0.0_f64;
+                let mut any_non_null = false;
+                for leaf_id in leaf_ids {
+                    let mut elements: SmallVec<[ElementId; 8]> =
+                        target_coord.elements().iter().copied().collect();
+                    elements[dim_pos] = leaf_id;
+                    elements[measure_dim_position] = *measure;
+                    let c = CellCoordinate::from_parts(cube_id, elements.iter().copied());
+                    let cv = self.read_inner(&c, principal, false)?;
+                    if let ScalarValue::F64(v) = cv.value {
+                        sum += v;
+                        any_non_null = true;
+                    }
+                }
+                if any_non_null {
+                    Ok(ScalarValue::F64(sum))
+                } else {
+                    Ok(ScalarValue::Null)
+                }
+            }
+            CrossCoordRead::CurrentElementName { dimension } => {
+                let dim_pos = match self.dimensions.iter().position(|d| d.id == *dimension) {
+                    Some(p) => p,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let dim = &self.dimensions[dim_pos];
+                let element_id = target_coord.element_at(dim_pos);
+                match dim.element(element_id) {
+                    Some(e) => Ok(ScalarValue::Str(e.name.clone())),
+                    None => Ok(ScalarValue::Null),
+                }
+            }
+            CrossCoordRead::PredictModel { .. } | CrossCoordRead::CalibrateMap { .. } => {
+                // Phase 3H: fitted-model evaluation is not yet wired at
+                // the cube layer. Return Null as documented in the 3H
+                // completion report.
+                Ok(ScalarValue::Null)
+            }
+        }
+    }
+
+    /// Find the position of the "Time" dimension (a Standard-kind dimension
+    /// that serves as the time axis). Heuristic: the first dimension named
+    /// "Time" or the first Standard-kind dimension if none is named "Time".
+    fn find_time_dimension_position(&self) -> Option<usize> {
+        // First try exact name match.
+        if let Some(pos) = self.dimensions.iter().position(|d| d.name == "Time") {
+            return Some(pos);
+        }
+        // Fallback: first Standard-kind dim (excluding Measure/Scenario/Version).
+        self.dimensions
+            .iter()
+            .position(|d| d.kind == DimensionKind::Standard)
     }
 
     // --- Write ---
@@ -1635,6 +1981,26 @@ fn resolve_binding(binding: &SliceBinding, dim: &Dimension) -> Vec<ElementId> {
     }
 }
 
+/// Convert a `ScalarValue` to a string key for lookup table resolution.
+fn scalar_to_lookup_key(v: &ScalarValue) -> String {
+    match v {
+        ScalarValue::F64(f) => format!("{f}"),
+        ScalarValue::I64(i) => format!("{i}"),
+        ScalarValue::Str(s) => s.clone(),
+        ScalarValue::Bool(b) => format!("{b}"),
+        ScalarValue::Category(idx) => format!("{idx}"),
+        ScalarValue::Null => String::new(),
+    }
+}
+
+/// Extract f64 from a ScalarValue (cube-layer helper, mirrors rule.rs to_f64_opt).
+fn to_f64_opt_cube(v: &ScalarValue) -> Option<f64> {
+    match v {
+        ScalarValue::F64(x) => Some(*x),
+        _ => None,
+    }
+}
+
 fn top_level_expr_op(expr: &Expr) -> ExprOp {
     match expr {
         Expr::Const(_) => ExprOp::Const,
@@ -1647,6 +2013,30 @@ fn top_level_expr_op(expr: &Expr) -> ExprOp {
         // Phase 3E+: new ops map to a generic trace label
         _ => ExprOp::Const, // placeholder for trace rendering
     }
+}
+
+// ===========================================================================
+// ReferenceData — model-layer lookup tables threaded to the eval layer
+// ===========================================================================
+
+/// Reference data tables used by cross-coordinate eval (lookup, benchmark,
+/// bucket). Populated at compile time from the model's YAML declarations.
+#[derive(Clone, Debug, Default)]
+pub struct ReferenceData {
+    /// Named benchmark tables: name → (key → value).
+    pub benchmarks: ahash::AHashMap<String, ahash::AHashMap<String, f64>>,
+    /// Named lookup tables: name → (key → value).
+    pub lookup_tables: ahash::AHashMap<String, ahash::AHashMap<String, f64>>,
+    /// Named status threshold bands: name → ordered bands.
+    pub thresholds: ahash::AHashMap<String, Vec<ThresholdBand>>,
+}
+
+/// One band within a status threshold. Ordered from lowest to highest; the
+/// last band has `max = None` (unbounded above).
+#[derive(Clone, Debug)]
+pub struct ThresholdBand {
+    pub label: String,
+    pub max: Option<f64>,
 }
 
 // ===========================================================================
@@ -1796,6 +2186,7 @@ impl CubeBuilder {
             revision: Revision::ZERO,
             deps: DependencyGraph::new(),
             dirty,
+            reference_data: ReferenceData::default(),
         })
     }
 }
@@ -1889,7 +2280,8 @@ fn validate_expr_well_typed(expr: &Expr, measure_dim: &Dimension) -> Result<(), 
         | Expr::IsCurrent
         | Expr::IsFuture
         | Expr::PeriodsSinceAnchor
-        | Expr::PeriodsToEnd => Ok(()),
+        | Expr::PeriodsToEnd
+        | Expr::DimElement(_) => Ok(()),
         Expr::Benchmark(_, key) | Expr::Lookup(_, key) => {
             validate_expr_well_typed(key, measure_dim)
         }

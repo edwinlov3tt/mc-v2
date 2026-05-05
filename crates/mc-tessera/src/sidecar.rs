@@ -293,6 +293,7 @@ impl CellValueJson {
             ScalarValue::I64(x) => CellValueJson::I64 { value: *x },
             ScalarValue::Bool(x) => CellValueJson::Bool { value: *x },
             ScalarValue::Category(x) => CellValueJson::Category { index: *x },
+            ScalarValue::Str(_) => CellValueJson::Null, // Str is transient; never stored
             ScalarValue::Null => CellValueJson::Null,
         }
     }

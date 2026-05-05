@@ -67,7 +67,9 @@ pub use batch::{CommitResult, WriteBatch, WritebackContext};
 pub use cell::{CellValue, Provenance, StoredCell, Uncertainty};
 pub use consolidation::{Consolidator, LeafReadout};
 pub use coordinate::{CellCoordinate, CellCoordinateBuilder};
-pub use cube::{Cube, CubeBuilder, WriteIntent, WritebackRequest, WritebackResult};
+pub use cube::{
+    Cube, CubeBuilder, ReferenceData, ThresholdBand, WriteIntent, WritebackRequest, WritebackResult,
+};
 pub use dependency::{DependencyEdge, DependencyGraph, DependencySource};
 pub use dimension::{Dimension, DimensionBuilder, DimensionKind};
 pub use dirty::DirtyTracker;
@@ -82,7 +84,8 @@ pub use permission::{
     capability, CapabilitySet, Grant, PermissionTable, ScopeBinding, ScopePattern,
 };
 pub use rule::{
-    eval_expr, expr_depth, CoordPattern, CrossCoordRead, DependencyDecl, Expr, Rule, RuleSet, Scope,
+    eval_expr, eval_expr_unified, expr_depth, CoordPattern, CrossCoordRead, DependencyDecl,
+    EvalLookup, Expr, Rule, RuleSet, Scope,
 };
 pub use slice::{SliceBinding, SliceQuery, SliceResult, PHASE_1_SLICE_LIMIT};
 pub use snapshot::Snapshot;

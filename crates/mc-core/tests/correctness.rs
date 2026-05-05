@@ -331,6 +331,7 @@ fn collect_self_refs(expr: &mc_core::Expr) -> std::collections::HashSet<mc_core:
             mc_core::Expr::SumOver(_, m) => {
                 acc.insert(*m);
             }
+            mc_core::Expr::DimElement(_) => {}
             // Phase 3H
             mc_core::Expr::Predict(_, features) => {
                 for f in features {

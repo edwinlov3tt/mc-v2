@@ -15,6 +15,9 @@ pub enum ScalarValue {
     Bool(bool),
     /// Index into the parent measure's `CellDataType::Category` vec.
     Category(usize),
+    /// String value used as a lookup key in reference-data tables.
+    /// Not stored in cells; only produced during eval by `DimElement`.
+    Str(String),
     Null,
 }
 
@@ -63,6 +66,7 @@ impl ScalarValue {
             // `CellDataType::matches` is the actual validation primitive and
             // it consults the measure's dtype, not the value's.
             ScalarValue::Category(_) => CellDataType::F64,
+            ScalarValue::Str(_) => CellDataType::F64, // Str is transient; never stored
             ScalarValue::Null => CellDataType::F64,
         }
     }

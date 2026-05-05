@@ -505,6 +505,11 @@ fn check_rules_reference_known_measures(
     errors: &mut Vec<ValidationError>,
 ) {
     let known_measures: BTreeSet<&str> = parsed.measures.iter().map(|m| m.name.as_str()).collect();
+    // Dimension names are valid as identifiers in lookup/benchmark key
+    // expressions (they resolve to the current element name at eval time).
+    // Don't fire MC2005 for these.
+    let known_dimensions: BTreeSet<&str> =
+        parsed.dimensions.iter().map(|d| d.name.as_str()).collect();
     // Walk the validated rules (post-formula-parse) so the body refs we
     // collect represent the actual semantic shape — not the
     // `ParsedRuleBodyForm` wrapper. Length matches `parsed.rules`.
@@ -531,6 +536,10 @@ fn check_rules_reference_known_measures(
         let mut body_refs: BTreeSet<String> = BTreeSet::new();
         collect_body_refs(&r.body, &mut body_refs);
         for ref_name in &body_refs {
+            // Dimension names used as lookup/benchmark keys are not measure refs.
+            if known_dimensions.contains(ref_name.as_str()) {
+                continue;
+            }
             if !known_measures.contains(ref_name.as_str()) {
                 errors.push(ValidationError::RuleReferencesUnknownMeasure {
                     rule_name: r.name.clone(),
@@ -543,6 +552,10 @@ fn check_rules_reference_known_measures(
         // with model context). Per spec §3.10 doctrine_no_silent_dependency_miss.
         let declared: BTreeSet<String> = r.declared_dependencies.iter().cloned().collect();
         for ref_name in &body_refs {
+            // Dimension names are not measure dependencies.
+            if known_dimensions.contains(ref_name.as_str()) {
+                continue;
+            }
             if !declared.contains(ref_name) {
                 errors.push(ValidationError::Schema {
                     message: format!(

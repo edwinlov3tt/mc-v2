@@ -279,7 +279,38 @@ pub fn compile(validated: ValidatedModel) -> Result<CompiledCube, EngineError> {
         cb = cb.add_rule(r)?;
     }
 
-    let cube = cb.build()?;
+    let mut cube = cb.build()?;
+
+    // Populate reference data (benchmarks, lookup_tables, thresholds) so
+    // the eval layer can resolve cross-coordinate reads.
+    for bm in &validated.parsed.benchmarks {
+        let table: ahash::AHashMap<String, f64> =
+            bm.values.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        cube.reference_data
+            .benchmarks
+            .insert(bm.name.clone(), table);
+    }
+    for lt in &validated.parsed.lookup_tables {
+        let table: ahash::AHashMap<String, f64> =
+            lt.values.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        cube.reference_data
+            .lookup_tables
+            .insert(lt.name.clone(), table);
+    }
+    for st in &validated.parsed.status_thresholds {
+        let bands: Vec<mc_core::ThresholdBand> = st
+            .bands
+            .iter()
+            .map(|b| mc_core::ThresholdBand {
+                label: b.label.clone(),
+                max: b.max,
+            })
+            .collect();
+        cube.reference_data
+            .thresholds
+            .insert(st.name.clone(), bands);
+    }
+
     Ok(CompiledCube {
         cube,
         root_principal,
@@ -308,7 +339,7 @@ fn build_typed_element(
     scenario_meta: Option<&str>,
 ) -> Result<Element, EngineError> {
     match kind {
-        "Standard" => Ok(Element::leaf(id, name, dim_id)),
+        "Standard" | "Time" => Ok(Element::leaf(id, name, dim_id)),
         "Version" => {
             let state = match version_state.unwrap_or("Draft") {
                 "Draft" => VersionState::Draft,
@@ -423,9 +454,17 @@ fn compile_expr(
             ParsedScalar::Bool(v) => ScalarValue::Bool(*v),
             ParsedScalar::Null => ScalarValue::Null,
         })),
-        ParsedRuleBody::Ref(r) => Ok(Expr::SelfRef(lookup_measure_id(
-            refs, validated, &r.measure,
-        )?)),
+        ParsedRuleBody::Ref(r) => {
+            // If the name matches a dimension, compile to DimElement (resolves
+            // to the current element's name at eval time — used in lookup/benchmark keys).
+            if let Some(&dim_id) = refs.dimensions.get(&r.measure) {
+                Ok(Expr::DimElement(dim_id))
+            } else {
+                Ok(Expr::SelfRef(lookup_measure_id(
+                    refs, validated, &r.measure,
+                )?))
+            }
+        }
         ParsedRuleBody::Add(b) => binop(&b.add, refs, validated, Expr::Add),
         ParsedRuleBody::Sub(b) => binop(&b.sub, refs, validated, Expr::Sub),
         ParsedRuleBody::Mul(b) => binop(&b.mul, refs, validated, Expr::Mul),

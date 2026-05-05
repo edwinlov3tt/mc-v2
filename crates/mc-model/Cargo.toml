@@ -12,6 +12,7 @@ description = "Mosaic model layer — YAML → mc_core::Cube via parse / validat
 # and gains nothing from this crate's existence.
 [dependencies]
 mc-core = { path = "../mc-core" }
+ahash = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 # serde_yaml 0.9.34 is the last release; upstream archived it 2024 but it
 # remains the most-mature YAML 1.2 deserializer for serde on Rust 1.78.
