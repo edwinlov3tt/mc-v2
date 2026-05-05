@@ -57,6 +57,13 @@ dimensions:
 - `cumulative(Revenue)` at the first element → the element's own value (cumulative of 1 value = itself)
 - `rolling_avg(Revenue, 3)` at elements 1-2 → average of available elements (partial window)
 
+**Boundary semantics differ by function type:**
+- `prev(X)` / `lag(X, n)` at out-of-range positions -> returns **Null** (the referenced position doesn't exist)
+- `cumulative(X)` at period 1 -> returns `X` itself (the running sum of one value is that value; no boundary case)
+- `rolling_avg(X, n)` at period < n -> defaults to partial-window average of available data (Excel-compatible)
+
+These are not inconsistencies — they reflect different mathematical operations. `prev`/`lag` reference a specific position that may not exist; `cumulative`/`rolling_avg` are closed-form operations that handle short sequences naturally.
+
 **Rationale:** Null at boundaries is consistent with the kernel's existing null semantics (§7 of the brief). Users who want a default value at boundaries use Phase 3E's `coalesce` or `if_null`:
 
 ```yaml
@@ -91,6 +98,8 @@ body: "if(period_index() >= 2, rolling_avg(CPC, 3), Null)"
 ```
 
 Where `period_index()` returns the 0-based position of the current Time element.
+
+**Partial-window variance note:** A `rolling_avg(CPC, 3)` at period 2 (returning the average of 2 values) has higher variance than at period 5 (average of 3 values). For dashboards this is acceptable (matches Excel/Sheets behavior). For statistical analysis, users who need full-window-only semantics should write: `if(period_index() >= 3, rolling_avg(CPC, 3), Null)` to suppress partial-window results. A future `min_window` parameter may be added if demand surfaces.
 
 ### Decision 5: Date functions and element metadata
 
@@ -137,9 +146,11 @@ dimensions:
 - Writing `Spend` at `Feb_2026` must dirty every measure that uses `prev(Spend)` at `Mar_2026`
 - Generally: writing to time index N dirties time index N+1 (and N+2, N+3, ... for `lag` and `cumulative`)
 
-**`cumulative` is worst-case:** writing at period 1 dirties ALL subsequent periods' cumulative measures. For 12 monthly periods, this is 11 additional dirty entries per write. For 52 weekly periods, this is 51.
+**`cumulative` is worst-case:** Cumulative dirty propagation is the most expensive case. Writing to period P dirties ALL subsequent periods (P+1 through P_max) for the cumulative measure at EVERY combination of the other dimensions. For a cube with 12 time elements and 5x7x4x4 = 560 other-dimension leaf combinations, writing at period 1 dirties **11 x 560 = 6,160 cells** for one cumulative measure. With N cumulative measures, this multiplies to 6,160 x N.
 
-**Performance bound:** the Acme cube has 12 time periods. Cumulative dirty propagation adds at most 11 * (number of cumulative measures) entries to the dirty set per write. This is well within Phase 1A/1B benchmark ceilings. For models with hundreds of time periods, a lint warning (MC3012) advises against `cumulative` on high-cardinality time dimensions.
+For Acme (12 months x 560 leaf combos x 1 cumulative measure) this is manageable. For a customer cube with 52 weekly periods and 10,000 leaf combos, a single write could dirty 510,000 cells — a performance cliff.
+
+**Lint MC3012** fires when the PRODUCT of `(time_elements - 1) x other_dim_cardinality_product x cumulative_measure_count` exceeds 50,000 estimated dirty entries. The threshold was chosen so that Acme-sized cubes pass cleanly while large customer cubes surface the concern early.
 
 **`rolling_avg` with fixed window N:** writing at period K dirties periods K+1 through K+N-1. Bounded.
 
@@ -154,6 +165,10 @@ dimensions:
 | **MC2036** | Multiple dimensions with `kind: "Time"` (ambiguous — which is the temporal axis?) |
 | **MC3010** | Time dimension elements have `date:` metadata in non-chronological order (lint warning) |
 | **MC3012** | `cumulative` used on a time dimension with > 52 elements (lint: potential performance concern) |
+
+### Cross-coordinate nesting prohibition
+
+Per ADR-0011's cross-coordinate nesting rule, `prev(actual_ref(X))` and `actual_ref(prev(X))` are both rejected with MC1013. Users who need "the previous period's actual value" must use an intermediate derived measure.
 
 ---
 

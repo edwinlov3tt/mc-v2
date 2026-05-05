@@ -69,11 +69,17 @@ From lowest to highest binding:
 
 ### Decision 3: Boolean representation — f64-encoded (no ScalarValue change)
 
-Comparisons return `1.0` (true) / `0.0` (false) as `ScalarValue::Scalar(f64)`. `if()` treats non-zero as truthy, zero as falsy, Null as falsy.
+Comparisons return `1.0` (true) / `0.0` (false) as `ScalarValue::Scalar(f64)`. `if()` treats non-zero as truthy, zero as falsy, and Null as "take the else branch" (see Null semantics below).
 
-**Rationale:** Adding `ScalarValue::Bool` would require kernel changes (consolidation of booleans, dirty propagation of booleans, boolean arithmetic semantics). The f64-encoded approach is used by Excel, TM1, and most planning engines. It works because boolean results are almost always consumed by `if()` (which only needs truthy/falsy) or stored as flag measures (where 0/1 is the natural representation).
+**Rationale:** Adding `ScalarValue::Bool` would require kernel changes (consolidation of booleans, dirty propagation of booleans, boolean arithmetic semantics). The f64-encoded approach works because boolean results are almost always consumed by `if()` (which only needs truthy/falsy) or stored as flag measures (where 0/1 is the natural representation).
 
-**Null in comparisons:** Any comparison involving Null returns `0.0` (falsy). `Null > 5` = 0.0. `Null == Null` = 0.0. This matches SQL's three-valued logic convention (NULL comparisons are false) and prevents surprising cascade behavior.
+**Note on Excel/TM1:** Excel and TM1 have a distinct boolean type that coerces to 1/0 in arithmetic contexts. Mosaic's f64-only ScalarValue cannot preserve the display distinction (users see `1` and `0`, not `TRUE`/`FALSE`). This is a documented limitation revisitable in Phase 3J when ScalarValue gains type variants.
+
+**Null in comparisons:** Any comparison involving Null returns **Null** (not 0.0). `Null > 5` = Null. `Null == Null` = Null. This preserves SQL three-valued logic and De Morgan's laws.
+
+**`if()` with Null condition:** `if(Null_condition, then, else)` returns the **else branch** (Null condition = unknown = take the safe path). This is the "planner-friendly" interpretation. Users who want "treat Null as false explicitly" write `if(coalesce(Spend > Threshold, 0), action_a, action_b)`.
+
+> **Amendment note (2026-05-04, GPT + Desktop review):** The earlier draft proposed Null->0.0 (falsy) which broke De Morgan's laws: `not(Null > 5)` would return 1.0 (true) while `Null <= 5` would return 0.0 (false). Fixed to Null-propagation.
 
 ### Decision 4: `actual_ref` ships in 3E (not a separate sub-phase)
 
@@ -81,13 +87,58 @@ Comparisons return `1.0` (true) / `0.0` (false) as `ScalarValue::Scalar(f64)`. `
 
 **Rationale:**
 - The user need (cross-scenario planning) was the first gap identified in production validation
-- The dep-graph machinery for cross-coordinate reads is the same infrastructure Phase 3F needs for `prev()`/`lag()`; building it in 3E amortizes the design cost
+- Including `actual_ref` in 3E establishes the `CoordinateRead::ScenarioShift` primitive and its dep-graph handling. Phase 3F's `prev`/`lag` reuse the same `CoordinateRead` enum (adding `TimeOffset`) and the same reverse-dirty-edge infrastructure. Building the abstraction in 3E means 3F's implementation is incremental rather than ground-up
 - Shipping it separately would add a release boundary with no architectural benefit
 - The implementation is bounded: `actual_ref(X)` reads X at `[Scenario="Actual", same Version, same Time, same Channel, same Market, Measure=X]` — one targeted coordinate, not an arbitrary scan
 
-**Scope constraint:** `actual_ref` in 3E reads ONLY from the "Actual" scenario. A more general `ref(Scenario: "X", Measure: "Y")` (equivalent to TM1's `DB()`) is explicitly NOT Phase 3E. If generalized cross-coordinate reads are needed, that's a separate ADR with performance analysis.
+**`actual_ref` specification:**
+
+1. `actual_ref` requires exactly ONE Scenario-kind dimension in the model.
+2. That dimension MUST declare `actuals_element: "<name>"` in its YAML (new schema field). Example:
+   ```yaml
+   dimensions:
+     - name: "Scenario"
+       kind: "Scenario"
+       actuals_element: "Actual"   # declares which element actual_ref() reads
+       elements:
+         - { name: "Actual", scenario_meta: "Default" }
+         - { name: "Forecast", scenario_meta: "NonDefault" }
+   ```
+3. Semantics: `actual_ref(Spend)` reads Spend at the SAME coordinate except Scenario-kind dim shifts to `actuals_element`. All other dimensions (including Time) stay at the current position.
+4. **Exact-period only in Phase 3E.** If no actuals value exists at the requested coordinate (e.g., future period where actuals haven't been entered), returns Null. A future `latest_actual_ref(measure)` function (Phase 3F+) will handle the "most recent available" case; Phase 3E does NOT overload `actual_ref` with that behavior.
+5. Validation: if a rule uses `actual_ref` but the Scenario-kind dimension has no `actuals_element` field, fire MC2037 diagnostic.
+
+**Scope constraint:** `actual_ref` in 3E reads ONLY from the declared `actuals_element`. A more general `ref(Scenario: "X", Measure: "Y")` (equivalent to TM1's `DB()`) is explicitly NOT Phase 3E. If generalized cross-coordinate reads are needed, that's a separate ADR with performance analysis.
 
 **Dependency graph implication:** `actual_ref(Spend)` in the Forecast scenario declares a cross-scenario dependency. Writing `Spend` at `[Actual, ...]` must dirty `Forecast_Spend` at `[Forecast, ...]`. The dep-graph's `reverse_edges` map must include cross-scenario entries.
+
+### Cross-coordinate dependency abstraction (shared with Phase 3F)
+
+Each formula node that performs a cross-coordinate read lowers into one or more `CoordinateRead` specs. The evaluator uses them to read. The validator uses them to build reverse-dirtying edges.
+
+```rust
+/// How cross-coordinate reads are represented in the dep-graph.
+/// Shared between actual_ref (Phase 3E) and prev/lag (Phase 3F).
+enum CoordinateRead {
+    /// Read a measure at the current coordinate (existing Phase 3D behavior)
+    Local { measure: MeasureId },
+    /// Shift the Scenario-kind dimension to actuals_element, read measure there
+    ScenarioShift { measure: MeasureId },
+    /// Shift the Time-kind dimension by offset positions, read measure there  
+    TimeOffset { offset: i32, measure: MeasureId },
+    /// Sum a measure across all leaf elements of a dimension (Phase 3G sum_over)
+    DimensionScan { dimension: DimensionId, measure: MeasureId },
+}
+```
+
+### Cross-coordinate function nesting prohibition
+
+Cross-coordinate functions (`actual_ref`, and later `prev`/`lag`/`sum_over`) CANNOT be nested. The following are rejected at parse time with **MC1013**:
+- `prev(actual_ref(Revenue))` -> MC1013
+- `actual_ref(prev(Revenue))` -> MC1013
+- `lag(actual_ref(Revenue), 3)` -> MC1013
+
+If users need composed cross-coordinate reads, they must use intermediate derived measures.
 
 ### Decision 5: Diagnostic codes
 

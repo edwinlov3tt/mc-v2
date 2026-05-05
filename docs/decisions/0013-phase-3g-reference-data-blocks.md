@@ -127,6 +127,8 @@ pub struct ParsedThresholdBand {
 }
 ```
 
+**Exhaustive bands requirement:** Threshold bands MUST be exhaustive — every possible numeric input must fall into exactly one band. Gaps between bands are rejected at validation with MC5025 ("status threshold has gap between bands"). Overlapping bands are rejected with MC5026. The validator checks that each band's `max` equals the next band's `min` (with the first band's min defaulting to negative infinity and the last band's max defaulting to positive infinity).
+
 ### Decision 2: Block placement in model YAML
 
 All three blocks are **top-level, optional, after `rules:` and before `golden_tests:`**.
@@ -168,6 +170,8 @@ All three are `#[serde(default)]` — existing models without them parse unchang
 | Threshold bands must have at least 2 entries | MC2040 | Error |
 | Threshold bands must have ascending `max` values | MC2041 | Error |
 | Last threshold band must have `max: null` (unbounded) | MC2042 | Error |
+| Threshold bands have gaps (each band's max must equal next band's min) | MC5025 | Error |
+| Threshold bands overlap | MC5026 | Error |
 | Benchmark `last_updated` > 12 months from current date | MC2030 | Warning (lint) |
 | Lookup table referenced by no formula | MC2031 | Warning (lint) |
 | Benchmark `source` field is empty string | MC3013 | Warning (lint) |
@@ -187,7 +191,9 @@ All three are `#[serde(default)]` — existing models without them parse unchang
 
 **Performance rule:** Each eval of a cell containing `sum_over(dim, measure)` triggers N reads (where N = number of leaf elements in the named dimension). For the Acme cube (5 channels), this is 5 reads per cell eval. Manageable.
 
-**Lint warning:** MC3011 fires when `sum_over` references a dimension with > 50 leaf elements. The message: "sum_over on high-cardinality dimension 'X' (N elements) may impact read performance. Consider pre-computing the total as a separate rule."
+**Leaf-only semantics:** `sum_over(dimension, measure)` sums across ALL LEAF elements of the named dimension at the current coordinate (holding all other dimensions constant). It does NOT sum consolidated/parent elements — that would double-count. This matches the semantics of "what % of total is this element?" which is the primary use case.
+
+**Lint warning:** MC3011 fires when `sum_over` is used on a dimension with > 50 leaf elements. This warns about potential performance impact (50 cell reads per eval point). At > 10,000 leaf elements, MC3011 escalates to Error (hard cap; requires explicit opt-in via a `#[allow_large_aggregation]` model-level annotation if the user deliberately wants this).
 
 **Dep-graph implication:** `sum_over(Channel, Spend)` means that writing `Spend` at ANY channel dirties `Spend_Share` at EVERY channel (because the total changed). This is an N-to-N fan-out within one dimension. For small dimensions (5-20 elements) this is acceptable. The lint prevents pathological cases.
 
@@ -200,13 +206,17 @@ Adding optional top-level blocks does NOT require `model_format_version: 2`. Thi
 
 All additions are optional (`#[serde(default)]`). Existing models parse unchanged. The version bump is reserved for backwards-INCOMPATIBLE changes (removing required fields, changing semantics of existing fields).
 
-### Decision 6: `bucket()` returns numeric rank (not string label)
+### Decision 6: `bucket()` returns zero-based band index
+
+`bucket()` returns a **zero-based band index** as f64 (0.0, 1.0, 2.0, ...). The threshold block is the authoritative mapping from band_index to human label. UI, inspect, and reporting layers resolve the label from the threshold definition when rendering. Band index 0 is the FIRST band declared; band index N-1 is the last.
 
 `bucket(CPC, "cpc_health")` returns:
-- `0` if CPC falls in the first band ("Good": CPC <= 3.0)
-- `1` if CPC falls in the second band ("Warning": 3.0 < CPC <= 7.0)
-- `2` if CPC falls in the third band ("Critical": CPC > 7.0)
+- `0.0` if CPC falls in the first band ("Good": CPC <= 3.0)
+- `1.0` if CPC falls in the second band ("Warning": 3.0 < CPC <= 7.0)
+- `2.0` if CPC falls in the third band ("Critical": CPC > 7.0)
 - `Null` if CPC is Null
+
+Band ordering is part of the model's semantic contract — reordering bands changes the numeric output. Lint MC3013 warns if bands are declared with overlapping or gap regions.
 
 **Rationale:** `ScalarValue` is f64 in Phases 1-3I. Returning a string label would require either (a) a string-valued ScalarValue variant (kernel change, deferred to 3J+) or (b) encoding strings as some kind of numeric ID (confusing). Numeric ranks are directly usable in downstream formulas (`if(bucket(CPC, "cpc_health") >= 2, ...)`) and the string labels are a display concern (Phase 6 UI reads the threshold definition to render "Good"/"Warning"/"Critical").
 
@@ -220,6 +230,8 @@ All additions are optional (`#[serde(default)]`). Existing models parse unchange
 | `sum_over` | `sum_over(dim_name, measure)` | `SumOver { dimension: String, measure: String }` |
 
 **Key expression for `benchmark` and `lookup`:** The second argument is a dimension reference that resolves to the current element name in that dimension at eval time. For example, `benchmark("industry_cpc", Channel)` resolves `Channel` to the current Channel element name (e.g., "Paid_Search"), then looks up "Paid_Search" in the benchmark's values map.
+
+**`lookup()` is exact-match only in Phase 3G.** If the key doesn't match any entry, returns Null. Interpolated lookups (linear interpolation between breakpoints for continuous key ranges like tax brackets) are a Phase 3G.1 candidate: `lookup_interp(table, key)`. The distinction matters because interpolation requires sorted numeric keys + a declared interpolation method (linear, step, cubic); exact-match works with any key type.
 
 **Implementation note:** The `key_expr` for benchmark/lookup in practice is always a bare dimension reference (identifier). The parser accepts it as a general expression for forward-compat, but validation can warn if it's anything other than a dimension name (MC3014 lint: "benchmark key is a complex expression; expected a dimension name").
 
@@ -242,6 +254,7 @@ All additions are optional (`#[serde(default)]`). Existing models parse unchange
 | **MC3011** | `sum_over` on dimension with > 50 elements (performance lint) |
 | **MC3013** | Benchmark `source` field is empty (provenance lint) |
 | **MC3014** | `benchmark`/`lookup` key argument is a complex expression, not a dimension name (lint) |
+| **MC3015** | Benchmark `last_updated` date is more than 12 months in the past. Suggestion: "Benchmark [name] was last updated [date]; consider refreshing from [source]." Prevents models from shipping stale industry standards without awareness. |
 
 ---
 
@@ -252,11 +265,13 @@ All additions are optional (`#[serde(default)]`). Existing models parse unchange
 | Fitted model coefficients (`fitted_models:` block) | Phase 3H |
 | Calibration maps (`calibration_maps:` block) | Phase 3H |
 | Multi-key lookup tables (composite key across 2+ dimensions) | Future extension if demand surfaces |
+| Interpolated lookups (`lookup_interp(table, key)` — linear interpolation between breakpoints for continuous key ranges like tax brackets) | Phase 3G.1 candidate. Requires sorted numeric keys + a declared interpolation method (linear, step, cubic); exact-match works with any key type. |
 | String-valued lookup results (e.g., territory → region name mapping) | Requires string ScalarValue; 3J+ |
 | Dynamic reference data (values that change per scenario/version) | Not reference data — use input measures |
 | `avg_over`, `min_over`, `max_over` (other aggregations over dims) | Future extension; `sum_over` is the MVP |
 | External data source for benchmarks (API fetch at model load) | Phase 5+ integration |
 | Benchmark version history (track changes over time) | Future — source attribution is sufficient for 3G |
+| String operations (`concat`, `lower`, `contains`) in formulas | Deferred indefinitely. The intended substitute is Tessera recipe-time conditional dimension derivation (e.g., "if source column contains 'brand', assign to Brand_Awareness channel"). Note: Phase 5A's current recipe schema does NOT support conditional derivation; this capability must be added in Phase 5C or later for the deferral to hold. If Phase 5C does not deliver it, string operations may need reconsideration for Phase 3I. |
 
 ---
 
