@@ -117,7 +117,17 @@ impl Tessera {
     /// Load a recipe + model + driver + column plan. Does NOT mutate the
     /// cube or write any sidecar files.
     pub fn prepare(recipe_path: &Path) -> Result<PreparedImport, TesseraError> {
-        crate::prepare::prepare_from_path(recipe_path)
+        crate::prepare::prepare_from_path(recipe_path, None)
+    }
+
+    /// Like [`prepare`](Tessera::prepare) but allows the caller to
+    /// explicitly supply a workspace root. When provided, MC5017
+    /// path-escape checks use this root instead of auto-detecting it.
+    pub fn prepare_with_workspace(
+        recipe_path: &Path,
+        workspace_root: Option<&Path>,
+    ) -> Result<PreparedImport, TesseraError> {
+        crate::prepare::prepare_from_path(recipe_path, workspace_root)
     }
 
     /// Validate without writing. The expensive work is done by

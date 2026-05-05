@@ -29,10 +29,12 @@ pub enum Command {
     Apply {
         recipe: String,
         format: Format,
+        workspace: Option<String>,
     },
     DryRun {
         recipe: String,
         format: Format,
+        workspace: Option<String>,
     },
     History {
         model_dir: String,
@@ -62,12 +64,21 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
 
     match verb {
         "apply" | "dry-run" => {
-            let (positional, format) = parse_positional_with_format(rest, 1)?;
+            let (positional, format, workspace) =
+                parse_positional_with_format_and_workspace(rest, 1)?;
             let recipe = positional[0].clone();
             Ok(if verb == "apply" {
-                Command::Apply { recipe, format }
+                Command::Apply {
+                    recipe,
+                    format,
+                    workspace,
+                }
             } else {
-                Command::DryRun { recipe, format }
+                Command::DryRun {
+                    recipe,
+                    format,
+                    workspace,
+                }
             })
         }
         "history" | "audit" => {
@@ -174,11 +185,52 @@ fn parse_positional_with_format(
     Ok((positional, format))
 }
 
+fn parse_positional_with_format_and_workspace(
+    args: &[String],
+    expected_positional: usize,
+) -> Result<(Vec<String>, Format, Option<String>), String> {
+    let mut positional: Vec<String> = Vec::new();
+    let mut format = Format::Text;
+    let mut workspace: Option<String> = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--format" => match iter.next() {
+                Some(v) if v == "text" => format = Format::Text,
+                Some(v) if v == "json" => format = Format::Json,
+                Some(v) => return Err(format!("--format must be `text` or `json`, got {v:?}")),
+                None => return Err("--format requires an argument".into()),
+            },
+            "--workspace" => match iter.next() {
+                Some(v) => workspace = Some(v.clone()),
+                None => return Err("--workspace requires an argument".into()),
+            },
+            other if !other.starts_with("--") => positional.push(other.to_string()),
+            other => return Err(format!("unknown argument: {other:?}")),
+        }
+    }
+    if positional.len() != expected_positional {
+        return Err(format!(
+            "expected {expected_positional} positional argument(s), got {}",
+            positional.len()
+        ));
+    }
+    Ok((positional, format, workspace))
+}
+
 /// Run the parsed command. Returns the process exit code.
 pub fn run(cmd: Command) -> i32 {
     match cmd {
-        Command::Apply { recipe, format } => run_apply(&recipe, format),
-        Command::DryRun { recipe, format } => run_dry_run(&recipe, format),
+        Command::Apply {
+            recipe,
+            format,
+            workspace,
+        } => run_apply(&recipe, format, workspace.as_deref()),
+        Command::DryRun {
+            recipe,
+            format,
+            workspace,
+        } => run_dry_run(&recipe, format, workspace.as_deref()),
         Command::History { model_dir, format } => run_history(&model_dir, format),
         Command::Rollback {
             import_id,
@@ -190,9 +242,9 @@ pub fn run(cmd: Command) -> i32 {
     }
 }
 
-fn run_apply(recipe_path: &str, format: Format) -> i32 {
+fn run_apply(recipe_path: &str, format: Format, workspace: Option<&str>) -> i32 {
     let recipe_path = Path::new(recipe_path);
-    let prepared = match Tessera::prepare(recipe_path) {
+    let prepared = match Tessera::prepare_with_workspace(recipe_path, workspace.map(Path::new)) {
         Ok(p) => p,
         Err(e) => return emit_error(&e, format),
     };
@@ -238,9 +290,9 @@ fn run_apply(recipe_path: &str, format: Format) -> i32 {
     0
 }
 
-fn run_dry_run(recipe_path: &str, format: Format) -> i32 {
+fn run_dry_run(recipe_path: &str, format: Format, workspace: Option<&str>) -> i32 {
     let recipe_path = Path::new(recipe_path);
-    let prepared = match Tessera::prepare(recipe_path) {
+    let prepared = match Tessera::prepare_with_workspace(recipe_path, workspace.map(Path::new)) {
         Ok(p) => p,
         Err(e) => return emit_error(&e, format),
     };

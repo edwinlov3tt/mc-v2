@@ -153,7 +153,16 @@ pub struct ResolvedDefault {
 /// `recipe_path` is treated as the canonical recipe file location. The
 /// `model:` field inside the recipe is resolved relative to its parent
 /// directory.
-pub fn prepare_from_path(recipe_path: &Path) -> Result<PreparedImport, TesseraError> {
+///
+/// `workspace_root_override`: if `Some`, uses this path as the workspace
+/// root for MC5017 path-escape checks. If `None`, auto-detects the
+/// workspace root by walking up from the recipe's directory looking for
+/// markers (`.git/`, `Cargo.toml`, `.mosaic/`). Falls back to the
+/// recipe's directory if no marker is found.
+pub fn prepare_from_path(
+    recipe_path: &Path,
+    workspace_root_override: Option<&Path>,
+) -> Result<PreparedImport, TesseraError> {
     let recipe_yaml =
         std::fs::read_to_string(recipe_path).map_err(|e| TesseraError::io(recipe_path, e))?;
 
@@ -162,16 +171,33 @@ pub fn prepare_from_path(recipe_path: &Path) -> Result<PreparedImport, TesseraEr
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
 
-    prepare_from_yaml(&recipe_yaml, recipe_path, &recipe_dir)
+    let workspace_root = match workspace_root_override {
+        Some(p) => p.to_path_buf(),
+        None => detect_workspace_root(&recipe_dir),
+    };
+
+    prepare_from_yaml_with_workspace(&recipe_yaml, recipe_path, &recipe_dir, &workspace_root)
 }
 
 /// Like [`prepare_from_path`] but takes the recipe YAML as a string.
 /// `recipe_path` and `recipe_dir` still need to be supplied for path
-/// resolution + diagnostic context.
+/// resolution + diagnostic context. Uses the recipe directory as the
+/// workspace root (legacy behavior).
 pub fn prepare_from_yaml(
     recipe_yaml: &str,
     recipe_path: &Path,
     recipe_dir: &Path,
+) -> Result<PreparedImport, TesseraError> {
+    let workspace_root = detect_workspace_root(recipe_dir);
+    prepare_from_yaml_with_workspace(recipe_yaml, recipe_path, recipe_dir, &workspace_root)
+}
+
+/// Internal: full prepare pipeline with explicit workspace_root.
+fn prepare_from_yaml_with_workspace(
+    recipe_yaml: &str,
+    recipe_path: &Path,
+    recipe_dir: &Path,
+    workspace_root: &Path,
 ) -> Result<PreparedImport, TesseraError> {
     // Step 1: parse recipe.
     let recipe = parse_recipe(recipe_yaml).map_err(|e| TesseraError::Recipe { errors: vec![e] })?;
@@ -199,11 +225,7 @@ pub fn prepare_from_yaml(
     // Step 4: validate the recipe against the model.
     let path_ctx = PathContext {
         recipe_dir,
-        // Phase 5A: workspace_root falls back to the recipe_dir's parent
-        // (best-effort) so the path-escape check is permissive but
-        // present. Real callers (the CLI) supply the workspace explicitly
-        // when the binding is meaningful.
-        workspace_root: recipe_dir,
+        workspace_root,
     };
     let errors = validate_recipe(&recipe, &validated_model, Some(path_ctx));
     if !errors.is_empty() {
@@ -530,4 +552,23 @@ fn resolve_defaults(
         });
     }
     Ok(out)
+}
+
+/// Detect workspace root by walking up from `start_dir` looking for
+/// markers: `.git/`, `Cargo.toml`, or `.mosaic/`. Returns the first
+/// ancestor containing any marker, or `start_dir` itself if none found.
+fn detect_workspace_root(start_dir: &Path) -> PathBuf {
+    let mut candidate = start_dir.to_path_buf();
+    loop {
+        if candidate.join(".git").exists()
+            || candidate.join("Cargo.toml").exists()
+            || candidate.join(".mosaic").exists()
+        {
+            return candidate;
+        }
+        if !candidate.pop() {
+            // Reached filesystem root without finding a marker.
+            return start_dir.to_path_buf();
+        }
+    }
 }

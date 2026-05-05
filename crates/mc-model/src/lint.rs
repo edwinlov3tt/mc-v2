@@ -353,6 +353,20 @@ fn mc3007_ratio_with_sum(model: &ValidatedModel, file: &std::path::Path) -> Vec<
     let mut out = Vec::new();
     for (i, m) in model.parsed.measures.iter().enumerate() {
         if m.aggregation == "Sum" && is_ratio_name(&m.name) {
+            // Check if there's a rule targeting this measure whose body is
+            // a Div with a Ref denominator — if so, suggest that ref as
+            // weight_measure.
+            let suggestion = derive_weight_suggestion(model, &m.name);
+            let message = match find_rule_body_formula(model, &m.name) {
+                Some(formula) => format!(
+                    "Measure '{}' has rule body '{}' but uses aggregation Sum",
+                    m.name, formula
+                ),
+                None => format!(
+                    "Measure '{}' is named like a ratio but uses Sum aggregation",
+                    m.name
+                ),
+            };
             out.push(Diagnostic {
                 code: "MC3007",
                 severity: Severity::Warning,
@@ -361,21 +375,90 @@ fn mc3007_ratio_with_sum(model: &ValidatedModel, file: &std::path::Path) -> Vec<
                     format!("/measures/{i}/aggregation"),
                     format!("measures.{}.aggregation", m.name),
                 ),
-                message: format!(
-                    "Measure '{}' is named like a ratio but uses Sum aggregation",
-                    m.name
-                ),
-                suggestion: Some(
-                    "Ratios should typically use WeightedAverage (e.g., CPC weighted by Spend); \
-                     Sum produces meaningless values when consolidated. Verify the aggregation rule \
-                     matches the measure's intent — this lint is heuristic and may produce false \
-                     positives."
-                        .into(),
-                ),
+                message,
+                suggestion: Some(suggestion),
             });
         }
     }
     out
+}
+
+/// If a rule targets `measure_name` and its body is a Div where the
+/// denominator is a Ref, return the denominator measure name as a
+/// specific weight_measure suggestion.
+fn derive_weight_suggestion(model: &ValidatedModel, measure_name: &str) -> String {
+    if let Some(denominator) = find_div_denominator_ref(model, measure_name) {
+        format!(
+            "Use aggregation: WeightedAverage, weight_measure: \"{denominator}\" \
+             (the denominator of the division)"
+        )
+    } else {
+        "Ratios should typically use WeightedAverage (e.g., CPC weighted by Spend); \
+         Sum produces meaningless values when consolidated. Verify the aggregation rule \
+         matches the measure's intent — this lint is heuristic and may produce false \
+         positives."
+            .into()
+    }
+}
+
+/// If a rule targets `measure_name` and its body root is a `Div` with a
+/// `Ref` as the second argument (denominator), return that ref's measure
+/// name.
+fn find_div_denominator_ref(model: &ValidatedModel, measure_name: &str) -> Option<String> {
+    for r in &model.rules {
+        if r.target_measure == measure_name {
+            if let ParsedRuleBody::Div(ref div_body) = r.body {
+                if div_body.div.len() == 2 {
+                    if let ParsedRuleBody::Ref(ref ref_body) = div_body.div[1] {
+                        return Some(ref_body.measure.clone());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// If a rule targets `measure_name`, render a human-readable formula
+/// string from its body (best-effort, used for the enhanced message).
+fn find_rule_body_formula(model: &ValidatedModel, measure_name: &str) -> Option<String> {
+    for r in &model.rules {
+        if r.target_measure == measure_name {
+            if let ParsedRuleBody::Div(ref div_body) = r.body {
+                if div_body.div.len() == 2 {
+                    let lhs = body_to_formula(&div_body.div[0]);
+                    let rhs = body_to_formula(&div_body.div[1]);
+                    return Some(format!("{lhs} / {rhs}"));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Best-effort formula rendering from a ParsedRuleBody node.
+fn body_to_formula(body: &ParsedRuleBody) -> String {
+    use crate::schema::ParsedScalar;
+    match body {
+        ParsedRuleBody::Const(c) => match &c.value {
+            ParsedScalar::Float(f) => format!("{f}"),
+            ParsedScalar::Int(i) => format!("{i}"),
+            ParsedScalar::Bool(b) => format!("{b}"),
+        },
+        ParsedRuleBody::Ref(r) => r.measure.clone(),
+        ParsedRuleBody::Add(b) => binary_formula(&b.add, " + "),
+        ParsedRuleBody::Sub(b) => binary_formula(&b.sub, " - "),
+        ParsedRuleBody::Mul(b) => binary_formula(&b.mul, " * "),
+        ParsedRuleBody::Div(b) => binary_formula(&b.div, " / "),
+        ParsedRuleBody::IfNull(b) => binary_formula(&b.if_null, " ?? "),
+    }
+}
+
+fn binary_formula(args: &[ParsedRuleBody], op: &str) -> String {
+    args.iter()
+        .map(body_to_formula)
+        .collect::<Vec<_>>()
+        .join(op)
 }
 
 /// Per handoff §B: case-insensitive match on `*_rate`, `*_ratio`, `*_pct`,
