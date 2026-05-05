@@ -131,6 +131,35 @@ This is the **single most common LLM mistake**: defaulting to `Sum` for everythi
 
 The MC3006 lint rule flags suspicious-looking ratio-named measures that are still `aggregation: Sum`; if your model has `Conversion_Rate: Sum`, the lint catches it. Don't suppress — fix.
 
+### The binding rule for DERIVED ratio measures
+
+**If your rule body matches `A / B` (a division), the derived measure's aggregation MUST be `WeightedAverage` with `weight_measure` set to the DENOMINATOR (`B`).**
+
+This is NOT optional. Getting it wrong produces silently catastrophic numbers — consolidation of a ratio via `Sum` adds leaf-level ratios together, which is mathematically meaningless. Example:
+
+```
+Houston Oct CAC = $22,015 / 442 = $49.81  (leaf)
+Austin Oct CAC  = $6,000 / 30  = $200.00  (leaf)
+
+WRONG (Sum aggregation):  $49.81 + $200.00 = $249.81  ← meaningless
+RIGHT (WeightedAverage by Matched_New_Customers):
+    ($22,015 + $6,000) / (442 + 30) = $28,015 / 472 = $59.35  ← correct blended CAC
+```
+
+**The algebra:** `WeightedAverage` of `A/B` weighted by `B` gives `SUM(A) / SUM(B)` at consolidation — which IS the correct aggregate ratio. This is why the weight measure is always the denominator.
+
+**Quick reference for common patterns:**
+
+| Rule body | Aggregation | weight_measure | Why |
+|---|---|---|---|
+| `Spend / Clicks` (CPC) | WeightedAverage | Clicks | SUM(Spend)/SUM(Clicks) = blended CPC |
+| `Spend / New_Customers` (CAC) | WeightedAverage | New_Customers | SUM(Spend)/SUM(New) = blended CAC |
+| `(Revenue - Spend) / Spend` (ROI) | WeightedAverage | Spend | correct weighted margin |
+| `Revenue / Customers` (AOV) | WeightedAverage | Customers | SUM(Rev)/SUM(Cust) = blended AOV |
+| `Opens / Sends` (Open_Rate) | WeightedAverage | Sends | SUM(Opens)/SUM(Sends) = blended rate |
+
+**The heuristic: if the rule body contains `/`, use WeightedAverage. The weight is the denominator.** There are no exceptions for Mosaic models. MC3007 lint warns you if you get this wrong; `mc model test` golden assertions catch the numeric impact.
+
 ## Rule 5: rule bodies must be well-typed and have declared deps
 
 A rule has six fields:

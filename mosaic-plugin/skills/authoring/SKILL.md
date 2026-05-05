@@ -125,8 +125,10 @@ Defines the Measure dim's elements. Each measure has:
 - `description` — short prose; the lint rules (MC3001–MC3007 + MC3009–MC3011) require this on every measure.
 - `role` — `Input` or `Derived`. Phase 1 does NOT support `Both` (per brief change-log).
 - `data_type` — `F64` (the only supported type currently).
-- `aggregation` — `Sum`, `WeightedAverage`, `Min`, or `Max`. **Defaulting to Sum is wrong for ratios.** See `skills/schema-design/SKILL.md` aggregation section.
-- `weight_measure` — required iff `aggregation: WeightedAverage`. Names another measure (typically Spend, Clicks, Customers, Revenue).
+- `aggregation` — `Sum`, `WeightedAverage`, `Min`, or `Max`. **Defaulting to Sum is wrong for ratios — it produces silently catastrophic consolidation numbers (e.g., 23,000× off).** See `skills/schema-design/SKILL.md` for the full algebra.
+- `weight_measure` — required iff `aggregation: WeightedAverage`. Names another measure (typically the denominator of the ratio the rule computes).
+
+**The binding rule for Derived ratio measures:** if a measure's rule body contains a division (`A / B`), the measure's aggregation MUST be `WeightedAverage` with `weight_measure` set to the denominator measure (`B`). There are NO exceptions. This ensures `SUM(A)/SUM(B)` at consolidation (the mathematically correct aggregate ratio), not `SUM(A/B)` (which is meaningless). MC3007 lint catches this; `mc model test` golden assertions reveal the numeric impact if you get it wrong.
 
 Example:
 

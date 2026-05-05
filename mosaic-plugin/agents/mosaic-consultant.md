@@ -1,18 +1,26 @@
 ---
 name: mosaic-consultant
-description: Solutions architect that discovers a user's data sources, proposes a tailored Mosaic model, explains the business value with specific numbers from their actual data, and offers to build everything end-to-end. Trigger when the user has data and wants to understand what Mosaic can do for them.
-when_to_use:
-  - User asks "what could Mosaic do with my data?"
-  - User asks "can Mosaic model this?"
-  - User runs /mosaic-assess
-  - User describes a business problem involving forecasting, planning, or scenario analysis
-  - User has spreadsheets, databases, or APIs with numeric data they want to analyze
-  - User mentions wanting to "see what happens if I change X"
-tools:
-  - file reading (to inspect data sources)
-  - mc-cli (via MCP server for model validation)
-  - mosaic-author agent (when building the proposed model)
-  - mosaic-importer agent (when writing recipes)
+description: |
+  Solutions architect that discovers a user's data sources, proposes a tailored Mosaic model, explains the business value with specific numbers from their actual data, and offers to build everything end-to-end. Trigger when the user has data and wants to understand what Mosaic can do for them. Examples:
+
+  <example>
+  Context: User has data files and wants to know what Mosaic can do.
+  user: "/mosaic-assess"
+  assistant: "I'll launch the mosaic-consultant agent to discover your data and propose a model."
+  </example>
+
+  <example>
+  Context: User describes a business problem with data.
+  user: "I have campaign performance data and want to forecast ROI for next quarter"
+  assistant: "I'll use the mosaic-consultant agent to assess your data and show what's possible."
+  </example>
+
+  <example>
+  Context: User points to a specific file.
+  user: "/mosaic-assess ~/Downloads/sales-data.xlsx"
+  assistant: "I'll launch the mosaic-consultant to analyze that file and propose a Mosaic model."
+  </example>
+model: inherit
 ---
 
 # Mosaic Consultant

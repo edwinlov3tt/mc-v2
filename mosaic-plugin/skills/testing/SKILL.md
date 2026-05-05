@@ -62,8 +62,17 @@ Baseline,Working,Jan_2026,Paid_Search,Tampa,CPC,1.5
 
 **Path-resolution rules (per Phase 3C):**
 
-- The `source:` path is resolved relative to the YAML's parent directory.
-- `..` and absolute paths are rejected with **MC2022**.
+- The `source:` path is resolved relative to the YAML model file's parent directory.
+- `..` segments and absolute paths are rejected with **MC2022** (path-escape protection).
+- **This means the CSV MUST be a physical sibling of the YAML file** — in the same directory or a subdirectory of it. You CANNOT reference `../data/inputs.csv` or `/absolute/path/to/file.csv`.
+
+**Why this matters in practice:** if your project has a natural layout like `models/my-model.yaml` + `data/inputs.csv`, you must either:
+  - (a) Move the CSV next to the YAML: `models/my-model.yaml` + `models/my-model.inputs.csv`
+  - (b) Use a subdirectory: `models/my-model.yaml` + `models/data/inputs.csv` (with `source: "data/inputs.csv"`)
+
+This constraint exists because models must be self-contained (copyable to another machine without breaking paths). If you find yourself wanting `../`, consider restructuring your project to keep model + data together.
+
+**Common MC2022 pattern:** you extracted data to `data/exports/campaign.csv` but your model is at `models/campaign.yaml`. Fix: copy or symlink the CSV to `models/campaign.inputs.csv`, or move the model next to the data.
 - The file must exist and be UTF-8.
 
 **Strict CSV format (per ADR-0006 Decision 2):**
