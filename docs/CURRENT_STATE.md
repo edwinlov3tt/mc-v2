@@ -2,7 +2,7 @@
 
 > **What's live right now.** Update whenever a phase ships, a gate flips, or a deferral closes.
 
-**Last updated:** 2026-05-06 — Phase 3I shipped (formula language completion). Closes 8 items from the post-6A audit: `is_element(Dim, "Element")` narrow numeric form (no string-literal kernel touch); 9 math primitives (`pow`, `sqrt`, `ln`, `log10`, `round`, `floor`, `ceil`, `mod`, `norm_inv` via Beasley-Springer-Moro hand-roll); multi-key `lookup_tables` (additive `key_dimensions: Vec<String>` field with backward compat); `predict()` arity validation at validate-time; `avg_over` / `min_over` / `max_over` / `wavg_over` cross-coord aggregate family (Null-skipping semantics matching Excel); `ifs()` / `switch()` desugaring to nested `If`; filter-formula parser unification via new public `mc_model::parse_expression` (closes the two-parser state per research-notes §7I.8); filter parser hyphen support (auto-closed by parser unification). 8 new diagnostic codes shipped: MC1022-1025, MC2050-2052, MC2057 (the last was MC2053 in original ADR-0015 but caught colliding with shipped Phase 3H code during self-audit; remediated to MC2057 mid-audit per Rule 3 — see ADR-0015 Acceptance Amendment §1). Tag `phase-3i-formula-language-completion` at `1265f78`. **The formula engine is now at the "completion line"** for the four planning domains (marketing-finance, sports-betting, FP&A, demand-planning) — future formula additions are demand-driven, not speculative. **830 / 0 / 5 tests** (785 → 830, +45 regression tests in 3I). 7 crates in workspace: `mc-core`, `mc-fixtures`, `mc-model`, `mc-cli`, `mc-recipe`, `mc-drivers`, `mc-tessera`. Toolchain stays Rust 1.78. **6 placeholder crate names reserved on crates.io** (`mosaic-cli`, `mosaic-engine`, `mosaic-lnm`, `mosaic-core`, `mosaic-recipe`, `mosaic-tessera`).
+**Last updated:** 2026-05-06 — Phase 3J shipped (formula authoring deferred items). Closes 7 items from the ADR-0015 deferred queue across 4 clusters: `ScalarValue::Str` first-class in eval (transient-only, never stored — the load-bearing kernel boundary; Amendment §13 documents the audit-discovered Str-leakage bug fix at `Cube::read_derived_leaf`); `current_element(Dim)` function; `parameters:` block (constants only v1, partially closes M-14 per Amendment §2); `Indicator` measure role (compiles to same `Expr::IsElement` AST as `is_element` per Amendment §6); `Scope` enum extension (`FutureLeaves`/`PastLeaves`/`CurrentLeaves` requiring `time_anchor` per Amendment §4); `scenario_ref` + `actual_ref(measure, fallback)` (cross-coord nesting prohibition relaxed for fallback only per Amendment §3); `extrapolate_last_value` + LOCF (with `allow_past_extrapolation` override per Amendment §11). 16 new diagnostic codes: MC1026-1029, MC2058-2069. Tag `phase-3j-formula-deferred-items` at `4a4ac9c`. **After Phase 3H.1 ships (separate, ADR-0017 pending — `output_bound` + adstock/saturation), the formula-engine deferred queue from ADR-0015 is empty.** Phase 3 transitions to "demand-driven only." **874 / 0 / 5 tests** (830 → 874, +44 regression tests in 3J including 1 audit-discovered Section L regression test). 7 crates in workspace. Toolchain stays Rust 1.78. **6 placeholder crate names reserved on crates.io** (`mosaic-cli`, `mosaic-engine`, `mosaic-lnm`, `mosaic-core`, `mosaic-recipe`, `mosaic-tessera`).
 
 **Selected commit / tag index:**
 - Phase 1A kernel: `4aa674a` / Phase 1B+2A: `48d52e9` (tag `phase-2a-cold-path-baseline`) / Phase 2B: `6ea58ab` (tag `phase-2b-consolidation-fast-path`) / Phase 2C: `789db15` (tag `phase-2c-workload-baseline`) / Phase 2D: `0678a98` (tag `phase-2d-bitset-and-invalidated-fix`)
@@ -11,9 +11,9 @@
 - Phase 4A: `36af56c` (tag `phase-4a-mosaic-plugin`) / Phase 4B: `b5b6229` (tag `phase-4b-python-adapters`)
 - Phase 5A: `2f20d24` (tag `phase-5a-tessera-core`) / Phase 5B: `2f20d24` (tag `phase-5b-llm-recipe-authoring`) / Phase 5C: `0790bce` (tag `phase-5c-driver-expansion`)
 - Phase 6A: `e696379` (tag `phase-6a-agent-ready-cli`) / Phase 6A.1: `44a7437` (tag `phase-6a-1-review-fixes`) / Phase 6A.2: `7888f20` (tag `phase-6a-2-correctness-patch`) / Phase 6A.3: `46b1f7a` (tag `phase-6a-3-agent-surface-polish`)
-- Phase 3I: `1265f78` (tag `phase-3i-formula-language-completion`)
+- Phase 3I: `1265f78` (tag `phase-3i-formula-language-completion`) / Phase 3J: `4a4ac9c` (tag `phase-3j-formula-deferred-items`)
 
-**Branch:** `main` at HEAD `1265f78` (tracking `origin/main` at github.com/edwinlov3tt/mc-v2)
+**Branch:** `main` at HEAD `4a4ac9c` (tracking `origin/main` at github.com/edwinlov3tt/mc-v2)
 
 ---
 
@@ -74,7 +74,7 @@
 | Build | `cargo build --release --workspace` | ✓ zero warnings |
 | Format | `cargo fmt --check --all` | ✓ |
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` | ✓ |
-| Tests | `cargo test --workspace` | ✓ **830 / 0 / 5** (5 ignored require live external services — Postgres + DuckDB-Postgres scanner; documented as acceptable) |
+| Tests | `cargo test --workspace` | ✓ **874 / 0 / 5** (5 ignored require live external services — Postgres + DuckDB-Postgres scanner; documented as acceptable) |
 | Determinism (10×) | `for i in $(seq 1 10); do cargo test --workspace -q ...; done` | ✓ verified at 731 prior; not re-run for 6A.2 (no concurrency/ordering changes — see process-notes Rule 11 §"Lean gates") |
 | CLI demo (Rust path) | `./target/release/mc demo` | ✓ matches brief §4.6 |
 | CLI demo (YAML path) | `./target/release/mc demo --model crates/mc-model/examples/acme.yaml` | ✓ matches brief §4.6 |

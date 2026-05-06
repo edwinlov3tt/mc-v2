@@ -514,3 +514,15 @@ The ADR's Decision 10 reserved 15 codes (MC1026-1029, MC2058-2068). Amendment §
 | MC2067 | validate | `extrapolate_last_value` used at scope other than `FutureLeaves` without `allow_past_extrapolation: true` | Decision 9 + **Amendment §11** |
 | MC2068 | compile | scope name unknown at compile time (defense-in-depth) | Decision 5 |
 | **MC2069** | **validate** | **scope variant requires `time_anchor` configured on Time dim** | **Amendment §4** |
+
+### Amendment §13 (PM, post-implementation audit) — Section L kernel boundary tightening
+
+**Source:** Phase 3J implementer self-audit, Section L (kernel boundary verification — the load-bearing correctness check for Decision 2's "Str-no-storage" promise).
+
+**The bug found.** A rule body whose static type is *Indeterminate* but whose runtime value is `Str` could leak into the rule-eval cache and from there into `HashMapStore`. Reproducer: `body: 'if(1 > 0, current_element(Channel), current_element(Market))'` — both branches return `Str`, but `expr_static_type(If, ..)` returns `Indeterminate` (because `If` is type-polymorphic), so the static MC2058 check at validate-time doesn't fire. At runtime the if's true branch evaluates `Str("Email")`, the rule-eval cache stored it, and a subsequent trace JSON would emit `"value": "Email"` — a direct Decision 2 violation.
+
+**The remediation (binding correction shipped at commit 52f098a).** Runtime guard added at `Cube::read_derived_leaf` rejecting `ScalarValue::Str` from rule eval BEFORE the cache write, with `EngineError::RuleBodyTypeMismatch` carrying detail "rule body returned a Str value at coord ...; rule bodies must evaluate to F64 or Null (MC2058 runtime)." Symmetric guard added at `batch_validate_one`. Regression test `test_runtime_str_in_rule_body_rejected_at_eval_time` confirmed by revert-and-verify (fails without guard, passes with).
+
+**Process implication.** This validates the audit pattern's Section L addition for Phase 3J — without that explicit kernel-boundary verification step, the bug would have shipped silently. The audit pattern's contribution: it forced the implementer to walk every Str-touching code path in mc-core, not just trust the static-type analysis the parser would do. Future phases that touch the kernel similarly should retain Section L.
+
+**Related minor deviation (also documented):** `crates/mc-cli/src/query.rs` was modified (34 lines) to add new pattern-match arms for the Phase 3J `ParsedRuleBody` variants. The handoff Hard Rule 1 said only `tests/agent_cli_integration.rs` should be touched in `crates/mc-cli/`. Cause: `ParsedRuleBody` is a `pub` type in mc-model and is NOT marked `#[non_exhaustive]`, so adding new variants forces exhaustiveness arms downstream (compile-time error otherwise). This is "required for compile, not feature additions" — no behavior change in query.rs's filter logic. **Future-phase remediation:** consider marking `ParsedRuleBody` as `#[non_exhaustive]` in a dedicated cleanup phase (Phase 3J.1 if any other variant additions land, or simply Phase 4C-prep). Tracked as known debt in the 3J completion report; not a blocker for merge.
