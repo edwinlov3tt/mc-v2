@@ -812,6 +812,19 @@ the more later code depends on it.
 
 ---
 
+## 10.5 Git workflow (cross-reference)
+
+Decisions about when to branch, when to use a worktree, and when to commit directly on `main` live in [`docs/process-notes.md`](docs/process-notes.md) §11 — that's the binding decision matrix and it's the PM's call (not yours, the implementer's). What you need to know:
+
+- The PM decides the workflow shape BEFORE you start. The kickoff prompt tells you which directory to `cd` into and which branch to expect.
+- If the kickoff prompt doesn't tell you, default to: **branch for any phase-scoped work** (`phase-X.Y/short-name`), **no worktree unless explicitly told you're parallel** with another instance, **commit on main only for trivial fixes** (typo, single-line doc change, etc.).
+- If you find yourself working on `main` and you weren't explicitly told to, surface a SPEC QUESTION. Working on the wrong artifact is the cheapest mistake to catch early.
+- After your work ships and the PM has reviewed: branches get deleted (`git branch -d`); worktrees get removed (`git worktree remove`). Tags preserve the commit history; branches are scaffolding.
+
+The "instance needs docs" rule (the load-bearing fix to a recurring failure mode): if the PM gave you a handoff/audit/review doc on `main` but your branch was cut before it landed, the docs aren't visible to you. Surface this immediately — don't try to work around it. The PM should rebase your branch onto the latest main or commit the docs to your branch directly. See process-notes §11 for the full rule.
+
+---
+
 ## 11. Communication protocol with the human
 
 When asking for clarification, use this format:

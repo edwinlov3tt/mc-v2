@@ -2,7 +2,7 @@
 
 > **Carry-forward decisions about HOW the project runs**, separate from WHAT it builds. Operational rules that don't fit cleanly in CLAUDE.md (which is the kernel-implementation manual) or in ADRs (which are scope/architecture decisions). This file captures process-level conventions that future phases should inherit.
 
-**Last updated:** 2026-05-03 (Phase 3D in flight under handoff-first flow — first use; rule below codifies when it's appropriate)
+**Last updated:** 2026-05-06 (post-Phase 6A.2; Rule 11 added codifying git workflow — when to branch, when to worktree, when to commit on main)
 
 ---
 
@@ -174,6 +174,62 @@ The pattern (established by the Phase 6A implementer):
 - Surface trade-offs made deliberately ("took the simpler but slower path")
 
 This is the same discipline as SPEC QUESTIONs (surface ambiguity rather than guessing), applied to completion reports. The SHIPPED list is the achievement; the DEBT list is the maintenance roadmap. Both belong in the report.
+
+### 11. Git workflow — when to branch, when to worktree, when to commit on main
+
+**The rule (binding decision matrix):**
+
+| Work shape | Branch? | Worktree? | Pattern |
+|---|---|---|---|
+| **Quick fix** (1 file, <30 min, no contract change — typo, single-line bug fix, doc update, README change) | No | No | Commit directly on `main`. Round-trip overhead exceeds the work. |
+| **Phase work, single instance, sequential** (any phase under MASTER_PHASE_PLAN.md handled by one agent at a time — the default for Phase 3+ sub-phases and all `.x` follow-ups) | **Yes** (`phase-X.Y/short-name`) | No | Branch on main. Single instance works on the branch. PM merges + tags + pushes when done. Branch deleted after merge. |
+| **Parallel work** (2+ instances on independent scopes simultaneously — e.g., the Phase 5A Stream A/B/C/D split) | Yes (one per instance) | **Yes** (one per instance) | Worktrees prevent working-directory conflicts. Each instance commits to its branch; PM merges them in dependency order. |
+| **Risky work** (multi-crate, contract-touching, kernel-adjacent) | Yes | Optional | Branch even if single-instance. Makes rollback trivial if review surfaces issues. |
+| **Doc-only update** (CURRENT_STATE, MASTER_PHASE_PLAN, README, completion-report-only) | No | No | Treat as quick fix; commit on main. |
+| **Cleanup** (deleting stale branches, removing worktrees, etc.) | No | No | Same as quick fix. |
+
+**The PM's decision rule (load-bearing):** the PM decides which path to use BEFORE the implementer starts. Communicate the choice in the kickoff prompt. Don't switch mid-flight (an instance that started on a worktree should not silently move to main, and vice versa).
+
+**Why both extremes are wrong:**
+- *Always-branch* costs round-trip overhead on every typo fix. The PM's commits on main get blocked behind branch hygiene that buys nothing.
+- *Always-main* loses the rollback safety net for risky multi-crate work and breaks parallel scenarios entirely.
+- *Always-worktree* (the Phase 5A pattern that bled into 6A.1 + 6A.2) creates orphan worktrees and stale branches when the work is sequential. Worktrees are for parallelism, not for "we're going to branch anyway."
+
+**Rule for "instance needs docs" (the load-bearing fix to the recurring problem):**
+
+Write the handoff/audit/spec docs the instance needs on the *same artifact* they will work on:
+
+- Instance will work on `main` (quick fix or doc-only) → commit docs to main FIRST, then start the instance.
+- Instance will work on a branch → create the branch from main HEAD, then write the docs ON THE BRANCH (or write them on main first and create the branch immediately after — both work; pick one and be consistent within a phase).
+- **Never split work across "docs on main, code on branch."** The instance starts on the branch, doesn't see the docs that landed on main after the branch was cut, and either guesses or fails.
+
+The audit-pattern variant: when running parallel audit instances (e.g., the Phase 6A.2 pre-audit with A/B/C/D lenses), put the AUDIT-PROTOCOL.md and any shared context on main BEFORE creating any worktrees, so each instance's worktree inherits the protocol from the same baseline.
+
+**After a phase ships:**
+
+1. Tag main at the merge commit (or at the direct commit if no branch).
+2. Delete the local branch: `git branch -d phase-X.Y/short-name`.
+3. Delete the remote branch (if it was pushed): `git push origin :phase-X.Y/short-name`.
+4. Remove any worktrees for the phase: `git worktree remove ../mc-v2-X` (or `git worktree prune` if the directory is already gone).
+5. Confirm `git worktree list` shows only the main worktree before declaring cleanup done.
+
+**Stale-branch sweep:** every ~5 phases, run `git branch | grep phase-` and verify each surviving branch is either (a) actively in flight or (b) deliberately preserved for some reason. Delete the rest. The tag history is the canonical record; branches are scaffolding.
+
+**Anti-patterns observed and to avoid:**
+
+- Creating a worktree "just in case" when the work is sequential. (Phase 6A.2 — the worktree was created and never used; the implementer worked on main directly. Both ended up working, but the worktree was wasted setup.)
+- Writing handoff/review docs on main while the instance is on a branch. (Recurring failure mode — the instance's session lacks the doc context.)
+- Letting old phase branches accumulate after merge + tag. (As of 2026-05-06: 8 stale branches existed for shipped phases. Tags preserve history; branches were just clutter.)
+- Pushing branches before the work is reviewed. (Branches on origin become a contract someone might fork from; only push when the work is reviewed and ready.)
+
+**The PM's git workflow self-test (run before kickoff):**
+
+1. Will more than one agent work on this simultaneously? → If yes, worktrees. If no, no worktrees.
+2. Is this trivial enough that a single direct-to-main commit is the right shape? → If yes, no branch. If no, branch.
+3. Has the instance been told explicitly which directory to `cd` into and which branch to expect? → If no, fix the kickoff prompt.
+4. Are all docs the instance needs reachable from their starting commit? → If no, commit them first OR create the branch later.
+
+If all four are clear, proceed. If any is ambiguous, resolve it in the kickoff before the instance starts.
 
 ---
 
