@@ -354,6 +354,25 @@ path because the handoff did not request it. If a future agent wants
 combination and emit a per-row `group` field, but that's a different
 shape than the current W2 binding. P3 (no blocker).
 
+### 6.8 — Item 4 row shape: `aggregates: {...}` not `value: <n>` (better-than-spec)
+
+**The deviation.** Handoff W2 sketches the row shape as
+`{ group: { Market: "Houston", Time: "Jan_2026" }, value: 100.0 }` —
+single `value`. I shipped
+`{ group: {...}, aggregates: { "sum(Spend)": 951000, ... } }`.
+
+**Why.** `--aggregate` already accepts a comma-separated list of
+aggregate expressions. The single-`value` sketch doesn't extend to
+that case, while `aggregates: {...}` is a clean superset that handles
+both single and multi. The shape also mirrors the existing
+ungrouped `aggregates` field already in the query envelope, keeping
+the agent contract consistent. Caught during the post-implementation
+audit (E above) and surfaced here per process-notes Rule 10. Pattern
+matches 6A.2 item 1.6 W3 (`{{watermark}}` over `{watermark}`):
+honoring an existing convention rather than narrowly literalizing the
+sketch. P3 (no behavior bug; PM can ask for the single-`value` form
+if the wider `aggregates` map is undesirable).
+
 ### 6.7 — No proptest / determinism loop
 
 Per the lean acceptance gates, I did not run a 10× determinism loop
