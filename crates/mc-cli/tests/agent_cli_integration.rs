@@ -2056,6 +2056,236 @@ fn test_sweep_metric_where_combines_with_existing_scope_flags() {
     );
 }
 
+// ===========================================================================
+// Phase 6A.3 item 4 — query --group-by
+// ===========================================================================
+
+/// 6A.3 item 4: --group-by Market returns one row per leaf market with
+/// a per-market aggregate value. Acme has 7 markets; the rows must be
+/// sorted lexicographically by market name (W5).
+#[test]
+fn test_query_group_by_market_returns_per_market_aggregate() {
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--aggregate",
+        "sum(Spend)",
+        "--group-by",
+        "Market",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        output.status.success(),
+        "group-by failed: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = parse_json(&output.stdout);
+    let rows = json.get("rows").and_then(|r| r.as_array()).expect("rows[]");
+    assert!(rows.len() >= 2, "should have at least 2 market groups");
+    // Lexicographic sort: collect market names from rows in order.
+    let names: Vec<&str> = rows
+        .iter()
+        .filter_map(|r| {
+            r.get("group")
+                .and_then(|g| g.get("Market"))
+                .and_then(|v| v.as_str())
+        })
+        .collect();
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(
+        names, sorted,
+        "rows must be sorted lexicographically by group key (W5)"
+    );
+    // Each row must carry the aggregate.
+    for row in rows {
+        let agg = row
+            .get("aggregates")
+            .and_then(|a| a.get("sum(Spend)"))
+            .and_then(|v| v.as_f64())
+            .expect("each row must have sum(Spend)");
+        assert!(agg > 0.0, "per-market sum(Spend) should be positive");
+    }
+}
+
+/// 6A.3 item 4 W1: two `--group-by` flags produce a cross-product —
+/// one row per (Market, Time) tuple.
+#[test]
+fn test_query_group_by_two_dims_returns_cross_product() {
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--aggregate",
+        "sum(Spend)",
+        "--group-by",
+        "Market",
+        "--group-by",
+        "Time",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        output.status.success(),
+        "two-dim group-by failed: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = parse_json(&output.stdout);
+    let rows = json.get("rows").and_then(|r| r.as_array()).expect("rows[]");
+    // Acme has 7 markets × 12 leaf months = 84 distinct (Market, Time)
+    // tuples; with --limit default 10000 they should all appear.
+    assert!(
+        rows.len() >= 14,
+        "cross-product must produce many more rows than single dim (got {})",
+        rows.len()
+    );
+    // Every row must have both group keys present.
+    for row in rows {
+        let group = row.get("group").expect("group");
+        assert!(group.get("Market").is_some(), "Market key in group");
+        assert!(group.get("Time").is_some(), "Time key in group");
+    }
+}
+
+/// 6A.3 item 4 W4: --group-by + --show is mutually exclusive (exit 2 =
+/// CLI usage error).
+#[test]
+fn test_query_group_by_with_show_errors() {
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--aggregate",
+        "sum(Spend)",
+        "--group-by",
+        "Market",
+        "--show",
+        "Spend",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "--group-by + --show must exit 2 (CLI usage error); stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("group-by") && stderr.contains("show"),
+        "stderr must explain the conflict; got: {stderr}"
+    );
+}
+
+/// 6A.3 item 4 W6: empty groups (no matching coords for a given key)
+/// are skipped — they don't appear as zero-value rows.
+#[test]
+fn test_query_group_by_empty_group_skipped() {
+    let path = acme_yaml();
+    // Filter to Market=Tampa; --group-by Market should then return
+    // exactly one group (Tampa), not 7 (with the others as empty).
+    let output = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--where",
+        "Market == \"Tampa\"",
+        "--aggregate",
+        "sum(Spend)",
+        "--group-by",
+        "Market",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        output.status.success(),
+        "filtered group-by failed: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = parse_json(&output.stdout);
+    let rows = json.get("rows").and_then(|r| r.as_array()).expect("rows[]");
+    assert_eq!(
+        rows.len(),
+        1,
+        "only Tampa should appear; other markets must be skipped (W6)"
+    );
+    assert_eq!(
+        rows[0]
+            .get("group")
+            .and_then(|g| g.get("Market"))
+            .and_then(|v| v.as_str()),
+        Some("Tampa")
+    );
+}
+
+/// 6A.3 item 4 W7: --limit and --offset paginate the GROUP rows (not
+/// the underlying matched coords).
+#[test]
+fn test_query_group_by_with_limit_paginates_groups() {
+    let path = acme_yaml();
+    let path_str = path.to_str().unwrap();
+
+    // Full result first to know the total group count.
+    let full = run_mc(&[
+        "model",
+        "query",
+        path_str,
+        "--aggregate",
+        "sum(Spend)",
+        "--group-by",
+        "Market",
+        "--format",
+        "json",
+    ]);
+    assert!(full.status.success());
+    let full_json = parse_json(&full.stdout);
+    let total_groups = full_json
+        .get("rows")
+        .and_then(|r| r.as_array())
+        .expect("rows[]")
+        .len();
+    assert!(total_groups >= 4, "need at least 4 markets for this test");
+
+    // Now ask for 2 groups.
+    let limited = run_mc(&[
+        "model",
+        "query",
+        path_str,
+        "--aggregate",
+        "sum(Spend)",
+        "--group-by",
+        "Market",
+        "--limit",
+        "2",
+        "--format",
+        "json",
+    ]);
+    assert!(limited.status.success(), "limited group-by failed");
+    let json = parse_json(&limited.stdout);
+    let rows = json.get("rows").and_then(|r| r.as_array()).expect("rows[]");
+    assert_eq!(rows.len(), 2, "--limit 2 must return exactly 2 group rows");
+    assert_eq!(
+        json.get("count").and_then(|v| v.as_u64()),
+        Some(2),
+        "envelope count tracks group rows, not coords"
+    );
+    assert_eq!(
+        json.get("truncated").and_then(|v| v.as_bool()),
+        Some(true),
+        "--limit < total must set truncated=true"
+    );
+    assert_eq!(
+        json.get("next_offset").and_then(|v| v.as_u64()),
+        Some(2),
+        "next_offset must equal first-skip for the next page"
+    );
+}
+
 /// 6A.3 item 2 W3: an unknown coefficient must error BEFORE the loop
 /// starts (exit code 1, no partial sweep output).
 #[test]

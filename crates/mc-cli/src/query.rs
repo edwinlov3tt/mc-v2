@@ -39,6 +39,11 @@ pub struct QueryCommand {
     /// match index 100.
     pub offset: Option<usize>,
     pub time_anchor: Option<String>,
+    /// Phase 6A.3 item 4: dimensions to partition matched coordinates by
+    /// before aggregating. Repeatable (`--group-by Market --group-by
+    /// Time`) and cross-product semantics — one row per (Market, Time)
+    /// tuple. Mutually exclusive with `--show`. Requires `--aggregate`.
+    pub group_by: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +68,7 @@ pub fn parse(args: &[String]) -> Result<QueryCommand, String> {
     let mut time_anchor: Option<String> = None;
 
     let mut offset: Option<usize> = None;
+    let mut group_by: Vec<String> = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -115,6 +121,10 @@ pub fn parse(args: &[String]) -> Result<QueryCommand, String> {
                 Some(v) => time_anchor = Some(v.clone()),
                 None => return Err("--time-anchor requires an element name".into()),
             },
+            "--group-by" => match iter.next() {
+                Some(v) => group_by.push(v.clone()),
+                None => return Err("--group-by requires a dimension name".into()),
+            },
             other if !other.starts_with("--") && path.is_none() => {
                 path = Some(other.to_string());
             }
@@ -133,6 +143,7 @@ pub fn parse(args: &[String]) -> Result<QueryCommand, String> {
         limit,
         offset,
         time_anchor,
+        group_by,
     })
 }
 
@@ -190,6 +201,28 @@ pub fn run_captured(cmd: QueryCommand) -> (i32, String) {
         );
     }
 
+    // Phase 6A.3 item 4 W4: --group-by + --show is mutually exclusive
+    // (different output shapes — group rows vs. raw cells). The user
+    // typo'd one or the other; better to fail than silently honor one.
+    if !cmd.group_by.is_empty() && cmd.show.is_some() {
+        eprintln!("error: --group-by and --show cannot be combined; use one or the other");
+        return (2, String::new());
+    }
+    // --group-by requires --aggregate (otherwise there's nothing to compute per group).
+    if !cmd.group_by.is_empty() && cmd.aggregate.is_none() {
+        eprintln!(
+            "error: --group-by requires --aggregate (e.g., --aggregate \"sum(Spend)\" --group-by Market)"
+        );
+        return (2, String::new());
+    }
+    // Validate every --group-by name is a real dimension.
+    for dim_name in &cmd.group_by {
+        if !cube.dimensions().iter().any(|d| &d.name == dim_name) {
+            eprintln!("error: --group-by dimension {dim_name:?} does not exist in the model");
+            return (1, String::new());
+        }
+    }
+
     // Build the filter
     let filter = match &cmd.where_expr {
         Some(expr) => match Filter::parse(expr, refs, &cube) {
@@ -209,6 +242,24 @@ pub fn run_captured(cmd: QueryCommand) -> (i32, String) {
 
     // Enumerate all leaf coordinates and filter
     let all_leaf_coords = enumerate_leaf_coords(&cube, refs);
+
+    if !cmd.group_by.is_empty() {
+        // group-by + aggregate path
+        return run_group_by(
+            &mut cube,
+            principal,
+            refs,
+            &all_leaf_coords,
+            filter.as_ref(),
+            cmd.aggregate.as_deref().unwrap(),
+            &cmd.group_by,
+            limit,
+            offset,
+            cmd.where_expr.as_deref(),
+            cmd.format,
+            &cmd.output,
+        );
+    }
 
     if let Some(agg_exprs) = &cmd.aggregate {
         // Aggregate mode
@@ -1096,6 +1147,347 @@ fn run_aggregate(
     };
     let captured = capture_output(&output_str, output);
     (0, captured)
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6A.3 item 4 — group-by aggregate
+// ---------------------------------------------------------------------------
+
+/// One output row of a `--group-by` query — a group-key tuple plus the
+/// computed aggregates for the matched coordinates in that group.
+struct GroupRow {
+    /// Ordered (DimName, ElementName) pairs in the order the user passed
+    /// `--group-by`. Preserved as a Vec rather than BTreeMap so the
+    /// dimension order is the user's order, not lexicographic.
+    key: Vec<(String, String)>,
+    /// `(aggregate_expr, value)` pairs in the order the user passed
+    /// `--aggregate`.
+    aggregates: Vec<(String, f64)>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_group_by(
+    cube: &mut mc_core::Cube,
+    principal: PrincipalId,
+    refs: &ModelRefs,
+    all_coords: &[CellCoordinate],
+    filter: Option<&Filter>,
+    agg_exprs: &[String],
+    group_dims: &[String],
+    limit: usize,
+    offset: usize,
+    where_expr: Option<&str>,
+    format: OutputFormat,
+    output: &Option<String>,
+) -> (i32, String) {
+    // Resolve group-by dim indices in the cube's dimension array. Each
+    // element of `group_dim_indices` is the position of that group dim
+    // in the canonical [Scenario, Version, Time, Channel, Market, Measure]
+    // ordering; lookups use this index to extract the group key from a
+    // coordinate's slot vector. Pre-build (dim_idx → BTreeMap<ElementId,
+    // ElementName>) so the bucketing loop holds no live borrow on the
+    // cube and is free to call eval_filter (which needs &mut Cube).
+    use std::collections::BTreeMap as Map;
+    let mut group_dim_indices: Vec<usize> = Vec::with_capacity(group_dims.len());
+    let mut name_tables: Vec<Map<mc_core::ElementId, String>> =
+        Vec::with_capacity(group_dims.len());
+    {
+        let dims = cube.dimensions();
+        for name in group_dims {
+            match dims.iter().position(|d| &d.name == name) {
+                Some(idx) => {
+                    group_dim_indices.push(idx);
+                    let dim = &dims[idx];
+                    let mut tbl: Map<mc_core::ElementId, String> = Map::new();
+                    for e in &dim.elements {
+                        tbl.insert(e.id, e.name.clone());
+                    }
+                    name_tables.push(tbl);
+                }
+                None => {
+                    // Should be unreachable — caller validated names already.
+                    eprintln!("error: --group-by dimension {name:?} not found");
+                    return (1, String::new());
+                }
+            }
+        }
+    }
+
+    // Bucket matched coords by their group-key tuple. The tuple is built
+    // from element NAMES (not IDs) so the lexicographic sort below is
+    // stable across model reloads (W5).
+    let mut buckets: Map<Vec<String>, Vec<CellCoordinate>> = Map::new();
+    for coord in all_coords {
+        if let Some(f) = filter {
+            if !eval_filter(f, coord, cube, principal, refs) {
+                continue;
+            }
+        }
+        // Build the (Dim1=Elem1, Dim2=Elem2, ...) name tuple.
+        let mut key: Vec<String> = Vec::with_capacity(group_dim_indices.len());
+        let mut name_lookup_failed = false;
+        for (slot_idx, &dim_idx) in group_dim_indices.iter().enumerate() {
+            let elem_id = coord.elements()[dim_idx];
+            match name_tables[slot_idx].get(&elem_id) {
+                Some(n) => key.push(n.clone()),
+                None => {
+                    name_lookup_failed = true;
+                    break;
+                }
+            }
+        }
+        if name_lookup_failed {
+            continue;
+        }
+        buckets.entry(key).or_default().push(coord.clone());
+    }
+
+    // Compute aggregates per group. BTreeMap iteration is in-order over
+    // the keys, which gives lexicographic ordering on the (ElementName)
+    // tuples — exactly what W5 requires.
+    let mut group_rows: Vec<GroupRow> = Vec::new();
+    for (key, coords) in &buckets {
+        // W6: skip empty groups. Defensive — buckets only contain non-empty
+        // entries by construction, but keep the check explicit.
+        if coords.is_empty() {
+            continue;
+        }
+        let aggregates = compute_aggregates_for_group(cube, refs, principal, coords, agg_exprs);
+        let key_pairs: Vec<(String, String)> = group_dims
+            .iter()
+            .zip(key.iter())
+            .map(|(d, e)| (d.clone(), e.clone()))
+            .collect();
+        group_rows.push(GroupRow {
+            key: key_pairs,
+            aggregates,
+        });
+    }
+
+    // W7: --limit/--offset paginate the group rows (NOT the underlying
+    // matched coords).
+    let total = group_rows.len();
+    let start = offset.min(total);
+    let end = (offset + limit).min(total);
+    let truncated = end < total;
+    let next_offset = if truncated { Some(end) } else { None };
+    let page: &[GroupRow] = &group_rows[start..end];
+
+    let pagination = Pagination {
+        limit,
+        offset,
+        count: page.len(),
+        truncated,
+        next_offset,
+    };
+    let output_str = format_group_rows(page, where_expr, &pagination, format);
+    let captured = capture_output(&output_str, output);
+    (0, captured)
+}
+
+/// Run every aggregate in `agg_exprs` over `coords`. Returns
+/// `(expr, value)` pairs in the order supplied. Mirrors run_aggregate's
+/// per-expression dispatch but operates on a pre-filtered subset.
+fn compute_aggregates_for_group(
+    cube: &mut mc_core::Cube,
+    refs: &ModelRefs,
+    principal: PrincipalId,
+    coords: &[CellCoordinate],
+    agg_exprs: &[String],
+) -> Vec<(String, f64)> {
+    let mut out = Vec::with_capacity(agg_exprs.len());
+    for expr_str in agg_exprs {
+        let expr_str = expr_str.trim();
+        let value = if let Some(inner) = strip_fn("mean", expr_str) {
+            let mut sum = 0.0;
+            let mut count = 0usize;
+            for c in coords {
+                if let ScalarValue::F64(v) = read_measure_at(cube, refs, principal, c, inner) {
+                    sum += v;
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                sum / count as f64
+            } else {
+                0.0
+            }
+        } else if let Some(inner) = strip_fn("sum", expr_str) {
+            let mut sum = 0.0;
+            for c in coords {
+                if let ScalarValue::F64(v) = read_measure_at(cube, refs, principal, c, inner) {
+                    sum += v;
+                }
+            }
+            sum
+        } else if let Some(inner) = strip_fn("min", expr_str) {
+            let mut min = f64::INFINITY;
+            for c in coords {
+                if let ScalarValue::F64(v) = read_measure_at(cube, refs, principal, c, inner) {
+                    if v < min {
+                        min = v;
+                    }
+                }
+            }
+            if min == f64::INFINITY {
+                0.0
+            } else {
+                min
+            }
+        } else if let Some(inner) = strip_fn("max", expr_str) {
+            let mut max = f64::NEG_INFINITY;
+            for c in coords {
+                if let ScalarValue::F64(v) = read_measure_at(cube, refs, principal, c, inner) {
+                    if v > max {
+                        max = v;
+                    }
+                }
+            }
+            if max == f64::NEG_INFINITY {
+                0.0
+            } else {
+                max
+            }
+        } else if let Some(inner) = strip_fn("count", expr_str) {
+            // count(predicate) — parse as a Filter; otherwise count(measure).
+            let count = if inner.contains("==")
+                || inner.contains('>')
+                || inner.contains('<')
+                || inner.contains("!=")
+            {
+                match Filter::parse(inner, refs, cube) {
+                    Ok(f) => coords
+                        .iter()
+                        .filter(|c| eval_filter(&f, c, cube, principal, refs))
+                        .count(),
+                    Err(_) => 0,
+                }
+            } else {
+                coords
+                    .iter()
+                    .filter(|c| {
+                        matches!(
+                            read_measure_at(cube, refs, principal, c, inner),
+                            ScalarValue::F64(_)
+                        )
+                    })
+                    .count()
+            };
+            count as f64
+        } else {
+            0.0
+        };
+        out.push((expr_str.to_string(), value));
+    }
+    out
+}
+
+fn format_group_rows(
+    rows: &[GroupRow],
+    where_expr: Option<&str>,
+    pagination: &Pagination,
+    format: OutputFormat,
+) -> String {
+    match format {
+        OutputFormat::Json => {
+            let mut out = String::new();
+            push_json_envelope_header(&mut out);
+            out.push_str("\"query\": ");
+            match where_expr {
+                Some(q) => push_json_str(&mut out, q),
+                None => out.push_str("null"),
+            }
+            let _ = write!(
+                out,
+                ",\n  \"limit\": {},\n  \"offset\": {},\n  \"count\": {},\n  \"truncated\": {}",
+                pagination.limit, pagination.offset, pagination.count, pagination.truncated
+            );
+            out.push_str(",\n  \"next_offset\": ");
+            match pagination.next_offset {
+                Some(n) => {
+                    let _ = write!(out, "{n}");
+                }
+                None => out.push_str("null"),
+            }
+            out.push_str(",\n  \"rows\": [");
+            for (i, row) in rows.iter().enumerate() {
+                out.push_str(if i == 0 { "\n    " } else { ",\n    " });
+                out.push_str("{\"group\":{");
+                for (j, (k, v)) in row.key.iter().enumerate() {
+                    if j > 0 {
+                        out.push(',');
+                    }
+                    push_json_str(&mut out, k);
+                    out.push(':');
+                    push_json_str(&mut out, v);
+                }
+                out.push_str("},\"aggregates\":{");
+                for (j, (name, val)) in row.aggregates.iter().enumerate() {
+                    if j > 0 {
+                        out.push(',');
+                    }
+                    push_json_str(&mut out, name);
+                    out.push(':');
+                    push_f64_json(&mut out, *val);
+                }
+                out.push_str("}}");
+            }
+            if !rows.is_empty() {
+                out.push('\n');
+                out.push_str("  ");
+            }
+            out.push_str("]\n}\n");
+            out
+        }
+        OutputFormat::Text => {
+            let mut out = String::new();
+            let _ = writeln!(out, "Groups: {} (page; total may be larger)", rows.len());
+            for row in rows {
+                let key_str = row
+                    .key
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let _ = writeln!(out, "  {key_str}");
+                for (name, val) in &row.aggregates {
+                    let _ = writeln!(out, "    {name} = {}", format_f64(*val));
+                }
+            }
+            out
+        }
+        OutputFormat::Csv => {
+            let mut out = String::new();
+            // Header: group dim names, then one column per aggregate.
+            if let Some(first) = rows.first() {
+                for (i, (k, _)) in first.key.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(k);
+                }
+                for (name, _) in &first.aggregates {
+                    out.push(',');
+                    out.push_str(name);
+                }
+                out.push('\n');
+            }
+            for row in rows {
+                for (i, (_, v)) in row.key.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(v);
+                }
+                for (_, val) in &row.aggregates {
+                    out.push(',');
+                    out.push_str(&format_f64(*val));
+                }
+                out.push('\n');
+            }
+            out
+        }
+    }
 }
 
 fn strip_fn<'a>(name: &str, expr: &'a str) -> Option<&'a str> {

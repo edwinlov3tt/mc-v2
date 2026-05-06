@@ -123,6 +123,7 @@ fn print_help() {
         "    mc model query  <path> [--where <expr>] [--show <measures>] [--format text|json|csv]"
     );
     println!("                           [--coord <coord>] [--aggregate <fns>] [--output <file>]");
+    println!("                           [--group-by <Dim>] (repeatable; requires --aggregate)");
     println!(
         "    mc model whatif <path> --set <coord>=<n> [--set ...] --show <measures> [--format ...]"
     );
