@@ -320,10 +320,13 @@ impl Cube {
         request_trace: bool,
     ) -> Result<CellValue, EngineError> {
         // Identify the measure at this coord and decide Input vs Derived.
+        // Phase 3J item 4: `MeasureRole::Indicator` reads through the same
+        // path as Derived (a synthesized rule body lives in the rule
+        // registry per ADR-0016 Amendment §6).
         let (measure_id, measure_meta) = self.measure_at_coord(coord)?;
         match measure_meta.role {
             MeasureRole::Input => self.read_input_leaf(coord, &measure_meta, request_trace),
-            MeasureRole::Derived => {
+            MeasureRole::Derived | MeasureRole::Indicator => {
                 self.read_derived_leaf(coord, principal, measure_id, &measure_meta, request_trace)
             }
         }
@@ -1444,9 +1447,15 @@ impl Cube {
             return Err(EngineError::ConsolidatedCellNotWritable { coord: req.coord });
         }
 
-        // (4) Reject derived measure. Per spec §13 I-WB-2.
+        // (4) Reject derived (or Indicator) measure. Per spec §13 I-WB-2;
+        // Phase 3J item 4 W3: Indicator is non-writable for the same
+        // reason (it's a synthesized rule body, not a user-supplied
+        // input).
         let (measure_id, measure_meta) = self.measure_at_coord(&req.coord)?;
-        if measure_meta.role == MeasureRole::Derived {
+        if matches!(
+            measure_meta.role,
+            MeasureRole::Derived | MeasureRole::Indicator
+        ) {
             return Err(EngineError::DerivedCellNotWritable { coord: req.coord });
         }
 
@@ -1699,7 +1708,9 @@ impl Cube {
         let mut measures_to_mark: Vec<ElementId> = vec![measure_id];
         for element in &self.measure_dimension().elements {
             if let Some(meta) = element.measure_meta() {
-                if meta.role == MeasureRole::Derived && element.id != measure_id {
+                if matches!(meta.role, MeasureRole::Derived | MeasureRole::Indicator)
+                    && element.id != measure_id
+                {
                     measures_to_mark.push(element.id);
                 }
             }
@@ -1801,7 +1812,9 @@ impl Cube {
         measures_to_mark.push(measure_id);
         for element in &self.measure_dimension().elements {
             if let Some(meta) = element.measure_meta() {
-                if meta.role == MeasureRole::Derived && element.id != measure_id {
+                if matches!(meta.role, MeasureRole::Derived | MeasureRole::Indicator)
+                    && element.id != measure_id
+                {
                     measures_to_mark.push(element.id);
                 }
             }
@@ -1944,10 +1957,14 @@ impl Cube {
                 coord: coord.clone(),
             });
         }
-        // Per engine-semantics.md §13 I-WB-2: derived measures are not
-        // writable.
+        // Per engine-semantics.md §13 I-WB-2: derived (or Indicator)
+        // measures are not writable. Phase 3J item 4: Indicator is the
+        // declarative form of `is_element` — same non-writable contract.
         let (measure_id, measure_meta) = self.measure_at_coord(coord)?;
-        if measure_meta.role == MeasureRole::Derived {
+        if matches!(
+            measure_meta.role,
+            MeasureRole::Derived | MeasureRole::Indicator
+        ) {
             return Err(EngineError::DerivedCellNotWritable {
                 coord: coord.clone(),
             });
@@ -2492,7 +2509,13 @@ impl CubeBuilder {
         let target_meta = target.measure_meta().ok_or(EngineError::Internal(
             "CubeBuilder::add_rule: target is not a measure element",
         ))?;
-        if target_meta.role != MeasureRole::Derived {
+        // Phase 3J item 4: rules can target either Derived or Indicator
+        // measures. Indicator measures carry a synthesized rule body
+        // (Expr::IsElement) per ADR-0016 Amendment §6.
+        if !matches!(
+            target_meta.role,
+            MeasureRole::Derived | MeasureRole::Indicator
+        ) {
             return Err(EngineError::RuleTargetNotDerived {
                 role: target_meta.role,
             });

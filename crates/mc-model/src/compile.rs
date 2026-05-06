@@ -150,6 +150,8 @@ pub fn compile(validated: ValidatedModel) -> Result<CompiledCube, EngineError> {
                 let role = match measure.role.as_str() {
                     "Input" => MeasureRole::Input,
                     "Derived" => MeasureRole::Derived,
+                    // Phase 3J item 4: Indicator measure role.
+                    "Indicator" => MeasureRole::Indicator,
                     _ => {
                         return Err(EngineError::Internal(
                             "compile: validator missed an unknown measure role",
@@ -275,6 +277,59 @@ pub fn compile(validated: ValidatedModel) -> Result<CompiledCube, EngineError> {
             scope,
             body,
             declared_dependencies,
+        };
+        cb = cb.add_rule(r)?;
+    }
+
+    // Phase 3J item 4 (Amendment §6 binding): synthesize a rule body
+    // for every `Indicator` measure that produces the same
+    // `Expr::IsElement(DimensionId, ElementId)` AST as the equivalent
+    // `is_element(Dim, "Element")` formula function would. Validate
+    // (mc-model) ensures `dimension:` + `element:` resolve to known
+    // names, so the lookups here cannot fail in practice.
+    for measure in &validated.parsed.measures {
+        if measure.role != "Indicator" {
+            continue;
+        }
+        let dim_name = measure.dimension.as_deref().ok_or(EngineError::Internal(
+            "compile: validator missed an Indicator measure with no `dimension:`",
+        ))?;
+        let elem_name = measure.element.as_deref().ok_or(EngineError::Internal(
+            "compile: validator missed an Indicator measure with no `element:`",
+        ))?;
+        let dim_id = refs
+            .dimensions
+            .get(dim_name)
+            .copied()
+            .ok_or(EngineError::Internal(
+                "compile: Indicator measure references unknown dimension",
+            ))?;
+        let elem_id = refs
+            .element(dim_name, elem_name)
+            .ok_or(EngineError::Internal(
+                "compile: Indicator measure references unknown element",
+            ))?;
+        let target = refs
+            .element(
+                validated
+                    .parsed
+                    .dimensions
+                    .get(validated.measure_dim_index)
+                    .map(|d| d.name.as_str())
+                    .unwrap_or("Measure"),
+                &measure.name,
+            )
+            .ok_or(EngineError::Internal(
+                "compile: Indicator measure self-id missing in refs",
+            ))?;
+        let rule_id = g.rule();
+        let r = Rule {
+            id: rule_id,
+            cube: cube_id,
+            target_measure: target,
+            scope: Scope::AllLeaves,
+            body: Expr::IsElement(dim_id, elem_id),
+            declared_dependencies: Vec::new(),
         };
         cb = cb.add_rule(r)?;
     }

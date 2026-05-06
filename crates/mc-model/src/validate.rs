@@ -118,6 +118,13 @@ pub fn validate(parsed: ParsedModel) -> Result<ValidatedModel, Vec<Error>> {
     // Decision 6: only `f64` values; non-numeric values caught at
     // YAML parse time (serde rejects).
     check_parameters_block(&parsed, &validated_rules, &mut val_errors);
+    // Phase 3J item 4: Indicator measure validation. MC2063 rejects
+    // Indicator measures declaring a rule body (or `inputs:`); MC2064
+    // rejects Indicator measures missing the required `dimension:` /
+    // `element:` fields. Element existence within the named dim is
+    // checked via the existing MC1022 / MC1023 paths after compile
+    // synthesizes the equivalent is_element rule body.
+    check_indicator_measures(&parsed, &mut val_errors);
 
     errors.extend(val_errors.into_iter().map(Error::Validation));
 
@@ -894,6 +901,10 @@ fn check_derived_measures_have_rules(parsed: &ParsedModel, errors: &mut Vec<Vali
         .map(|r| r.target_measure.as_str())
         .collect();
     for m in &parsed.measures {
+        // Phase 3J item 4: Indicator measures DON'T need a user rule —
+        // their body is synthesized at compile time from `dimension:`
+        // and `element:` fields per ADR-0016 Amendment §6. Only Derived
+        // measures require an explicit rule.
         if m.role == "Derived" && !rule_targets.contains(m.name.as_str()) {
             errors.push(ValidationError::DerivedMeasureWithoutRule {
                 measure_name: m.name.clone(),
@@ -910,7 +921,11 @@ fn check_input_measures_have_no_rules(parsed: &ParsedModel, errors: &mut Vec<Val
         .collect();
     for r in &parsed.rules {
         if let Some(&role) = role_by_name.get(r.target_measure.as_str()) {
-            if role == "Input" {
+            // Phase 3J item 4: also reject user-supplied rules
+            // targeting an `Indicator` measure — Indicator bodies are
+            // synthesized per Amendment §6, so an explicit user rule
+            // creates an ambiguous double-binding.
+            if role == "Input" || role == "Indicator" {
                 errors.push(ValidationError::InputMeasureHasRule {
                     measure_name: r.target_measure.clone(),
                     rule_name: r.name.clone(),
@@ -991,7 +1006,7 @@ fn check_aggregation_methods_supported(parsed: &ParsedModel, errors: &mut Vec<Va
             }),
         }
         match m.role.as_str() {
-            "Input" | "Derived" => {}
+            "Input" | "Derived" | "Indicator" => {}
             other => errors.push(ValidationError::Schema {
                 message: format!("measure {:?}: unknown role {:?}", m.name, other),
             }),
@@ -3262,5 +3277,96 @@ fn walk_param_args(
 ) {
     for a in args {
         walk_param_refs(a, rule_name, declared, errors);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3J item 4: Indicator measure validation
+//
+// MC2063: Indicator measure declared with a `body:` (rule field) — but
+//         since rule bodies live on the rule, not on the measure, we
+//         test this via the rule list. An Indicator-targeted rule is
+//         the rejection.
+// MC2064: Indicator missing `dimension:` or `element:`.
+//
+// Element existence within the named dimension is caught by the
+// synthesized rule's normal compile-time element resolution; if the
+// dim or element name is unknown, MC1022 / MC1023 fire.
+// ---------------------------------------------------------------------------
+
+fn check_indicator_measures(parsed: &ParsedModel, errors: &mut Vec<ValidationError>) {
+    let dim_by_name: BTreeMap<&str, &crate::schema::ParsedDimension> = parsed
+        .dimensions
+        .iter()
+        .map(|d| (d.name.as_str(), d))
+        .collect();
+    for m in &parsed.measures {
+        if m.role != "Indicator" {
+            continue;
+        }
+        // MC2064: dimension + element are required for Indicator.
+        if m.dimension.is_none() {
+            errors.push(ValidationError::Schema {
+                message: format!(
+                    "Indicator measure {:?}: missing required `dimension:` field (MC2064)",
+                    m.name
+                ),
+            });
+        }
+        if m.element.is_none() {
+            errors.push(ValidationError::Schema {
+                message: format!(
+                    "Indicator measure {:?}: missing required `element:` field (MC2064)",
+                    m.name
+                ),
+            });
+        }
+        // MC1022 / MC1023: validate the dim name + element name now so
+        // the diagnostic surfaces against the measure rather than the
+        // synthesized rule.
+        if let (Some(dim_name), Some(elem_name)) = (&m.dimension, &m.element) {
+            match dim_by_name.get(dim_name.as_str()) {
+                None => {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "Indicator measure {:?}: references unknown dimension {:?} (MC1023)",
+                            m.name, dim_name
+                        ),
+                    });
+                }
+                Some(dim) => {
+                    let known: BTreeSet<&str> =
+                        dim.elements.iter().map(|e| e.name.as_str()).collect();
+                    if !known.contains(elem_name.as_str()) {
+                        errors.push(ValidationError::Schema {
+                            message: format!(
+                                "Indicator measure {:?}: references unknown element {:?} \
+                                 in dimension {:?} (MC1022)",
+                                m.name, elem_name, dim_name
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    // MC2063: any rule that targets an Indicator measure is ambiguous —
+    // Indicator bodies are synthesized; a user-supplied rule double-binds.
+    let indicator_names: BTreeSet<&str> = parsed
+        .measures
+        .iter()
+        .filter(|m| m.role == "Indicator")
+        .map(|m| m.name.as_str())
+        .collect();
+    for r in &parsed.rules {
+        if indicator_names.contains(r.target_measure.as_str()) {
+            errors.push(ValidationError::Schema {
+                message: format!(
+                    "rule {:?}: target measure {:?} is an Indicator; Indicator measures must \
+                     not have user-supplied rule bodies (MC2063)",
+                    r.name, r.target_measure
+                ),
+            });
+        }
     }
 }

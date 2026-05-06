@@ -34,9 +34,22 @@ pub struct MeasureMeta {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum MeasureRole {
     Input,
     Derived,
+    /// Phase 3J item 4: indicator measure. A `MeasureRole::Indicator`
+    /// declares `dimension:` and `element:` fields (no `body:`, no
+    /// `inputs:`); it is the declarative form of the
+    /// `is_element(Dim, "Element")` formula function and compiles to
+    /// the same `Expr::IsElement(DimensionId, ElementId)` AST per
+    /// ADR-0016 Decision 7 + Amendment §6.
+    ///
+    /// At eval time, an Indicator measure behaves as a Derived measure
+    /// with an implicit synthesized rule body. The cube treats it as
+    /// non-writable (writeback rejects with `DerivedCellNotWritable`,
+    /// same as a regular Derived measure).
+    Indicator,
 }
 
 #[derive(Clone, Debug)]

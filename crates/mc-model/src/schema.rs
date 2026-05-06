@@ -29,6 +29,11 @@ pub struct ParsedModel {
     #[serde(default)]
     pub hierarchies: Vec<ParsedHierarchy>,
     pub measures: Vec<ParsedMeasure>,
+    /// Phase 3J item 4: rules default to empty Vec to allow models that
+    /// declare only `Indicator` measures (which carry synthesized rule
+    /// bodies). Pre-3J models always declared `rules:` explicitly;
+    /// adding the default is purely additive.
+    #[serde(default)]
     pub rules: Vec<ParsedRule>,
     // -- Phase 3G: Reference-data blocks (optional) --
     /// Industry benchmarks with source attribution.
@@ -163,10 +168,15 @@ pub struct ParsedHierarchyEdge {
 #[serde(deny_unknown_fields)]
 pub struct ParsedMeasure {
     pub name: String,
-    /// `"Input" | "Derived"`.
+    /// `"Input" | "Derived" | "Indicator"`. Phase 3J item 4 added
+    /// `Indicator` (declarative reusable indicator measures, equivalent
+    /// to the `is_element(Dim, "Element")` formula function per
+    /// ADR-0016 Decision 7 + Amendment §6).
     pub role: String,
     /// `"F64" | "I64" | "Bool" | "Category"`. Phase 3A's Acme uses F64
-    /// only; the others are forward surface.
+    /// only; the others are forward surface. Phase 3J Indicator
+    /// measures default to F64 (and may omit this field).
+    #[serde(default = "default_indicator_data_type")]
     pub data_type: String,
     /// Optional human-readable description. Phase 3B's MC3002 lint fires
     /// when this is missing. Additive over ADR-0004's schema.
@@ -175,12 +185,25 @@ pub struct ParsedMeasure {
     /// Required when `data_type: "Category"`. Ignored otherwise.
     #[serde(default)]
     pub category_domain: Option<Vec<String>>,
-    /// `"Sum" | "WeightedAverage" | "Min" | "Max"`.
+    /// `"Sum" | "WeightedAverage" | "Min" | "Max"`. Phase 3J Indicator
+    /// measures default to Sum if omitted (per Decision 7 W7); explicit
+    /// override permitted.
+    #[serde(default = "default_indicator_aggregation")]
     pub aggregation: String,
     /// Required when `aggregation: "WeightedAverage"`. References another
     /// measure name from this same `measures:` block.
     #[serde(default)]
     pub weight_measure: Option<String>,
+    /// Phase 3J item 4: required when `role: "Indicator"`. Names the
+    /// dimension whose element is checked at each coord. MC2064 fires
+    /// at validate if missing on an Indicator measure.
+    #[serde(default)]
+    pub dimension: Option<String>,
+    /// Phase 3J item 4: required when `role: "Indicator"`. Names the
+    /// element in `dimension:` that the indicator matches. MC2064
+    /// fires at validate if missing on an Indicator measure.
+    #[serde(default)]
+    pub element: Option<String>,
 }
 
 /// A deterministic rule declaration. Phase 3D introduced the
@@ -641,6 +664,19 @@ pub struct ParsedWAvgOverBody {
     pub dimension: String,
     pub value_measure: String,
     pub weight_measure: String,
+}
+
+/// Phase 3J item 4: default `data_type` for an `Indicator` measure when
+/// the YAML omits it. F64 because indicators evaluate to 1.0 / 0.0.
+fn default_indicator_data_type() -> String {
+    "F64".to_string()
+}
+
+/// Phase 3J item 4: default `aggregation` for an `Indicator` measure
+/// when the YAML omits it. Sum per Decision 7 W7 — counts matching
+/// leaves at consolidated coords.
+fn default_indicator_aggregation() -> String {
+    "Sum".to_string()
 }
 
 /// Phase 3J item 1: string literal in expression evaluation. Authored as
