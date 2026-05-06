@@ -168,6 +168,7 @@ pub fn run_captured(cmd: QueryCommand) -> (i32, String) {
     let mut cube = compiled.cube;
     let principal = compiled.root_principal;
     let refs = &compiled.refs;
+    let as_of_write_id = compiled.as_of_write_id;
 
     // Apply time-anchor override if provided.
     if let Some(anchor_name) = &cmd.time_anchor {
@@ -198,6 +199,7 @@ pub fn run_captured(cmd: QueryCommand) -> (i32, String) {
             coord_str,
             cmd.format,
             &cmd.output,
+            as_of_write_id,
         );
     }
 
@@ -258,6 +260,7 @@ pub fn run_captured(cmd: QueryCommand) -> (i32, String) {
             cmd.where_expr.as_deref(),
             cmd.format,
             &cmd.output,
+            as_of_write_id,
         );
     }
 
@@ -272,6 +275,7 @@ pub fn run_captured(cmd: QueryCommand) -> (i32, String) {
             agg_exprs,
             cmd.format,
             &cmd.output,
+            as_of_write_id,
         );
     }
 
@@ -327,7 +331,13 @@ pub fn run_captured(cmd: QueryCommand) -> (i32, String) {
             None
         },
     };
-    let output_str = format_results(&results, &cmd.where_expr, cmd.format, &pagination);
+    let output_str = format_results(
+        &results,
+        &cmd.where_expr,
+        cmd.format,
+        &pagination,
+        as_of_write_id,
+    );
     let captured = capture_output(&output_str, &cmd.output);
     (0, captured)
 }
@@ -345,6 +355,20 @@ struct Pagination {
 // ---------------------------------------------------------------------------
 // Model loading (re-exported from `crate::loader` — see Phase 6A.2 item 1.1)
 // ---------------------------------------------------------------------------
+
+/// Phase 6A.3 item 5: append the `as_of_write_id` envelope field. Always
+/// emitted (additive — handoff matrix W7); JSON value is null when no
+/// writes.jsonl exists or it has zero entries, otherwise the numeric
+/// 1-indexed write_id of the most recent replayed write.
+fn push_as_of_write_id_field(out: &mut String, id: Option<u64>) {
+    out.push_str(",\n  \"as_of_write_id\": ");
+    match id {
+        Some(n) => {
+            let _ = write!(out, "{n}");
+        }
+        None => out.push_str("null"),
+    }
+}
 
 /// Phase 6A.1 CRIT-2: emit the Phase 3B-style envelope header at the
 /// start of every Phase 6A verb's `--format json` output. Pairs with
@@ -939,6 +963,7 @@ fn coord_to_names(
 // Single-coord read
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn run_single_coord(
     cube: &mut mc_core::Cube,
     refs: &ModelRefs,
@@ -946,6 +971,7 @@ fn run_single_coord(
     coord_str: &str,
     format: OutputFormat,
     output: &Option<String>,
+    as_of_write_id: Option<u64>,
 ) -> (i32, String) {
     let names = parse_coord_string(coord_str);
     let coord = match refs.coord_from_names(&names) {
@@ -965,6 +991,7 @@ fn run_single_coord(
                     out.push_str(&format_coord_json(&names));
                     out.push_str(",\n  \"value\": ");
                     push_scalar_json(&mut out, &cell.value);
+                    push_as_of_write_id_field(&mut out, as_of_write_id);
                     out.push_str("\n}\n");
                     out
                 }
@@ -1009,6 +1036,7 @@ fn run_aggregate(
     agg_exprs: &[String],
     format: OutputFormat,
     output: &Option<String>,
+    as_of_write_id: Option<u64>,
 ) -> (i32, String) {
     // Parse aggregate expressions: mean(Measure), sum(Measure), count(predicate),
     // min(Measure), max(Measure)
@@ -1125,7 +1153,9 @@ fn run_aggregate(
                     out.push(',');
                 }
             }
-            out.push_str("\n  }\n}\n");
+            out.push_str("\n  }");
+            push_as_of_write_id_field(&mut out, as_of_write_id);
+            out.push_str("\n}\n");
             out
         }
         OutputFormat::Text => {
@@ -1179,6 +1209,7 @@ fn run_group_by(
     where_expr: Option<&str>,
     format: OutputFormat,
     output: &Option<String>,
+    as_of_write_id: Option<u64>,
 ) -> (i32, String) {
     // Resolve group-by dim indices in the cube's dimension array. Each
     // element of `group_dim_indices` is the position of that group dim
@@ -1280,7 +1311,7 @@ fn run_group_by(
         truncated,
         next_offset,
     };
-    let output_str = format_group_rows(page, where_expr, &pagination, format);
+    let output_str = format_group_rows(page, where_expr, &pagination, format, as_of_write_id);
     let captured = capture_output(&output_str, output);
     (0, captured)
 }
@@ -1387,6 +1418,7 @@ fn format_group_rows(
     where_expr: Option<&str>,
     pagination: &Pagination,
     format: OutputFormat,
+    as_of_write_id: Option<u64>,
 ) -> String {
     match format {
         OutputFormat::Json => {
@@ -1409,6 +1441,7 @@ fn format_group_rows(
                 }
                 None => out.push_str("null"),
             }
+            push_as_of_write_id_field(&mut out, as_of_write_id);
             out.push_str(",\n  \"rows\": [");
             for (i, row) in rows.iter().enumerate() {
                 out.push_str(if i == 0 { "\n    " } else { ",\n    " });
@@ -1514,9 +1547,10 @@ fn format_results(
     where_expr: &Option<String>,
     format: OutputFormat,
     pagination: &Pagination,
+    as_of_write_id: Option<u64>,
 ) -> String {
     match format {
-        OutputFormat::Json => format_json(results, where_expr, pagination),
+        OutputFormat::Json => format_json(results, where_expr, pagination, as_of_write_id),
         OutputFormat::Text => format_text(results, pagination),
         OutputFormat::Csv => format_csv(results),
     }
@@ -1526,6 +1560,7 @@ fn format_json(
     results: &[QueryRow],
     where_expr: &Option<String>,
     pagination: &Pagination,
+    as_of_write_id: Option<u64>,
 ) -> String {
     let mut out = String::new();
     push_json_envelope_header(&mut out);
@@ -1547,6 +1582,10 @@ fn format_json(
         }
         None => out.push_str("null"),
     }
+    // Phase 6A.3 item 5 W6/W7: additive `as_of_write_id` echoes the
+    // highest write_id replayed from .tessera/writes.jsonl. Null when
+    // the file does not exist or is empty. No schema_version bump.
+    push_as_of_write_id_field(&mut out, as_of_write_id);
     out.push_str(",\n  \"results\": [\n");
     for (i, row) in results.iter().enumerate() {
         out.push_str("    {\"coord\": ");

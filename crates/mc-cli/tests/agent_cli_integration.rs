@@ -2286,6 +2286,164 @@ fn test_query_group_by_with_limit_paginates_groups() {
     );
 }
 
+// ===========================================================================
+// Phase 6A.3 item 5 — write_id + as_of_write_id
+// ===========================================================================
+
+/// 6A.3 item 5 W1/W2: two consecutive writes return write_id 1 then 2
+/// (1-indexed, monotonic, computed by counting newlines in writes.jsonl
+/// before append).
+#[test]
+fn test_write_response_includes_monotonic_write_id() {
+    let (dir, yaml) = make_acme_workdir("write-id-monotonic");
+
+    let w1 = run_mc(&[
+        "model",
+        "write",
+        yaml.to_str().unwrap(),
+        "--coord",
+        COORD_SPEND_JAN_TAMPA,
+        "--value",
+        "100",
+        "--format",
+        "json",
+    ]);
+    assert!(w1.status.success(), "first write failed");
+    let id1 = parse_json(&w1.stdout)
+        .get("write_id")
+        .and_then(|v| v.as_u64())
+        .expect("write_id missing on first write");
+    assert_eq!(id1, 1, "first write must return write_id 1");
+
+    let w2 = run_mc(&[
+        "model",
+        "write",
+        yaml.to_str().unwrap(),
+        "--coord",
+        COORD_SPEND_JAN_TAMPA,
+        "--value",
+        "200",
+        "--format",
+        "json",
+    ]);
+    assert!(w2.status.success(), "second write failed");
+    let id2 = parse_json(&w2.stdout)
+        .get("write_id")
+        .and_then(|v| v.as_u64())
+        .expect("write_id missing on second write");
+    assert_eq!(id2, 2, "second write must return write_id 2");
+
+    drop(dir);
+}
+
+/// 6A.3 item 5 W4: each writes.jsonl entry carries its `write_id`.
+#[test]
+fn test_writes_jsonl_entries_include_write_id() {
+    let (dir, yaml) = make_acme_workdir("write-id-jsonl");
+    for v in &["111", "222", "333"] {
+        let w = run_mc(&[
+            "model",
+            "write",
+            yaml.to_str().unwrap(),
+            "--coord",
+            COORD_SPEND_JAN_TAMPA,
+            "--value",
+            v,
+            "--format",
+            "json",
+        ]);
+        assert!(w.status.success(), "write failed for value {v}");
+    }
+    let log_path = dir.path().join(".tessera").join("writes.jsonl");
+    let content = std::fs::read_to_string(log_path).expect("read jsonl");
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(lines.len(), 3, "three writes → three lines");
+    for (i, line) in lines.iter().enumerate() {
+        let entry: serde_json::Value =
+            serde_json::from_str(line).expect("each line must be valid JSON");
+        let id = entry
+            .get("write_id")
+            .and_then(|v| v.as_u64())
+            .expect("each entry must include write_id");
+        assert_eq!(
+            id,
+            (i + 1) as u64,
+            "JSONL line {} (1-indexed) must carry write_id {}",
+            i + 1,
+            i + 1
+        );
+    }
+    drop(dir);
+}
+
+/// 6A.3 item 5 W6/W7: query envelope includes `as_of_write_id`. After
+/// two writes, querying any coord returns `as_of_write_id: 2`.
+#[test]
+fn test_query_envelope_includes_as_of_write_id() {
+    let (dir, yaml) = make_acme_workdir("write-id-query");
+    for v in &["100", "200"] {
+        let w = run_mc(&[
+            "model",
+            "write",
+            yaml.to_str().unwrap(),
+            "--coord",
+            COORD_SPEND_JAN_TAMPA,
+            "--value",
+            v,
+            "--format",
+            "json",
+        ]);
+        assert!(w.status.success(), "write failed for value {v}");
+    }
+    let q = run_mc(&[
+        "model",
+        "query",
+        yaml.to_str().unwrap(),
+        "--coord",
+        COORD_SPEND_JAN_TAMPA,
+        "--format",
+        "json",
+    ]);
+    assert!(q.status.success());
+    let id = parse_json(&q.stdout)
+        .get("as_of_write_id")
+        .and_then(|v| v.as_u64())
+        .expect("query envelope must carry as_of_write_id after writes");
+    assert_eq!(id, 2, "after 2 writes, as_of_write_id must equal 2");
+    drop(dir);
+}
+
+/// 6A.3 item 5 W6/W7: when no writes.jsonl exists, the query envelope's
+/// `as_of_write_id` is JSON null (NOT 0, NOT missing).
+#[test]
+fn test_query_envelope_as_of_write_id_null_when_no_writes() {
+    let (dir, yaml) = make_acme_workdir("write-id-null");
+    let log_path = dir.path().join(".tessera").join("writes.jsonl");
+    assert!(
+        !log_path.exists(),
+        "fixture must start with no writes.jsonl"
+    );
+    let q = run_mc(&[
+        "model",
+        "query",
+        yaml.to_str().unwrap(),
+        "--coord",
+        COORD_SPEND_JAN_TAMPA,
+        "--format",
+        "json",
+    ]);
+    assert!(q.status.success());
+    let json = parse_json(&q.stdout);
+    let as_of = json
+        .get("as_of_write_id")
+        .expect("as_of_write_id must be present (additive field)");
+    assert!(
+        as_of.is_null(),
+        "as_of_write_id must be null when writes.jsonl does not exist; got {as_of}"
+    );
+    drop(dir);
+}
+
 /// 6A.3 item 2 W3: an unknown coefficient must error BEFORE the loop
 /// starts (exit code 1, no partial sweep output).
 #[test]
