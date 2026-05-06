@@ -124,7 +124,10 @@ fn print_help() {
     );
     println!("                           [--coord <coord>] [--aggregate <fns>] [--output <file>]");
     println!(
-        "    mc model whatif <path> --set <coord> --value <n> --show <measures> [--format ...]"
+        "    mc model whatif <path> --set <coord>=<n> [--set ...] --show <measures> [--format ...]"
+    );
+    println!(
+        "                           (legacy single-cell form: --set <coord> --value <n>; --set is repeatable)"
     );
     println!("    mc model trace  <path> --coord <coord> [--depth <n>] [--format text|json|csv]");
     println!("    mc model sweep  <path> --range <start:end:step> --metric <fn> --goal <min|max>");

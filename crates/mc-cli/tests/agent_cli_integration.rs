@@ -1561,3 +1561,255 @@ fn test_mcp_trace_accepts_integer_depth() {
         "trace structured carries the bumped schema_version"
     );
 }
+
+// ===========================================================================
+// Phase 6A.3 item 1 — multi-cell whatif (--set repeatable)
+// ===========================================================================
+
+const COORD_AOV_JAN_TAMPA: &str =
+    "Scenario=Baseline,Version=Working,Time=Jan_2026,Channel=Paid_Search,Market=Tampa,Measure=AOV";
+
+/// 6A.3 item 1: two `--set` flags apply atomically. Revenue =
+/// Customers * AOV, and Customers depends on Spend; setting both Spend
+/// and AOV at the same anchor coord must produce a Revenue delta that
+/// reflects BOTH overrides (cross-effect).
+#[test]
+fn test_whatif_multiple_set_flags_apply_atomically() {
+    let path = acme_yaml();
+    let path_str = path.to_str().unwrap();
+
+    // Baseline run: only override Spend; record the resulting Revenue
+    // delta. Uses the new --set "coord=value" form to exercise the
+    // repeatable parser path even on the single-override side.
+    let only_spend = run_mc(&[
+        "model",
+        "whatif",
+        path_str,
+        "--set",
+        &format!("{COORD_SPEND_JAN_TAMPA}=20000"),
+        "--show",
+        "Revenue",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        only_spend.status.success(),
+        "single-override (new form) must succeed: stderr={}",
+        String::from_utf8_lossy(&only_spend.stderr)
+    );
+    let only_spend_json = parse_json(&only_spend.stdout);
+    let only_spend_delta = only_spend_json
+        .get("affected_measures")
+        .and_then(|a| a.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|m| m.get("measure").and_then(|v| v.as_str()) == Some("Revenue"))
+        })
+        .and_then(|m| m.get("delta").and_then(|v| v.as_f64()))
+        .expect("Revenue delta on Spend-only override");
+
+    // Multi-override run: override Spend AND AOV at the same anchor.
+    let both = run_mc(&[
+        "model",
+        "whatif",
+        path_str,
+        "--set",
+        &format!("{COORD_SPEND_JAN_TAMPA}=20000"),
+        "--set",
+        &format!("{COORD_AOV_JAN_TAMPA}=500"),
+        "--show",
+        "Revenue",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        both.status.success(),
+        "multi-override must succeed: stderr={}",
+        String::from_utf8_lossy(&both.stderr)
+    );
+    let both_json = parse_json(&both.stdout);
+    let overrides = both_json
+        .get("overrides")
+        .and_then(|o| o.as_array())
+        .expect("overrides[] must be an array");
+    assert_eq!(
+        overrides.len(),
+        2,
+        "two --set flags must produce two overrides[] entries"
+    );
+    let both_delta = both_json
+        .get("affected_measures")
+        .and_then(|a| a.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|m| m.get("measure").and_then(|v| v.as_str()) == Some("Revenue"))
+        })
+        .and_then(|m| m.get("delta").and_then(|v| v.as_f64()))
+        .expect("Revenue delta on multi-override");
+
+    // The two-override Revenue delta MUST differ from the Spend-only
+    // delta — that is the entire point of multi-cell whatif. AOV is a
+    // direct factor in Revenue, so changing both Spend and AOV is
+    // strictly more impactful than changing Spend alone.
+    assert!(
+        (both_delta - only_spend_delta).abs() > 1e-6,
+        "multi-override Revenue delta ({both_delta}) must differ from Spend-only delta ({only_spend_delta})"
+    );
+}
+
+/// 6A.3 item 1 W1: when the same coordinate appears in two `--set`
+/// flags, the LAST value wins. Document-as-spec; matches whatif
+/// semantics ("apply all in order, then read"). No error is raised.
+#[test]
+fn test_whatif_same_coord_set_twice_last_wins() {
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "whatif",
+        path.to_str().unwrap(),
+        "--set",
+        &format!("{COORD_SPEND_JAN_TAMPA}=12345"),
+        "--set",
+        &format!("{COORD_SPEND_JAN_TAMPA}=20000"),
+        "--show",
+        "Spend,Revenue",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        output.status.success(),
+        "duplicate-coord overrides must NOT error: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = parse_json(&output.stdout);
+
+    // The last override wins on the cube, so Spend@anchor reads back as 20000.
+    let after_spend = json
+        .get("affected_measures")
+        .and_then(|a| a.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|m| m.get("measure").and_then(|v| v.as_str()) == Some("Spend"))
+        })
+        .and_then(|m| m.get("after").and_then(|v| v.as_f64()))
+        .expect("Spend after value");
+    assert!(
+        (after_spend - 20000.0).abs() < 1e-9,
+        "last-write-wins: Spend after must be 20000, got {after_spend}"
+    );
+}
+
+/// 6A.3 item 1 W3: if any override fails (e.g., target is a derived
+/// measure that the kernel rejects), every override is rolled back and
+/// exit code is 1. The agent never observes partial state.
+#[test]
+fn test_whatif_one_override_fails_rolls_back_all() {
+    let path = acme_yaml();
+    // Clicks is a derived measure (Clicks = Spend / CPC). Writing to it
+    // is rejected by the kernel — see Cube::write derived-rejection path.
+    let coord_clicks = "Scenario=Baseline,Version=Working,Time=Jan_2026,\
+        Channel=Paid_Search,Market=Tampa,Measure=Clicks";
+    let output = run_mc(&[
+        "model",
+        "whatif",
+        path.to_str().unwrap(),
+        // One valid input override + one derived target → batch must fail.
+        "--set",
+        &format!("{COORD_SPEND_JAN_TAMPA}=22222"),
+        "--set",
+        &format!("{coord_clicks}=99999"),
+        "--show",
+        "Revenue",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "atomic write must exit 1 when any override fails (handoff W3); stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // No JSON envelope on stderr-only failure path; stdout should be empty.
+    assert!(
+        output.stdout.is_empty(),
+        "failed atomic whatif must not emit a partial deltas envelope on stdout; got: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+/// 6A.3 item 1 W5: `--dry-run` with multi-cell overrides. Reports
+/// would-be deltas and never persists. Verified by reading the same
+/// coord in a fresh process: it must equal the canonical (pre-dry-run)
+/// value, not the dry-run override.
+#[test]
+fn test_whatif_dry_run_does_not_persist_overrides() {
+    let path = acme_yaml();
+    let path_str = path.to_str().unwrap();
+
+    // Sanity: read the canonical Spend value first.
+    let q1 = run_mc(&[
+        "model",
+        "query",
+        path_str,
+        "--coord",
+        COORD_SPEND_JAN_TAMPA,
+        "--format",
+        "json",
+    ]);
+    assert!(q1.status.success(), "pre-query failed");
+    let pre = parse_json(&q1.stdout)
+        .get("value")
+        .and_then(|v| v.as_f64())
+        .expect("pre value");
+
+    // Multi-cell dry-run.
+    let dry = run_mc(&[
+        "model",
+        "whatif",
+        path_str,
+        "--set",
+        &format!("{COORD_SPEND_JAN_TAMPA}=99999"),
+        "--set",
+        &format!("{COORD_AOV_JAN_TAMPA}=42"),
+        "--show",
+        "Revenue",
+        "--dry-run",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        dry.status.success(),
+        "dry-run multi-cell must succeed: stderr={}",
+        String::from_utf8_lossy(&dry.stderr)
+    );
+    let dry_json = parse_json(&dry.stdout);
+    assert_eq!(
+        dry_json.get("dry_run").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    let overrides = dry_json
+        .get("overrides")
+        .and_then(|o| o.as_array())
+        .expect("dry-run overrides[] must be an array");
+    assert_eq!(overrides.len(), 2);
+
+    // Re-query the same coord — it must equal the pre value, not 99999.
+    let q2 = run_mc(&[
+        "model",
+        "query",
+        path_str,
+        "--coord",
+        COORD_SPEND_JAN_TAMPA,
+        "--format",
+        "json",
+    ]);
+    assert!(q2.status.success(), "post-query failed");
+    let post = parse_json(&q2.stdout)
+        .get("value")
+        .and_then(|v| v.as_f64())
+        .expect("post value");
+    assert!(
+        (post - pre).abs() < 1e-9,
+        "dry-run must NOT persist; pre={pre}, post={post}"
+    );
+}
