@@ -58,6 +58,12 @@ pub struct ParsedModel {
     /// referenced by `golden_tests[i].fixture` for override semantics.
     #[serde(default)]
     pub test_fixtures: Vec<ParsedFixture>,
+    /// Phase 3J item 3: optional named scalar constants referenced by
+    /// `param(name)` in formulas. v1 supports only `f64` values per
+    /// ADR-0016 Decision 6 + Amendment §1; computed parameters and
+    /// scoped parameters remain deferred to Phase 3J.1 (Amendment §2).
+    #[serde(default)]
+    pub parameters: Vec<ParsedParameter>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -374,6 +380,13 @@ pub enum ParsedRuleBody {
     /// consolidated coords, returns Null.
     CurrentElement(ParsedCurrentElementBody),
 
+    // -- Phase 3J item 3: param(name) --
+    /// `{ param: "q1_anchor_revenue" }` (structured form) or
+    /// `param(q1_anchor_revenue)` (formula form). Resolves to the
+    /// `f64` value declared on the model's `parameters:` block.
+    /// Validate ensures the name is declared (MC2062 if missing).
+    ParamRef(ParsedParamRefBody),
+
     // -- Phase 3I: cross-coord scans --
     /// `avg_over(measure, dim)` — mean across leaf elements of `dim`.
     AvgOver(ParsedSumOverBody),
@@ -647,6 +660,27 @@ pub struct ParsedStrLiteralBody {
 #[serde(deny_unknown_fields)]
 pub struct ParsedCurrentElementBody {
     pub current_element: String,
+}
+
+/// Phase 3J item 3: a named scalar constant referenced by `param(name)`
+/// in formulas. ADR-0016 Decision 6 binds v1 to `f64` values only; non-
+/// numeric values are rejected by the validator with MC2060.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedParameter {
+    pub name: String,
+    pub value: f64,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// Phase 3J item 3: `param(name)` — formula reference to a named scalar
+/// constant from the `parameters:` block. Structured form:
+/// `{ param: "q1_anchor_revenue" }`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedParamRefBody {
+    pub param: String,
 }
 
 /// `Const` payload. `f64` and `i64` are the common shapes; `bool` is

@@ -163,6 +163,11 @@ pub enum Expr {
     /// name in `Dim` as `ScalarValue::Str`. At consolidated coords (where
     /// `Dim` has no single leaf element), returns Null.
     CurrentElementName(crate::id::DimensionId),
+    /// Phase 3J item 3: `param(name)` — read a named scalar constant
+    /// from `Cube::reference_data.parameters`. Returns the F64 value;
+    /// validate guarantees `name` exists at compile time so eval can
+    /// safely return Null on a missing key (defense-in-depth).
+    ParamRef(String),
 
     // -- Phase 3I: cross-coord scans (avg/min/max/wavg over a dimension) --
     /// `avg_over(measure, dim)` — mean across leaf elements of `dim`,
@@ -428,7 +433,7 @@ fn collect_self_refs(expr: &Expr) -> AHashSet<ElementId> {
             // strings flow through eval without touching the dependency
             // graph. CurrentElementName resolves at the current coord
             // via the dimension axis, not via a measure read.
-            Expr::StrLiteral(_) | Expr::CurrentElementName(_) => {}
+            Expr::StrLiteral(_) | Expr::CurrentElementName(_) | Expr::ParamRef(_) => {}
             Expr::StrEq(a, b) | Expr::StrNeq(a, b) => {
                 walk(a, out);
                 walk(b, out);
@@ -499,8 +504,8 @@ pub fn expr_depth(expr: &Expr) -> u32 {
         | Expr::Floor(a)
         | Expr::Ceil(a) => 1 + expr_depth(a),
         Expr::NormInv(p, mu, sigma) => 1 + expr_depth(p).max(expr_depth(mu)).max(expr_depth(sigma)),
-        // Phase 3J: string-domain
-        Expr::StrLiteral(_) | Expr::CurrentElementName(_) => 1,
+        // Phase 3J: string-domain + parameter ref
+        Expr::StrLiteral(_) | Expr::CurrentElementName(_) | Expr::ParamRef(_) => 1,
         Expr::StrEq(a, b) | Expr::StrNeq(a, b) => 1 + expr_depth(a).max(expr_depth(b)),
     }
 }
@@ -971,6 +976,12 @@ where
             let rhs = eval_expr(b, lookup_self, lookup_cross)?;
             Ok(eval_str_eq(&lhs, &rhs, false))
         }
+        // Phase 3J item 3: parameter reference. Resolves through the
+        // cross-coord lookup machinery to keep the eval-path single-
+        // dispatch.
+        Expr::ParamRef(name) => {
+            lookup_cross(&CrossCoordRead::ParameterValue { name: name.clone() })
+        }
     }
 }
 
@@ -1188,6 +1199,12 @@ pub enum CrossCoordRead {
     PeriodsToEnd,
     /// Resolve the current coordinate's element name in the given dimension.
     CurrentElementName { dimension: crate::id::DimensionId },
+    /// Phase 3J item 3: resolve a `param(name)` reference to its
+    /// constant `f64` value from `Cube::reference_data.parameters`.
+    /// Doesn't depend on any coordinate; the eval path is a single
+    /// HashMap lookup. Validate guarantees `name` exists; eval returns
+    /// `Null` if the lookup misses (defense-in-depth).
+    ParameterValue { name: String },
     // -- Phase 3I: narrow element-match indicator --
     /// Returns 1.0 if the current coord's element in `dimension` is
     /// `element`, else 0.0. Element resolution is parse-time so the
@@ -1622,6 +1639,9 @@ where
             let rhs = eval_expr_unified_inner(b, handler)?;
             Ok(eval_str_eq(&lhs, &rhs, false))
         }
+        Expr::ParamRef(name) => handler(EvalLookup::Cross(&CrossCoordRead::ParameterValue {
+            name: name.clone(),
+        })),
     }
 }
 

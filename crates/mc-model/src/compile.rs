@@ -356,6 +356,15 @@ pub fn compile(validated: ValidatedModel) -> Result<CompiledCube, EngineError> {
             .insert(cm.name.clone(), data);
     }
 
+    // Phase 3J item 3: populate the parameters HashMap from the YAML
+    // `parameters:` block. Validate (mc-model) has already cleared
+    // collisions and references; compile is a straight insert.
+    for p in &validated.parsed.parameters {
+        cube.reference_data
+            .parameters
+            .insert(p.name.clone(), p.value);
+    }
+
     // Populate time_anchor_index from the Time-kind dimension's time_anchor field.
     // The Time dim is identified by kind: "Time" (or kind: "Standard" with name "Time").
     for dim in &validated.parsed.dimensions {
@@ -831,6 +840,10 @@ fn compile_expr(
                     ))?;
             Ok(Expr::CurrentElementName(dim_id))
         }
+        // Phase 3J item 3: param(name). Validator (mc-model) ensures the
+        // name was declared in the model's `parameters:` block; the
+        // value lives in `Cube::reference_data.parameters` after compile.
+        ParsedRuleBody::ParamRef(b) => Ok(Expr::ParamRef(b.param.clone())),
     }
 }
 
@@ -846,6 +859,9 @@ fn compile_expr(
 /// `expr_static_type`, and the runtime `Expr::Eq` falls back to Null on
 /// non-numeric operands, which is the correct behavior.
 fn needs_str_compare(left: &ParsedRuleBody, right: &ParsedRuleBody) -> bool {
+    // `param()` returns F64 by Phase 3J Decision 6 (v1 is f64 only), so
+    // it does NOT qualify as str-like — only StrLiteral and current_element
+    // do.
     let is_str_like = |b: &ParsedRuleBody| {
         matches!(
             b,

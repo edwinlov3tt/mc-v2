@@ -28,9 +28,9 @@ use crate::schema::{
     ParsedCalibrateBody, ParsedClampBody, ParsedConstBody, ParsedCurrentElementBody, ParsedDivBody,
     ParsedIfBody, ParsedIfNullBody, ParsedIsElementBody, ParsedLagBody, ParsedLookupRefBody,
     ParsedMeasureRefBody, ParsedModBody, ParsedMulBody, ParsedNormCdfBody, ParsedNormInvBody,
-    ParsedPowBody, ParsedPredictBody, ParsedRefBody, ParsedRollingAvgBody, ParsedRuleBody,
-    ParsedSafeDivBody, ParsedScalar, ParsedStrLiteralBody, ParsedSubBody, ParsedSumOverBody,
-    ParsedUnaryBody, ParsedVarargBody,
+    ParsedParamRefBody, ParsedPowBody, ParsedPredictBody, ParsedRefBody, ParsedRollingAvgBody,
+    ParsedRuleBody, ParsedSafeDivBody, ParsedScalar, ParsedStrLiteralBody, ParsedSubBody,
+    ParsedSumOverBody, ParsedUnaryBody, ParsedVarargBody,
 };
 
 // ---------------------------------------------------------------------------
@@ -954,6 +954,14 @@ impl<'a> Parser<'a> {
                         sigma: Box::new(sigma),
                     }))
                 }
+                // -- Phase 3J item 3: param(name) — named scalar constant --
+                "param" => {
+                    self.skip_ws();
+                    let name = self.parse_bare_identifier("param", call_start)?;
+                    self.skip_ws();
+                    self.expect_close_paren("param")?;
+                    Ok(ParsedRuleBody::ParamRef(ParsedParamRefBody { param: name }))
+                }
                 // -- Phase 3J item 2: current_element(Dim) -> Str --
                 "current_element" => {
                     self.skip_ws();
@@ -1573,9 +1581,10 @@ fn prec(body: &ParsedRuleBody) -> u8 {
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_)
-        // Phase 3J: string literal + current_element are atomic primaries
+        // Phase 3J: string literal + current_element + param are atomic primaries
         | ParsedRuleBody::StrLiteral(_)
-        | ParsedRuleBody::CurrentElement(_) => 8,
+        | ParsedRuleBody::CurrentElement(_)
+        | ParsedRuleBody::ParamRef(_) => 8,
         // Multiplicative
         ParsedRuleBody::Mul(_) | ParsedRuleBody::Div(_) => 7,
         // Additive
@@ -1901,6 +1910,12 @@ fn write_node_bare(out: &mut String, body: &ParsedRuleBody) {
             out.push_str(&b.current_element);
             out.push(')');
         }
+        // Phase 3J: param(name) — named scalar constant.
+        ParsedRuleBody::ParamRef(b) => {
+            out.push_str("param(");
+            out.push_str(&b.param);
+            out.push(')');
+        }
     }
 }
 
@@ -2049,9 +2064,12 @@ pub fn contains_cross_coord(body: &ParsedRuleBody) -> bool {
         }
         // Phase 3I: is_element is local (parse-time element resolution).
         ParsedRuleBody::IsElement(_) => false,
-        // Phase 3J: string literal and current_element are local; they
-        // resolve at the current coordinate without crossing coord axes.
-        ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::CurrentElement(_) => false,
+        // Phase 3J: string literal, current_element, and param are
+        // local; they resolve at the current coordinate (or via a
+        // simple HashMap lookup for param) without crossing coord axes.
+        ParsedRuleBody::StrLiteral(_)
+        | ParsedRuleBody::CurrentElement(_)
+        | ParsedRuleBody::ParamRef(_) => false,
     }
 }
 

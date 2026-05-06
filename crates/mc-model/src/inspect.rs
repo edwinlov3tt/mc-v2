@@ -955,7 +955,9 @@ fn collect_refs(body: &ParsedRuleBody, out: &mut std::collections::BTreeSet<Stri
             out.insert(b.weight_measure.clone());
         }
         // Phase 3J: string-domain primitives — no measure refs.
-        ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::CurrentElement(_) => {}
+        ParsedRuleBody::StrLiteral(_)
+        | ParsedRuleBody::CurrentElement(_)
+        | ParsedRuleBody::ParamRef(_) => {}
     }
 }
 

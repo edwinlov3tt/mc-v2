@@ -1100,6 +1100,18 @@ impl Cube {
                     None => Ok(ScalarValue::Null),
                 }
             }
+            // Phase 3J item 3: parameter reference. Single HashMap
+            // lookup against `reference_data.parameters`. Validate
+            // (mc-model) catches references to undeclared parameter
+            // names; eval returns Null on a miss as a defense-in-depth
+            // safety net (matches the unknown-name behavior of the
+            // existing benchmark / lookup_table paths).
+            CrossCoordRead::ParameterValue { name } => {
+                match self.reference_data.parameters.get(name) {
+                    Some(v) => Ok(ScalarValue::F64(*v)),
+                    None => Ok(ScalarValue::Null),
+                }
+            }
             // Phase 3I: narrow element-match indicator. Per item 1 W1, the
             // element name was resolved at parse-time to ElementId so the
             // hot path does only an integer compare.
@@ -2371,6 +2383,12 @@ pub struct ReferenceData {
     pub fitted_models: ahash::AHashMap<String, FittedModelData>,
     /// Calibration maps for `calibrate()` evaluation.
     pub calibration_maps: ahash::AHashMap<String, CalibrationMapData>,
+    /// Phase 3J item 3: named scalar constants from the `parameters:`
+    /// YAML block, referenced via `param(name)` in formulas. v1 supports
+    /// only `f64` values (Decision 6 + Amendment §1). Resolution is a
+    /// single HashMap lookup at eval time; no dependency-graph
+    /// participation (constants don't participate in dirty propagation).
+    pub parameters: ahash::AHashMap<String, f64>,
 }
 
 /// Pre-fitted model data for `predict()` evaluation (Phase 3H).
@@ -2746,6 +2764,10 @@ fn validate_expr_well_typed(expr: &Expr, measure_dim: &Dimension) -> Result<(), 
             validate_expr_well_typed(b, measure_dim)?;
             Ok(())
         }
+        // Phase 3J item 3: ParamRef has no measure reference and resolves
+        // to F64 via reference_data.parameters at eval time. Validate
+        // (mc-model) ensures the name exists.
+        Expr::ParamRef(_) => Ok(()),
     }
 }
 

@@ -569,9 +569,10 @@ fn find_cross_coord_in_filter(body: &mc_model::ParsedRuleBody) -> Option<String>
         B::NormInv(b) => find_cross_coord_in_filter(&b.p)
             .or_else(|| find_cross_coord_in_filter(&b.mu))
             .or_else(|| find_cross_coord_in_filter(&b.sigma)),
-        // Phase 3J: string-domain primitives are local (no cross-coord
-        // resolution); they're allowed in filter expressions.
-        B::StrLiteral(_) | B::CurrentElement(_) => None,
+        // Phase 3J: string-domain primitives + param are local (no
+        // cross-coord resolution); they're allowed in filter
+        // expressions.
+        B::StrLiteral(_) | B::CurrentElement(_) | B::ParamRef(_) => None,
     }
 }
 
@@ -1173,6 +1174,11 @@ fn eval_filter_expr(
         | B::PeriodsToEnd(_) => ScalarValue::Null,
         // Phase 3J item 1: string literal in filter expressions.
         B::StrLiteral(b) => ScalarValue::Str(b.str_literal.clone()),
+        // Phase 3J item 3: param(name) — read from cube reference data.
+        B::ParamRef(b) => match cube.reference_data.parameters.get(&b.param) {
+            Some(v) => ScalarValue::F64(*v),
+            None => ScalarValue::Null,
+        },
         // Phase 3J item 2: current_element(Dim) — return the current
         // coord's element name in `Dim` as a Str.
         B::CurrentElement(b) => {

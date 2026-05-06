@@ -112,6 +112,12 @@ pub fn validate(parsed: ParsedModel) -> Result<ValidatedModel, Vec<Error>> {
     // `ValidationError::Schema` with the code suffix in the message
     // (matches the MC2057 / MC2058+ pattern).
     check_str_type_context(&parsed, &validated_rules, &mut val_errors);
+    // Phase 3J item 3: parameters: block validation. Checks name
+    // collisions with measures (MC2060) and dim element names
+    // (MC2061), and unresolved `param(name)` references (MC2062).
+    // Decision 6: only `f64` values; non-numeric values caught at
+    // YAML parse time (serde rejects).
+    check_parameters_block(&parsed, &validated_rules, &mut val_errors);
 
     errors.extend(val_errors.into_iter().map(Error::Validation));
 
@@ -727,7 +733,9 @@ fn check_binop_arity(body: &ParsedRuleBody, rule_name: &str, errors: &mut Vec<Va
         | ParsedRuleBody::WAvgOver(_) => return,
         // Phase 3J: string literal and current_element are atomic — no
         // sub-expressions to descend into.
-        ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::CurrentElement(_) => return,
+        ParsedRuleBody::StrLiteral(_)
+        | ParsedRuleBody::CurrentElement(_)
+        | ParsedRuleBody::ParamRef(_) => return,
     };
     if let Some(args) = args {
         if args.len() != 2 {
@@ -863,7 +871,9 @@ fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
         }
         // Phase 3J: string literal and current_element introduce no
         // measure dependency. current_element resolves via the dim axis.
-        ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::CurrentElement(_) => {}
+        ParsedRuleBody::StrLiteral(_)
+        | ParsedRuleBody::CurrentElement(_)
+        | ParsedRuleBody::ParamRef(_) => {}
     }
 }
 
@@ -1118,7 +1128,9 @@ fn uses_time_series(body: &ParsedRuleBody) -> bool {
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_) => false,
         // Phase 3J: string-domain expressions are not time-series.
-        ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::CurrentElement(_) => false,
+        ParsedRuleBody::StrLiteral(_)
+        | ParsedRuleBody::CurrentElement(_)
+        | ParsedRuleBody::ParamRef(_) => false,
     }
 }
 
@@ -1198,7 +1210,9 @@ fn uses_actual_ref(body: &ParsedRuleBody) -> bool {
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_) => false,
         // Phase 3J: string-domain expressions never reference actuals.
-        ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::CurrentElement(_) => false,
+        ParsedRuleBody::StrLiteral(_)
+        | ParsedRuleBody::CurrentElement(_)
+        | ParsedRuleBody::ParamRef(_) => false,
     }
 }
 
@@ -1389,7 +1403,9 @@ fn find_cross_coord_nesting(body: &ParsedRuleBody) -> Option<String> {
         | ParsedRuleBody::WAvgOver(_)
         | ParsedRuleBody::IsElement(_) => None,
         // Phase 3J: string-domain primitives are local — no cross-coord.
-        ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::CurrentElement(_) => None,
+        ParsedRuleBody::StrLiteral(_)
+        | ParsedRuleBody::CurrentElement(_)
+        | ParsedRuleBody::ParamRef(_) => None,
     }
 }
 
@@ -1938,7 +1954,9 @@ fn uses_anchor_function(body: &ParsedRuleBody) -> bool {
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_) => false,
         // Phase 3J: string-domain primitives don't reference anchors.
-        ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::CurrentElement(_) => false,
+        ParsedRuleBody::StrLiteral(_)
+        | ParsedRuleBody::CurrentElement(_)
+        | ParsedRuleBody::ParamRef(_) => false,
     }
 }
 
@@ -2344,9 +2362,9 @@ fn walk_is_element_and_over(
             walk_is_element_and_over(&b.mu, rule_name, dim_names, known_measures, errors);
             walk_is_element_and_over(&b.sigma, rule_name, dim_names, known_measures, errors);
         }
-        // Phase 3J: string literal — atomic, no descent. current_element
-        // — MC1023 check on the dim name.
-        ParsedRuleBody::StrLiteral(_) => {}
+        // Phase 3J: string literal + param — atomic, no descent.
+        // current_element — MC1023 check on the dim name.
+        ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::ParamRef(_) => {}
         ParsedRuleBody::CurrentElement(b) => {
             if !dim_names.contains_key(b.current_element.as_str()) {
                 errors.push(ValidationError::Schema {
@@ -2436,9 +2454,10 @@ fn walk_predict_arity(
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_)
-        // Phase 3J: string-domain leaves
+        // Phase 3J: string-domain leaves + param ref
         | ParsedRuleBody::StrLiteral(_)
-        | ParsedRuleBody::CurrentElement(_) => {}
+        | ParsedRuleBody::CurrentElement(_)
+        | ParsedRuleBody::ParamRef(_) => {}
         ParsedRuleBody::Add(b) => b
             .add
             .iter()
@@ -2578,8 +2597,12 @@ enum ExprStaticType {
 fn expr_static_type(body: &ParsedRuleBody) -> ExprStaticType {
     use ExprStaticType as T;
     match body {
-        // Phase 3J: string-domain primitives.
+        // Phase 3J: string-domain primitives — return Str.
         ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::CurrentElement(_) => T::Str,
+        // Phase 3J: param(name) returns F64 per Decision 6 (v1 supports
+        // only `f64` parameter values; non-numeric values are rejected
+        // at validate time).
+        ParsedRuleBody::ParamRef(_) => T::F64,
         // Numeric primitives + every arithmetic / comparison / logical /
         // function call returning F64.
         ParsedRuleBody::Const(_)
@@ -3033,6 +3056,211 @@ fn check_str_type_context_walk(
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_)
         | ParsedRuleBody::StrLiteral(_)
+        | ParsedRuleBody::CurrentElement(_)
+        | ParsedRuleBody::ParamRef(_) => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3J item 3: parameters: block validation
+//
+// MC2060: parameter name collides with a declared measure name.
+// MC2061: parameter name collides with a declared dim element name
+//         (any dimension; ambiguity at the bare-identifier level).
+// MC2062: a `param(name)` reference in a rule body names an
+//         undeclared parameter.
+// MC2063 / 2064 / 2065 / 2066 / 2067 / 2068 / 2069 are reserved for
+// other Phase 3J items (Indicator measure role, scenario_ref, etc.).
+// ---------------------------------------------------------------------------
+
+fn check_parameters_block(
+    parsed: &ParsedModel,
+    validated_rules: &[ValidatedRule],
+    errors: &mut Vec<ValidationError>,
+) {
+    let measure_names: BTreeSet<&str> = parsed.measures.iter().map(|m| m.name.as_str()).collect();
+    let mut element_names: BTreeSet<&str> = BTreeSet::new();
+    for d in &parsed.dimensions {
+        for e in &d.elements {
+            element_names.insert(e.name.as_str());
+        }
+    }
+    let mut param_seen: BTreeMap<&str, usize> = BTreeMap::new();
+    for p in &parsed.parameters {
+        // Duplicate parameter name → DuplicateName.
+        *param_seen.entry(p.name.as_str()).or_default() += 1;
+        // MC2060: collides with a measure name.
+        if measure_names.contains(p.name.as_str()) {
+            errors.push(ValidationError::Schema {
+                message: format!(
+                    "parameter {:?} collides with a declared measure name (MC2060)",
+                    p.name
+                ),
+            });
+        }
+        // MC2061: collides with a dim element name.
+        if element_names.contains(p.name.as_str()) {
+            errors.push(ValidationError::Schema {
+                message: format!(
+                    "parameter {:?} collides with a declared dim element name (MC2061)",
+                    p.name
+                ),
+            });
+        }
+        // Reject NaN values up front (the kernel rejects NaN at write
+        // time; mirror at validate so the diagnostic surfaces here).
+        if p.value.is_nan() || !p.value.is_finite() {
+            errors.push(ValidationError::Schema {
+                message: format!(
+                    "parameter {:?}: value must be a finite f64 (got {})",
+                    p.name, p.value
+                ),
+            });
+        }
+    }
+    for (name, count) in &param_seen {
+        if *count > 1 {
+            errors.push(ValidationError::DuplicateName {
+                kind: "parameter".into(),
+                name: (*name).to_string(),
+            });
+        }
+    }
+    // MC2062: walk every rule body and confirm each `param(name)`
+    // reference resolves to a declared parameter.
+    let declared_params: BTreeSet<&str> =
+        parsed.parameters.iter().map(|p| p.name.as_str()).collect();
+    for r in validated_rules {
+        walk_param_refs(&r.body, &r.name, &declared_params, errors);
+    }
+}
+
+fn walk_param_refs(
+    body: &ParsedRuleBody,
+    rule_name: &str,
+    declared: &BTreeSet<&str>,
+    errors: &mut Vec<ValidationError>,
+) {
+    match body {
+        ParsedRuleBody::ParamRef(b) => {
+            if !declared.contains(b.param.as_str()) {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "rule {rule_name:?}: param({:?}) references undeclared parameter (MC2062)",
+                        b.param
+                    ),
+                });
+            }
+        }
+        ParsedRuleBody::Const(_)
+        | ParsedRuleBody::Ref(_)
+        | ParsedRuleBody::PeriodIndex(_)
+        | ParsedRuleBody::AnchorIndex(_)
+        | ParsedRuleBody::IsPast(_)
+        | ParsedRuleBody::IsCurrent(_)
+        | ParsedRuleBody::IsFuture(_)
+        | ParsedRuleBody::PeriodsSinceAnchor(_)
+        | ParsedRuleBody::PeriodsToEnd(_)
+        | ParsedRuleBody::ActualRef(_)
+        | ParsedRuleBody::Prev(_)
+        | ParsedRuleBody::Cumulative(_)
+        | ParsedRuleBody::SumOver(_)
+        | ParsedRuleBody::IsElement(_)
+        | ParsedRuleBody::AvgOver(_)
+        | ParsedRuleBody::MinOver(_)
+        | ParsedRuleBody::MaxOver(_)
+        | ParsedRuleBody::WAvgOver(_)
+        | ParsedRuleBody::StrLiteral(_)
         | ParsedRuleBody::CurrentElement(_) => {}
+        ParsedRuleBody::Add(b) => walk_param_args(&b.add, rule_name, declared, errors),
+        ParsedRuleBody::Sub(b) => walk_param_args(&b.sub, rule_name, declared, errors),
+        ParsedRuleBody::Mul(b) => walk_param_args(&b.mul, rule_name, declared, errors),
+        ParsedRuleBody::Div(b) => walk_param_args(&b.div, rule_name, declared, errors),
+        ParsedRuleBody::IfNull(b) => walk_param_args(&b.if_null, rule_name, declared, errors),
+        ParsedRuleBody::Gt(b)
+        | ParsedRuleBody::Lt(b)
+        | ParsedRuleBody::Gte(b)
+        | ParsedRuleBody::Lte(b)
+        | ParsedRuleBody::Eq(b)
+        | ParsedRuleBody::Neq(b)
+        | ParsedRuleBody::And(b)
+        | ParsedRuleBody::Or(b) => {
+            walk_param_refs(&b.left, rule_name, declared, errors);
+            walk_param_refs(&b.right, rule_name, declared, errors);
+        }
+        ParsedRuleBody::Not(b) | ParsedRuleBody::Abs(b) => {
+            walk_param_refs(&b.operand, rule_name, declared, errors)
+        }
+        ParsedRuleBody::If(b) => {
+            walk_param_refs(&b.condition, rule_name, declared, errors);
+            walk_param_refs(&b.then_branch, rule_name, declared, errors);
+            walk_param_refs(&b.else_branch, rule_name, declared, errors);
+        }
+        ParsedRuleBody::Min(b) | ParsedRuleBody::Max(b) | ParsedRuleBody::Coalesce(b) => {
+            for a in &b.args {
+                walk_param_refs(a, rule_name, declared, errors);
+            }
+        }
+        ParsedRuleBody::SafeDiv(b) => {
+            walk_param_refs(&b.numerator, rule_name, declared, errors);
+            walk_param_refs(&b.denominator, rule_name, declared, errors);
+            walk_param_refs(&b.default, rule_name, declared, errors);
+        }
+        ParsedRuleBody::Clamp(b) => {
+            walk_param_refs(&b.value, rule_name, declared, errors);
+            walk_param_refs(&b.lo, rule_name, declared, errors);
+            walk_param_refs(&b.hi, rule_name, declared, errors);
+        }
+        ParsedRuleBody::Lag(b) => walk_param_refs(&b.periods, rule_name, declared, errors),
+        ParsedRuleBody::RollingAvg(b) => walk_param_refs(&b.window, rule_name, declared, errors),
+        ParsedRuleBody::Benchmark(b) => walk_param_refs(&b.key_expr, rule_name, declared, errors),
+        ParsedRuleBody::Lookup(b) => {
+            for k in &b.key_exprs {
+                walk_param_refs(k, rule_name, declared, errors);
+            }
+        }
+        ParsedRuleBody::Bucket(b) => walk_param_refs(&b.value, rule_name, declared, errors),
+        ParsedRuleBody::Predict(b) => {
+            for f in &b.features {
+                walk_param_refs(f, rule_name, declared, errors);
+            }
+        }
+        ParsedRuleBody::Calibrate(b) => walk_param_refs(&b.value, rule_name, declared, errors),
+        ParsedRuleBody::Exp(b) => walk_param_refs(&b.operand, rule_name, declared, errors),
+        ParsedRuleBody::NormCdf(b) => {
+            walk_param_refs(&b.x, rule_name, declared, errors);
+            walk_param_refs(&b.mu, rule_name, declared, errors);
+            walk_param_refs(&b.sigma, rule_name, declared, errors);
+        }
+        ParsedRuleBody::Pow(b) => {
+            walk_param_refs(&b.base, rule_name, declared, errors);
+            walk_param_refs(&b.exponent, rule_name, declared, errors);
+        }
+        ParsedRuleBody::Sqrt(b)
+        | ParsedRuleBody::Ln(b)
+        | ParsedRuleBody::Log10(b)
+        | ParsedRuleBody::Round(b)
+        | ParsedRuleBody::Floor(b)
+        | ParsedRuleBody::Ceil(b) => walk_param_refs(&b.operand, rule_name, declared, errors),
+        ParsedRuleBody::Mod(b) => {
+            walk_param_refs(&b.dividend, rule_name, declared, errors);
+            walk_param_refs(&b.divisor, rule_name, declared, errors);
+        }
+        ParsedRuleBody::NormInv(b) => {
+            walk_param_refs(&b.p, rule_name, declared, errors);
+            walk_param_refs(&b.mu, rule_name, declared, errors);
+            walk_param_refs(&b.sigma, rule_name, declared, errors);
+        }
+    }
+}
+
+fn walk_param_args(
+    args: &[ParsedRuleBody],
+    rule_name: &str,
+    declared: &BTreeSet<&str>,
+    errors: &mut Vec<ValidationError>,
+) {
+    for a in args {
+        walk_param_refs(a, rule_name, declared, errors);
     }
 }
