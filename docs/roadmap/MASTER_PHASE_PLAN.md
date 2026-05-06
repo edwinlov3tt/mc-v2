@@ -4,7 +4,7 @@
 >
 > Read this before inventing a phase name or starting work that isn't already on the list. If a new phase is needed and it isn't here, add it here first (and link the ADR explaining the decision).
 
-**Last updated:** 2026-05-05 (post-Phase 3H + 5C)
+**Last updated:** 2026-05-06 (post-Phase 6A.1 review-driven fixes)
 **Maintained by:** project lead. New sub-phases require an ADR in [`../decisions/`](../decisions/).
 
 ---
@@ -48,6 +48,7 @@ Productization beyond the first usable product (multi-tenancy, customer-facing a
 | **3E–3G** | Formula language expansion (conditionals + time-series + reference-data blocks) | **complete** | `phase-3e-3f-3g-formula-expansion` |
 | **3F.1** | Runtime time anchor + metadata validation | **complete** (bundled with 3E–3G merge) | — |
 | **3H** | Fitted-model evaluation (predict / calibrate / exp / norm_cdf) | **complete** | `phase-3h-fitted-model-evaluation` |
+| **6A.1** | Review-driven fixes — CRIT-1 standardization name-keyed lookup, MAJ-1 time_format wiring, CRIT-2/3 envelope discipline, MIN-1/4/5/6 safety polish, MAJ-2 atomic schedule write | **complete** (report at [`../reports/phase-6a-1-completion-report.md`](../reports/phase-6a-1-completion-report.md)) | `phase-6a-1-review-fixes` |
 | **3I–3N** | Further model layer extensions (TBD) | not started | — |
 | **4A** | LLM-assisted authoring — Mosaic Claude Code plugin (skills + agents + commands + MCP server + marketing-mix domain schema) per ADR-0008 | **complete** (report at [`../reports/phase-4a-completion-report.md`](../reports/phase-4a-completion-report.md)) | `phase-4a-mosaic-plugin` (`36af56c`) |
 | **4B** | Python reference adapters under `mosaic-plugin/examples/adapters/` (`anthropic-python/` + `openai-python/` ~150 lines each) | **complete** (report at [`../reports/phase-4b-completion-report.md`](../reports/phase-4b-completion-report.md); both adapters cleared best-of-3 gate — Anthropic 3/3, OpenAI 3/3) | `phase-4b-python-adapters` (`b5b6229`) |
