@@ -25,12 +25,12 @@
 
 use crate::schema::{
     ParsedActualRefBody, ParsedAddBody, ParsedBenchmarkRefBody, ParsedBinopBody, ParsedBucketBody,
-    ParsedCalibrateBody, ParsedClampBody, ParsedConstBody, ParsedDivBody, ParsedIfBody,
-    ParsedIfNullBody, ParsedIsElementBody, ParsedLagBody, ParsedLookupRefBody,
+    ParsedCalibrateBody, ParsedClampBody, ParsedConstBody, ParsedCurrentElementBody, ParsedDivBody,
+    ParsedIfBody, ParsedIfNullBody, ParsedIsElementBody, ParsedLagBody, ParsedLookupRefBody,
     ParsedMeasureRefBody, ParsedModBody, ParsedMulBody, ParsedNormCdfBody, ParsedNormInvBody,
     ParsedPowBody, ParsedPredictBody, ParsedRefBody, ParsedRollingAvgBody, ParsedRuleBody,
-    ParsedSafeDivBody, ParsedScalar, ParsedSubBody, ParsedSumOverBody, ParsedUnaryBody,
-    ParsedVarargBody,
+    ParsedSafeDivBody, ParsedScalar, ParsedStrLiteralBody, ParsedSubBody, ParsedSumOverBody,
+    ParsedUnaryBody, ParsedVarargBody,
 };
 
 // ---------------------------------------------------------------------------
@@ -465,19 +465,22 @@ impl<'a> Parser<'a> {
                 let n = self.parse_number()?;
                 Ok(const_f64(n))
             }
-            // Phase 3I item 1 W4: a string literal in primary position
-            // means it's outside the only legal slot (the second arg of
-            // `is_element` / `benchmark` / `lookup` / `bucket` / `calibrate`
-            // / `predict`, all of which call `parse_string_literal`
-            // directly and never reach this dispatch). Surface MC1024 so
-            // models / filter expressions get a precise diagnostic
-            // instead of the generic MC1004 "unexpected character".
-            b'"' => Err(FormulaError::string_literal_misplaced(
-                self.pos,
-                "string literals are only allowed as the second arg of is_element() \
-                 (and the named-arg slot of benchmark/lookup/bucket/calibrate/predict)"
-                    .into(),
-            )),
+            // Phase 3J item 1: string literals are first-class in
+            // expression evaluation. The parser produces a `StrLiteral`
+            // node; subsequent type-context validation (mc-model
+            // `validate.rs`) rejects Str values in arithmetic (MC1026),
+            // numeric comparisons (MC1028), truthy contexts like `if` /
+            // `and` / `or` / `not` operands (MC1027), or as a rule body's
+            // outermost return value (MC2058). The parse-time MC1024
+            // ("string literal misplaced") is reserved for backstop use
+            // — the validator-side type-context check is the primary
+            // enforcement.
+            b'"' => {
+                let s = self.parse_string_literal_inline()?;
+                Ok(ParsedRuleBody::StrLiteral(ParsedStrLiteralBody {
+                    str_literal: s,
+                }))
+            }
             other => Err(FormulaError::unexpected_token(
                 self.pos,
                 format!("unexpected character {:?}", other as char),
@@ -951,6 +954,16 @@ impl<'a> Parser<'a> {
                         sigma: Box::new(sigma),
                     }))
                 }
+                // -- Phase 3J item 2: current_element(Dim) -> Str --
+                "current_element" => {
+                    self.skip_ws();
+                    let dimension = self.parse_bare_identifier("current_element", call_start)?;
+                    self.skip_ws();
+                    self.expect_close_paren("current_element")?;
+                    Ok(ParsedRuleBody::CurrentElement(ParsedCurrentElementBody {
+                        current_element: dimension,
+                    }))
+                }
                 // -- Phase 3I item 1: is_element narrow numeric form --
                 "is_element" => {
                     self.skip_ws();
@@ -1058,6 +1071,37 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(self.input[ident_start..self.pos].to_string())
+    }
+
+    /// Phase 3J item 1: parse a quoted string literal at primary position
+    /// (outside any function call). Mirrors `parse_string_literal` but
+    /// uses a `&'static` context label so the diagnostic stays useful
+    /// without a function name to point at.
+    fn parse_string_literal_inline(&mut self) -> Result<String, FormulaError> {
+        self.skip_ws();
+        if self.peek_byte() != Some(b'"') {
+            return Err(FormulaError::unexpected_token(
+                self.pos,
+                "expected a quoted string literal".into(),
+            ));
+        }
+        self.advance();
+        let start = self.pos;
+        while let Some(b) = self.peek_byte() {
+            if b == b'"' {
+                let s = self.input[start..self.pos].to_string();
+                self.advance();
+                return Ok(s);
+            }
+            if b == b'\\' {
+                self.advance();
+            }
+            self.advance();
+        }
+        Err(FormulaError::unexpected_token(
+            start,
+            "unterminated string literal".into(),
+        ))
     }
 
     /// Parse a double-quoted string literal (for benchmark/lookup names).
@@ -1528,7 +1572,10 @@ fn prec(body: &ParsedRuleBody) -> u8 {
         | ParsedRuleBody::AvgOver(_)
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
-        | ParsedRuleBody::WAvgOver(_) => 8,
+        | ParsedRuleBody::WAvgOver(_)
+        // Phase 3J: string literal + current_element are atomic primaries
+        | ParsedRuleBody::StrLiteral(_)
+        | ParsedRuleBody::CurrentElement(_) => 8,
         // Multiplicative
         ParsedRuleBody::Mul(_) | ParsedRuleBody::Div(_) => 7,
         // Additive
@@ -1835,6 +1882,25 @@ fn write_node_bare(out: &mut String, body: &ParsedRuleBody) {
             out.push_str(&b.weight_measure);
             out.push(')');
         }
+        // Phase 3J: string literal — emit double-quoted, escape inner
+        // backslashes and quotes for round-trip stability.
+        ParsedRuleBody::StrLiteral(b) => {
+            out.push('"');
+            for ch in b.str_literal.chars() {
+                match ch {
+                    '\\' => out.push_str("\\\\"),
+                    '"' => out.push_str("\\\""),
+                    other => out.push(other),
+                }
+            }
+            out.push('"');
+        }
+        // Phase 3J: current_element(Dim).
+        ParsedRuleBody::CurrentElement(b) => {
+            out.push_str("current_element(");
+            out.push_str(&b.current_element);
+            out.push(')');
+        }
     }
 }
 
@@ -1983,6 +2049,9 @@ pub fn contains_cross_coord(body: &ParsedRuleBody) -> bool {
         }
         // Phase 3I: is_element is local (parse-time element resolution).
         ParsedRuleBody::IsElement(_) => false,
+        // Phase 3J: string literal and current_element are local; they
+        // resolve at the current coordinate without crossing coord axes.
+        ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::CurrentElement(_) => false,
     }
 }
 

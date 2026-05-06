@@ -359,6 +359,21 @@ pub enum ParsedRuleBody {
     /// in `Dim` is `"Element"`, 0.0 otherwise.
     IsElement(ParsedIsElementBody),
 
+    // -- Phase 3J item 1: string literal in eval --
+    /// `{ str_literal: "Houston" }` (structured form) or `"Houston"`
+    /// (formula form). Per ADR-0016 Decision 2, `Str` values exist only
+    /// in expression evaluation; the validator rejects Str-typed bodies
+    /// (MC2058), Str-in-arithmetic (MC1026), Str-in-numeric-comparison
+    /// (MC1028), and Str-in-truthy-context (MC1027).
+    StrLiteral(ParsedStrLiteralBody),
+
+    // -- Phase 3J item 2: current_element(Dim) --
+    /// `{ current_element: "Channel" }` (structured form) or
+    /// `current_element(Channel)` (formula form). Returns the current
+    /// coordinate's element name in `dim` as `ScalarValue::Str`. At
+    /// consolidated coords, returns Null.
+    CurrentElement(ParsedCurrentElementBody),
+
     // -- Phase 3I: cross-coord scans --
     /// `avg_over(measure, dim)` — mean across leaf elements of `dim`.
     AvgOver(ParsedSumOverBody),
@@ -613,6 +628,25 @@ pub struct ParsedWAvgOverBody {
     pub dimension: String,
     pub value_measure: String,
     pub weight_measure: String,
+}
+
+/// Phase 3J item 1: string literal in expression evaluation. Authored as
+/// `{ str_literal: "Houston" }` in the structured YAML form, or as
+/// `"Houston"` in the friendly-formula form (the formula parser produces
+/// a `StrLiteral` node when a quoted string appears in primary position).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedStrLiteralBody {
+    pub str_literal: String,
+}
+
+/// Phase 3J item 2: `current_element(Dim)` — returns the current coord's
+/// element name in `Dim` as `Str`. Structured form:
+/// `{ current_element: "Channel" }`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedCurrentElementBody {
+    pub current_element: String,
 }
 
 /// `Const` payload. `f64` and `i64` are the common shapes; `bool` is

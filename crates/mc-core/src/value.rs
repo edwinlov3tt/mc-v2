@@ -15,8 +15,24 @@ pub enum ScalarValue {
     Bool(bool),
     /// Index into the parent measure's `CellDataType::Category` vec.
     Category(usize),
-    /// String value used as a lookup key in reference-data tables.
-    /// Not stored in cells; only produced during eval by `DimElement`.
+    /// String value produced by expression evaluation only.
+    ///
+    /// **Binding boundary (Phase 3J ADR-0016 Decision 2 / Amendment §1):**
+    /// `Str` values exist exclusively in the expression-evaluation domain.
+    /// They are produced by `Expr::StrLiteral`, `Expr::DimElement`, and
+    /// `CrossCoordRead::CurrentElementName`, and consumed by `Expr::StrEq`
+    /// / `Expr::StrNeq`, by lookup-key conversion (`scalar_to_lookup_key`),
+    /// and by parse-time element-name resolution. They MUST NEVER reach:
+    /// `Cube::write` (rejected with `EngineError::TypeMismatch`),
+    /// `HashMapStore` storage, consolidation, the dirty tracker, snapshot
+    /// machinery, the writeback NaN check (`debug_assert!` guards this),
+    /// or any cell value comparison in trace output.
+    ///
+    /// This bounded scope keeps Phase 3J shippable as an additive eval-
+    /// layer change. Storing strings in cells would cascade through every
+    /// kernel subsystem (consolidation needs type-aware aggregation;
+    /// dirty propagation needs string-aware diffs; writeback needs to
+    /// re-define the NaN-rejection contract); that work is Phase 4+ scope.
     Str(String),
     Null,
 }

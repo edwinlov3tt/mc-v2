@@ -1505,6 +1505,19 @@ impl Cube {
             }
         };
 
+        // (8a) Phase 3J ADR-0016 Decision 2 / Amendment §1: reject any
+        //      attempt to write a `ScalarValue::Str` value. Strings exist
+        //      only in expression evaluation; storage is numeric-or-Null.
+        //      Surfaced as MC2059 at the mc-model diagnostic layer; the
+        //      kernel reports the typed `TypeMismatch` here. See
+        //      `ScalarValue::Str` doc for the full boundary contract.
+        if matches!(type_check_value, ScalarValue::Str(_)) {
+            return Err(EngineError::TypeMismatch {
+                expected: measure_meta.dtype.clone(),
+                got: req.new_value.clone(),
+            });
+        }
+
         // (8) Type check. Per spec §13 I-WB-9.
         if !measure_meta.dtype.matches(&type_check_value) {
             return Err(EngineError::TypeMismatch {
@@ -1515,6 +1528,13 @@ impl Cube {
 
         // (9) NaN / Inf reject. Per spec §3.18 + §0.A's reaffirmation
         //     of "NaN must never appear in storage."
+        // Phase 3J: defense-in-depth assertion that no `Str` reaches the
+        // NaN-check site. The explicit reject above is the contract; this
+        // assert catches any future code path that bypasses the check.
+        debug_assert!(
+            !matches!(type_check_value, ScalarValue::Str(_)),
+            "Cube::write: ScalarValue::Str must be rejected before NaN check (ADR-0016 D2)"
+        );
         if let ScalarValue::F64(v) = &type_check_value {
             validate_finite_f64(*v)?;
         }
@@ -2712,6 +2732,18 @@ fn validate_expr_well_typed(expr: &Expr, measure_dim: &Dimension) -> Result<(), 
             let _ = measure_dim
                 .element(*weight)
                 .ok_or(EngineError::ElementNotFound(*weight, measure_dim.id))?;
+            Ok(())
+        }
+        // Phase 3J: string-domain expressions are well-typed by
+        // construction. No measure references; CurrentElementName resolves
+        // via dim axis. The validator at the mc-model layer ensures Str
+        // sub-expressions don't reach a rule body's outermost slot
+        // (MC2058) or arithmetic / numeric-comparison contexts (MC1026,
+        // MC1027, MC1028).
+        Expr::StrLiteral(_) | Expr::CurrentElementName(_) => Ok(()),
+        Expr::StrEq(a, b) | Expr::StrNeq(a, b) => {
+            validate_expr_well_typed(a, measure_dim)?;
+            validate_expr_well_typed(b, measure_dim)?;
             Ok(())
         }
     }

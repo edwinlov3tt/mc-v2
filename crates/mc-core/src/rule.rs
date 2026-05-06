@@ -145,6 +145,25 @@ pub enum Expr {
     /// coordinate's element in `DimensionId` equals `ElementId`, else 0.0.
     IsElement(crate::id::DimensionId, ElementId),
 
+    // -- Phase 3J item 1: ScalarValue::Str first-class in eval --
+    /// String literal value. Per ADR-0016 Decision 2, `Str` values exist
+    /// only in expression evaluation; `StrLiteral` is the parser-produced
+    /// constant form. Consumable by `StrEq` / `StrNeq` and by lookup-key
+    /// conversion; never reaches storage. See `ScalarValue::Str` doc for
+    /// the full boundary contract.
+    StrLiteral(String),
+    /// String equality: `Str == Str → F64(1.0/0.0)`. Null in either side
+    /// poisons (returns Null). A non-Str value (e.g., F64) on either side
+    /// is treated as a runtime type mismatch and returns Null — the
+    /// validator should have caught it statically with MC1027.
+    StrEq(Box<Expr>, Box<Expr>),
+    /// String inequality. Inverse of `StrEq`.
+    StrNeq(Box<Expr>, Box<Expr>),
+    /// `current_element(Dim)` — returns the current coordinate's element
+    /// name in `Dim` as `ScalarValue::Str`. At consolidated coords (where
+    /// `Dim` has no single leaf element), returns Null.
+    CurrentElementName(crate::id::DimensionId),
+
     // -- Phase 3I: cross-coord scans (avg/min/max/wavg over a dimension) --
     /// `avg_over(measure, dim)` — mean across leaf elements of `dim`,
     /// skipping Nulls. Empty/all-null → Null.
@@ -404,6 +423,16 @@ fn collect_self_refs(expr: &Expr) -> AHashSet<ElementId> {
                 out.insert(*value);
                 out.insert(*weight);
             }
+            // Phase 3J: string-domain expressions and current_element.
+            // None of these introduce a `SelfRef` measure dependency —
+            // strings flow through eval without touching the dependency
+            // graph. CurrentElementName resolves at the current coord
+            // via the dimension axis, not via a measure read.
+            Expr::StrLiteral(_) | Expr::CurrentElementName(_) => {}
+            Expr::StrEq(a, b) | Expr::StrNeq(a, b) => {
+                walk(a, out);
+                walk(b, out);
+            }
         }
     }
     walk(expr, &mut out);
@@ -470,6 +499,9 @@ pub fn expr_depth(expr: &Expr) -> u32 {
         | Expr::Floor(a)
         | Expr::Ceil(a) => 1 + expr_depth(a),
         Expr::NormInv(p, mu, sigma) => 1 + expr_depth(p).max(expr_depth(mu)).max(expr_depth(sigma)),
+        // Phase 3J: string-domain
+        Expr::StrLiteral(_) | Expr::CurrentElementName(_) => 1,
+        Expr::StrEq(a, b) | Expr::StrNeq(a, b) => 1 + expr_depth(a).max(expr_depth(b)),
     }
 }
 
@@ -924,6 +956,41 @@ where
                 weight_measure: *weight_measure,
             })
         }
+        // -- Phase 3J: string-domain expressions --
+        Expr::StrLiteral(s) => Ok(ScalarValue::Str(s.clone())),
+        Expr::CurrentElementName(dim) => {
+            lookup_cross(&CrossCoordRead::CurrentElementName { dimension: *dim })
+        }
+        Expr::StrEq(a, b) => {
+            let lhs = eval_expr(a, lookup_self, lookup_cross)?;
+            let rhs = eval_expr(b, lookup_self, lookup_cross)?;
+            Ok(eval_str_eq(&lhs, &rhs, true))
+        }
+        Expr::StrNeq(a, b) => {
+            let lhs = eval_expr(a, lookup_self, lookup_cross)?;
+            let rhs = eval_expr(b, lookup_self, lookup_cross)?;
+            Ok(eval_str_eq(&lhs, &rhs, false))
+        }
+    }
+}
+
+/// Phase 3J item 1: string equality / inequality. Returns
+/// `ScalarValue::F64(1.0)` if both sides are equal `Str`s, `F64(0.0)` if
+/// both are `Str` but unequal, `Null` if either side is `Null`. Any
+/// non-`Str` non-`Null` operand (e.g., F64) is a runtime type mismatch
+/// and returns `Null` — the validator should have caught this at compile
+/// time with MC1027. Per ADR-0016 Decision 3, comparisons are
+/// case-sensitive; locale ordering operators are out of scope.
+fn eval_str_eq(lhs: &ScalarValue, rhs: &ScalarValue, equal_polarity: bool) -> ScalarValue {
+    match (lhs, rhs) {
+        (ScalarValue::Null, _) | (_, ScalarValue::Null) => ScalarValue::Null,
+        (ScalarValue::Str(a), ScalarValue::Str(b)) => {
+            let eq = a == b;
+            ScalarValue::F64(if eq == equal_polarity { 1.0 } else { 0.0 })
+        }
+        // Mixed types — defense-in-depth Null. Validator MC1027 catches
+        // statically detectable cases; this is the runtime safety net.
+        _ => ScalarValue::Null,
     }
 }
 
@@ -1537,6 +1604,23 @@ where
                 value_measure: *value_measure,
                 weight_measure: *weight_measure,
             }))
+        }
+        // -- Phase 3J: string-domain expressions --
+        Expr::StrLiteral(s) => Ok(ScalarValue::Str(s.clone())),
+        Expr::CurrentElementName(dim) => {
+            handler(EvalLookup::Cross(&CrossCoordRead::CurrentElementName {
+                dimension: *dim,
+            }))
+        }
+        Expr::StrEq(a, b) => {
+            let lhs = eval_expr_unified_inner(a, handler)?;
+            let rhs = eval_expr_unified_inner(b, handler)?;
+            Ok(eval_str_eq(&lhs, &rhs, true))
+        }
+        Expr::StrNeq(a, b) => {
+            let lhs = eval_expr_unified_inner(a, handler)?;
+            let rhs = eval_expr_unified_inner(b, handler)?;
+            Ok(eval_str_eq(&lhs, &rhs, false))
         }
     }
 }

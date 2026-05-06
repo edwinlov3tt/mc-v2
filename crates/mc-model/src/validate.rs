@@ -105,6 +105,13 @@ pub fn validate(parsed: ParsedModel) -> Result<ValidatedModel, Vec<Error>> {
     // (handoff said MC2053 but that was already shipped by Phase 3H —
     // see check_predict_arity doc comment for the audit-trail note).
     check_predict_arity(&parsed, &validated_rules, &mut val_errors);
+    // Phase 3J item 1 + Amendment §1: type-context validation for the
+    // newly first-class `Str` value. Reject Str in arithmetic (MC1026),
+    // type mismatch in == / != (MC1027), Str in numeric ordering
+    // (MC1028), and Str-typed rule body (MC2058). All emitted as
+    // `ValidationError::Schema` with the code suffix in the message
+    // (matches the MC2057 / MC2058+ pattern).
+    check_str_type_context(&parsed, &validated_rules, &mut val_errors);
 
     errors.extend(val_errors.into_iter().map(Error::Validation));
 
@@ -718,6 +725,9 @@ fn check_binop_arity(body: &ParsedRuleBody, rule_name: &str, errors: &mut Vec<Va
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_) => return,
+        // Phase 3J: string literal and current_element are atomic — no
+        // sub-expressions to descend into.
+        ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::CurrentElement(_) => return,
     };
     if let Some(args) = args {
         if args.len() != 2 {
@@ -851,6 +861,9 @@ fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
             out.insert(b.value_measure.clone());
             out.insert(b.weight_measure.clone());
         }
+        // Phase 3J: string literal and current_element introduce no
+        // measure dependency. current_element resolves via the dim axis.
+        ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::CurrentElement(_) => {}
     }
 }
 
@@ -1104,6 +1117,8 @@ fn uses_time_series(body: &ParsedRuleBody) -> bool {
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_) => false,
+        // Phase 3J: string-domain expressions are not time-series.
+        ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::CurrentElement(_) => false,
     }
 }
 
@@ -1182,6 +1197,8 @@ fn uses_actual_ref(body: &ParsedRuleBody) -> bool {
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_) => false,
+        // Phase 3J: string-domain expressions never reference actuals.
+        ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::CurrentElement(_) => false,
     }
 }
 
@@ -1371,6 +1388,8 @@ fn find_cross_coord_nesting(body: &ParsedRuleBody) -> Option<String> {
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_)
         | ParsedRuleBody::IsElement(_) => None,
+        // Phase 3J: string-domain primitives are local — no cross-coord.
+        ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::CurrentElement(_) => None,
     }
 }
 
@@ -1918,6 +1937,8 @@ fn uses_anchor_function(body: &ParsedRuleBody) -> bool {
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_) => false,
+        // Phase 3J: string-domain primitives don't reference anchors.
+        ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::CurrentElement(_) => false,
     }
 }
 
@@ -2323,6 +2344,19 @@ fn walk_is_element_and_over(
             walk_is_element_and_over(&b.mu, rule_name, dim_names, known_measures, errors);
             walk_is_element_and_over(&b.sigma, rule_name, dim_names, known_measures, errors);
         }
+        // Phase 3J: string literal — atomic, no descent. current_element
+        // — MC1023 check on the dim name.
+        ParsedRuleBody::StrLiteral(_) => {}
+        ParsedRuleBody::CurrentElement(b) => {
+            if !dim_names.contains_key(b.current_element.as_str()) {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "rule {rule_name:?}: current_element references unknown dimension {:?} (MC1023)",
+                        b.current_element
+                    ),
+                });
+            }
+        }
     }
 }
 
@@ -2401,7 +2435,10 @@ fn walk_predict_arity(
         | ParsedRuleBody::AvgOver(_)
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
-        | ParsedRuleBody::WAvgOver(_) => {}
+        | ParsedRuleBody::WAvgOver(_)
+        // Phase 3J: string-domain leaves
+        | ParsedRuleBody::StrLiteral(_)
+        | ParsedRuleBody::CurrentElement(_) => {}
         ParsedRuleBody::Add(b) => b
             .add
             .iter()
@@ -2491,5 +2528,511 @@ fn walk_predict_arity(
             walk_predict_arity(&b.mu, rule_name, models, errors);
             walk_predict_arity(&b.sigma, rule_name, models, errors);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3J item 1 + Amendment §1: Str type-context validation
+//
+// `ScalarValue::Str` is first-class in expression evaluation but bounded —
+// it is allowed in: string-literal positions, `current_element` returns,
+// `is_element` / `scenario_ref` second-arg slots, and string-equality
+// (`==` / `!=`) operands. It is rejected in: arithmetic operators (MC1026),
+// numeric ordering (`<`, `>`, `<=`, `>=` — MC1028), truthy contexts like
+// `if` conditions / `and` / `or` / `not` operands (MC1027 extended per
+// Amendment §1), comparisons mixing Str and F64 (MC1027), and as a rule
+// body's outermost return value (MC2058).
+//
+// Codes are emitted as `ValidationError::Schema { message: "... (MCxxxx)" }`
+// matching the Phase 3I MC2057 pattern. The literal code text in the
+// message is the contract — tests assert `format!("{e:?}").contains("MC1026")`.
+// ---------------------------------------------------------------------------
+
+/// Static type produced by an expression. Used by the type-context check
+/// to decide whether a Str-domain value flows into a numeric or truthy
+/// context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExprStaticType {
+    /// Statically known F64 (or Null). Numeric domain.
+    F64,
+    /// Statically known Str. Returned by `StrLiteral`, `current_element`,
+    /// and string equality operators (which return F64(0/1) — but for
+    /// type-context purposes the value is numeric; see special handling
+    /// below for `==` / `!=` operands themselves).
+    Str,
+    /// Indeterminate — could be either domain (e.g., a measure ref might
+    /// return Null at runtime, or `Coalesce` of a mixed-type vararg, or
+    /// any function whose return is conditional on input). The type
+    /// check is permissive when either operand is Indeterminate; the
+    /// runtime safety net (eval-time type checks in mc-core) catches
+    /// what static analysis misses.
+    Indeterminate,
+}
+
+/// Walk a parsed body and infer its static return type. This is a
+/// best-effort check — `Indeterminate` is returned for any node whose
+/// type depends on runtime values. The check is sound (never reports
+/// `Str` for a numeric expression or vice versa) but incomplete (some
+/// Str-typed expressions may be reported as Indeterminate, in which case
+/// the runtime safety net catches them).
+fn expr_static_type(body: &ParsedRuleBody) -> ExprStaticType {
+    use ExprStaticType as T;
+    match body {
+        // Phase 3J: string-domain primitives.
+        ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::CurrentElement(_) => T::Str,
+        // Numeric primitives + every arithmetic / comparison / logical /
+        // function call returning F64.
+        ParsedRuleBody::Const(_)
+        | ParsedRuleBody::PeriodIndex(_)
+        | ParsedRuleBody::AnchorIndex(_)
+        | ParsedRuleBody::IsPast(_)
+        | ParsedRuleBody::IsCurrent(_)
+        | ParsedRuleBody::IsFuture(_)
+        | ParsedRuleBody::PeriodsSinceAnchor(_)
+        | ParsedRuleBody::PeriodsToEnd(_)
+        | ParsedRuleBody::Add(_)
+        | ParsedRuleBody::Sub(_)
+        | ParsedRuleBody::Mul(_)
+        | ParsedRuleBody::Div(_)
+        | ParsedRuleBody::Gt(_)
+        | ParsedRuleBody::Lt(_)
+        | ParsedRuleBody::Gte(_)
+        | ParsedRuleBody::Lte(_)
+        | ParsedRuleBody::Eq(_)
+        | ParsedRuleBody::Neq(_)
+        | ParsedRuleBody::And(_)
+        | ParsedRuleBody::Or(_)
+        | ParsedRuleBody::Not(_)
+        | ParsedRuleBody::Abs(_)
+        | ParsedRuleBody::SafeDiv(_)
+        | ParsedRuleBody::Clamp(_)
+        | ParsedRuleBody::ActualRef(_)
+        | ParsedRuleBody::Prev(_)
+        | ParsedRuleBody::Lag(_)
+        | ParsedRuleBody::Cumulative(_)
+        | ParsedRuleBody::RollingAvg(_)
+        | ParsedRuleBody::Benchmark(_)
+        | ParsedRuleBody::Lookup(_)
+        | ParsedRuleBody::Bucket(_)
+        | ParsedRuleBody::SumOver(_)
+        | ParsedRuleBody::Predict(_)
+        | ParsedRuleBody::Calibrate(_)
+        | ParsedRuleBody::Exp(_)
+        | ParsedRuleBody::NormCdf(_)
+        | ParsedRuleBody::Pow(_)
+        | ParsedRuleBody::Sqrt(_)
+        | ParsedRuleBody::Ln(_)
+        | ParsedRuleBody::Log10(_)
+        | ParsedRuleBody::Round(_)
+        | ParsedRuleBody::Floor(_)
+        | ParsedRuleBody::Ceil(_)
+        | ParsedRuleBody::Mod(_)
+        | ParsedRuleBody::NormInv(_)
+        | ParsedRuleBody::IsElement(_)
+        | ParsedRuleBody::AvgOver(_)
+        | ParsedRuleBody::MinOver(_)
+        | ParsedRuleBody::MaxOver(_)
+        | ParsedRuleBody::WAvgOver(_) => T::F64,
+        // `Ref` is statically F64 — measure values flow through eval as
+        // F64 or Null; Phase 3J explicitly forbids Str-stored cells.
+        ParsedRuleBody::Ref(_) => T::F64,
+        // Conditional return type: `if`, `if_null`, and `coalesce` may
+        // mix Str and F64 across branches; we cannot statically prove
+        // the resulting type without unifying the branches. Return
+        // Indeterminate; the runtime check catches Str-in-numeric
+        // contexts.
+        ParsedRuleBody::If(_) | ParsedRuleBody::IfNull(_) | ParsedRuleBody::Coalesce(_) => {
+            T::Indeterminate
+        }
+        ParsedRuleBody::Min(_) | ParsedRuleBody::Max(_) => T::F64,
+    }
+}
+
+/// Top-level entry: walk every rule body and emit the four type-context
+/// errors (MC1026, MC1027, MC1028, MC2058).
+fn check_str_type_context(
+    _parsed: &ParsedModel,
+    validated_rules: &[ValidatedRule],
+    errors: &mut Vec<ValidationError>,
+) {
+    for r in validated_rules {
+        // MC2058: rule body's outermost expression is statically Str.
+        // (e.g., `current_element(Channel)` or `"Houston"` as the body.)
+        if expr_static_type(&r.body) == ExprStaticType::Str {
+            errors.push(ValidationError::Schema {
+                message: format!(
+                    "rule {:?}: body returns a non-numeric (Str) value; \
+                     rule bodies must evaluate to F64 or Null (MC2058)",
+                    r.name
+                ),
+            });
+        }
+        check_str_type_context_walk(&r.body, &r.name, errors);
+    }
+}
+
+/// Recursive walker. For each node that takes children, validate the
+/// children's static types match the node's type contract, then recurse
+/// into them.
+fn check_str_type_context_walk(
+    body: &ParsedRuleBody,
+    rule_name: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    use ExprStaticType as T;
+
+    // Reject Str in arithmetic operands (MC1026).
+    let mut check_numeric_args = |args: &[ParsedRuleBody], op: &str| {
+        for a in args {
+            if expr_static_type(a) == T::Str {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "rule {rule_name:?}: {op} operator received a non-numeric (Str) operand; \
+                         arithmetic on strings is not supported (MC1026)"
+                    ),
+                });
+            }
+        }
+    };
+
+    // Reject Str in numeric ordering operands (MC1028).
+    let check_ordering = |left: &ParsedRuleBody,
+                          right: &ParsedRuleBody,
+                          op: &str,
+                          errors: &mut Vec<ValidationError>| {
+        if expr_static_type(left) == T::Str || expr_static_type(right) == T::Str {
+            errors.push(ValidationError::Schema {
+                message: format!(
+                    "rule {rule_name:?}: {op} operator received a Str operand; \
+                     locale-dependent string ordering is not supported (MC1028)"
+                ),
+            });
+        }
+    };
+
+    // Reject mixed-type or Str-in-truthy-context (MC1027). Used for
+    // `==` / `!=` (mismatch) and for `if` / `and` / `or` / `not`
+    // (truthy context per Amendment §1).
+    let check_eq_types = |left: &ParsedRuleBody,
+                          right: &ParsedRuleBody,
+                          op: &str,
+                          errors: &mut Vec<ValidationError>| {
+        let (lt, rt) = (expr_static_type(left), expr_static_type(right));
+        if (lt == T::Str && rt == T::F64) || (lt == T::F64 && rt == T::Str) {
+            errors.push(ValidationError::Schema {
+                message: format!(
+                    "rule {rule_name:?}: {op} compares Str with F64; comparisons must \
+                     have matching types (MC1027)"
+                ),
+            });
+        }
+    };
+
+    let check_truthy = |operand: &ParsedRuleBody, op: &str, errors: &mut Vec<ValidationError>| {
+        if expr_static_type(operand) == T::Str {
+            errors.push(ValidationError::Schema {
+                message: format!(
+                    "rule {rule_name:?}: {op} received a Str operand in a truthy context; \
+                     Str values must be consumed by == / != before reaching boolean \
+                     logic (MC1027)"
+                ),
+            });
+        }
+    };
+
+    match body {
+        ParsedRuleBody::Add(b) => {
+            check_numeric_args(&b.add, "+");
+            for a in &b.add {
+                check_str_type_context_walk(a, rule_name, errors);
+            }
+        }
+        ParsedRuleBody::Sub(b) => {
+            check_numeric_args(&b.sub, "-");
+            for a in &b.sub {
+                check_str_type_context_walk(a, rule_name, errors);
+            }
+        }
+        ParsedRuleBody::Mul(b) => {
+            check_numeric_args(&b.mul, "*");
+            for a in &b.mul {
+                check_str_type_context_walk(a, rule_name, errors);
+            }
+        }
+        ParsedRuleBody::Div(b) => {
+            check_numeric_args(&b.div, "/");
+            for a in &b.div {
+                check_str_type_context_walk(a, rule_name, errors);
+            }
+        }
+        ParsedRuleBody::Mod(b) => {
+            if expr_static_type(&b.dividend) == T::Str || expr_static_type(&b.divisor) == T::Str {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "rule {rule_name:?}: mod() received a Str operand; \
+                         arithmetic on strings is not supported (MC1026)"
+                    ),
+                });
+            }
+            check_str_type_context_walk(&b.dividend, rule_name, errors);
+            check_str_type_context_walk(&b.divisor, rule_name, errors);
+        }
+        ParsedRuleBody::Pow(b) => {
+            if expr_static_type(&b.base) == T::Str || expr_static_type(&b.exponent) == T::Str {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "rule {rule_name:?}: pow() received a Str operand; \
+                         arithmetic on strings is not supported (MC1026)"
+                    ),
+                });
+            }
+            check_str_type_context_walk(&b.base, rule_name, errors);
+            check_str_type_context_walk(&b.exponent, rule_name, errors);
+        }
+        // Numeric ordering — MC1028.
+        ParsedRuleBody::Gt(b) => {
+            check_ordering(&b.left, &b.right, ">", errors);
+            check_str_type_context_walk(&b.left, rule_name, errors);
+            check_str_type_context_walk(&b.right, rule_name, errors);
+        }
+        ParsedRuleBody::Lt(b) => {
+            check_ordering(&b.left, &b.right, "<", errors);
+            check_str_type_context_walk(&b.left, rule_name, errors);
+            check_str_type_context_walk(&b.right, rule_name, errors);
+        }
+        ParsedRuleBody::Gte(b) => {
+            check_ordering(&b.left, &b.right, ">=", errors);
+            check_str_type_context_walk(&b.left, rule_name, errors);
+            check_str_type_context_walk(&b.right, rule_name, errors);
+        }
+        ParsedRuleBody::Lte(b) => {
+            check_ordering(&b.left, &b.right, "<=", errors);
+            check_str_type_context_walk(&b.left, rule_name, errors);
+            check_str_type_context_walk(&b.right, rule_name, errors);
+        }
+        // Equality — MC1027 type mismatch when sides differ.
+        ParsedRuleBody::Eq(b) => {
+            check_eq_types(&b.left, &b.right, "==", errors);
+            check_str_type_context_walk(&b.left, rule_name, errors);
+            check_str_type_context_walk(&b.right, rule_name, errors);
+        }
+        ParsedRuleBody::Neq(b) => {
+            check_eq_types(&b.left, &b.right, "!=", errors);
+            check_str_type_context_walk(&b.left, rule_name, errors);
+            check_str_type_context_walk(&b.right, rule_name, errors);
+        }
+        // Truthy contexts (Amendment §1) — MC1027 extended.
+        ParsedRuleBody::And(b) => {
+            check_truthy(&b.left, "and", errors);
+            check_truthy(&b.right, "and", errors);
+            check_str_type_context_walk(&b.left, rule_name, errors);
+            check_str_type_context_walk(&b.right, rule_name, errors);
+        }
+        ParsedRuleBody::Or(b) => {
+            check_truthy(&b.left, "or", errors);
+            check_truthy(&b.right, "or", errors);
+            check_str_type_context_walk(&b.left, rule_name, errors);
+            check_str_type_context_walk(&b.right, rule_name, errors);
+        }
+        ParsedRuleBody::Not(b) => {
+            check_truthy(&b.operand, "not", errors);
+            check_str_type_context_walk(&b.operand, rule_name, errors);
+        }
+        ParsedRuleBody::If(b) => {
+            check_truthy(&b.condition, "if() condition", errors);
+            check_str_type_context_walk(&b.condition, rule_name, errors);
+            check_str_type_context_walk(&b.then_branch, rule_name, errors);
+            check_str_type_context_walk(&b.else_branch, rule_name, errors);
+        }
+        // Composite numeric functions — recurse and forbid Str inputs.
+        ParsedRuleBody::Abs(b) => {
+            if expr_static_type(&b.operand) == T::Str {
+                errors.push(ValidationError::Schema {
+                    message: format!("rule {rule_name:?}: abs() received a Str operand (MC1026)"),
+                });
+            }
+            check_str_type_context_walk(&b.operand, rule_name, errors);
+        }
+        ParsedRuleBody::Sqrt(b)
+        | ParsedRuleBody::Ln(b)
+        | ParsedRuleBody::Log10(b)
+        | ParsedRuleBody::Round(b)
+        | ParsedRuleBody::Floor(b)
+        | ParsedRuleBody::Ceil(b)
+        | ParsedRuleBody::Exp(b) => {
+            if expr_static_type(&b.operand) == T::Str {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "rule {rule_name:?}: math primitive received a Str operand (MC1026)"
+                    ),
+                });
+            }
+            check_str_type_context_walk(&b.operand, rule_name, errors);
+        }
+        ParsedRuleBody::SafeDiv(b) => {
+            if expr_static_type(&b.numerator) == T::Str
+                || expr_static_type(&b.denominator) == T::Str
+            {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "rule {rule_name:?}: safe_div() received a Str operand (MC1026)"
+                    ),
+                });
+            }
+            check_str_type_context_walk(&b.numerator, rule_name, errors);
+            check_str_type_context_walk(&b.denominator, rule_name, errors);
+            check_str_type_context_walk(&b.default, rule_name, errors);
+        }
+        ParsedRuleBody::Clamp(b) => {
+            if expr_static_type(&b.value) == T::Str
+                || expr_static_type(&b.lo) == T::Str
+                || expr_static_type(&b.hi) == T::Str
+            {
+                errors.push(ValidationError::Schema {
+                    message: format!("rule {rule_name:?}: clamp() received a Str operand (MC1026)"),
+                });
+            }
+            check_str_type_context_walk(&b.value, rule_name, errors);
+            check_str_type_context_walk(&b.lo, rule_name, errors);
+            check_str_type_context_walk(&b.hi, rule_name, errors);
+        }
+        ParsedRuleBody::Min(b) | ParsedRuleBody::Max(b) => {
+            for a in &b.args {
+                if expr_static_type(a) == T::Str {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "rule {rule_name:?}: min/max received a Str operand (MC1026)"
+                        ),
+                    });
+                }
+                check_str_type_context_walk(a, rule_name, errors);
+            }
+        }
+        // `coalesce` and `if_null` may legitimately take Str-typed
+        // children if the resulting expression is consumed by another
+        // string operator. We recurse without rejecting Str directly
+        // here; the parent context catches Str in numeric / truthy
+        // positions.
+        ParsedRuleBody::Coalesce(b) => {
+            for a in &b.args {
+                check_str_type_context_walk(a, rule_name, errors);
+            }
+        }
+        ParsedRuleBody::IfNull(b) => {
+            for a in &b.if_null {
+                check_str_type_context_walk(a, rule_name, errors);
+            }
+        }
+        // NormCdf / NormInv take 3 numeric args.
+        ParsedRuleBody::NormCdf(b) => {
+            if expr_static_type(&b.x) == T::Str
+                || expr_static_type(&b.mu) == T::Str
+                || expr_static_type(&b.sigma) == T::Str
+            {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "rule {rule_name:?}: norm_cdf received a Str operand (MC1026)"
+                    ),
+                });
+            }
+            check_str_type_context_walk(&b.x, rule_name, errors);
+            check_str_type_context_walk(&b.mu, rule_name, errors);
+            check_str_type_context_walk(&b.sigma, rule_name, errors);
+        }
+        ParsedRuleBody::NormInv(b) => {
+            if expr_static_type(&b.p) == T::Str
+                || expr_static_type(&b.mu) == T::Str
+                || expr_static_type(&b.sigma) == T::Str
+            {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "rule {rule_name:?}: norm_inv received a Str operand (MC1026)"
+                    ),
+                });
+            }
+            check_str_type_context_walk(&b.p, rule_name, errors);
+            check_str_type_context_walk(&b.mu, rule_name, errors);
+            check_str_type_context_walk(&b.sigma, rule_name, errors);
+        }
+        // Calibrate value must be numeric.
+        ParsedRuleBody::Calibrate(b) => {
+            if expr_static_type(&b.value) == T::Str {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "rule {rule_name:?}: calibrate() received a Str operand (MC1026)"
+                    ),
+                });
+            }
+            check_str_type_context_walk(&b.value, rule_name, errors);
+        }
+        // Predict's features must each be numeric.
+        ParsedRuleBody::Predict(b) => {
+            for f in &b.features {
+                if expr_static_type(f) == T::Str {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "rule {rule_name:?}: predict() received a Str feature operand (MC1026)"
+                        ),
+                    });
+                }
+                check_str_type_context_walk(f, rule_name, errors);
+            }
+        }
+        // Lag / RollingAvg's second arg is numeric (periods/window).
+        ParsedRuleBody::Lag(b) => {
+            if expr_static_type(&b.periods) == T::Str {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "rule {rule_name:?}: lag() periods argument must be numeric (MC1026)"
+                    ),
+                });
+            }
+            check_str_type_context_walk(&b.periods, rule_name, errors);
+        }
+        ParsedRuleBody::RollingAvg(b) => {
+            if expr_static_type(&b.window) == T::Str {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "rule {rule_name:?}: rolling_avg() window must be numeric (MC1026)"
+                    ),
+                });
+            }
+            check_str_type_context_walk(&b.window, rule_name, errors);
+        }
+        // Bucket / Benchmark / Lookup keys are evaluated against ref-data
+        // tables — they tolerate either F64 or Str values via lookup-key
+        // coercion. No type-context check on those keys.
+        ParsedRuleBody::Bucket(b) => {
+            check_str_type_context_walk(&b.value, rule_name, errors);
+        }
+        ParsedRuleBody::Benchmark(b) => {
+            check_str_type_context_walk(&b.key_expr, rule_name, errors);
+        }
+        ParsedRuleBody::Lookup(b) => {
+            for k in &b.key_exprs {
+                check_str_type_context_walk(k, rule_name, errors);
+            }
+        }
+        // Leaves (no children to recurse into).
+        ParsedRuleBody::Const(_)
+        | ParsedRuleBody::Ref(_)
+        | ParsedRuleBody::PeriodIndex(_)
+        | ParsedRuleBody::AnchorIndex(_)
+        | ParsedRuleBody::IsPast(_)
+        | ParsedRuleBody::IsCurrent(_)
+        | ParsedRuleBody::IsFuture(_)
+        | ParsedRuleBody::PeriodsSinceAnchor(_)
+        | ParsedRuleBody::PeriodsToEnd(_)
+        | ParsedRuleBody::ActualRef(_)
+        | ParsedRuleBody::Prev(_)
+        | ParsedRuleBody::Cumulative(_)
+        | ParsedRuleBody::SumOver(_)
+        | ParsedRuleBody::IsElement(_)
+        | ParsedRuleBody::AvgOver(_)
+        | ParsedRuleBody::MinOver(_)
+        | ParsedRuleBody::MaxOver(_)
+        | ParsedRuleBody::WAvgOver(_)
+        | ParsedRuleBody::StrLiteral(_)
+        | ParsedRuleBody::CurrentElement(_) => {}
     }
 }

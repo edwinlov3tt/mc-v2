@@ -3900,20 +3900,19 @@ fn test_is_element_unknown_element_fails_validation_with_mc1022() {
 }
 
 #[test]
-fn test_is_element_with_quoted_string_outside_call_fails_with_mc1024() {
-    // String literal outside is_element() — MC1024 (parse-time).
+fn test_is_element_with_quoted_string_outside_call_fails_with_mc1027() {
+    // Phase 3J Item 1 + Amendment §1: string literals are now first-class
+    // in expression evaluation. The previous Phase 3I MC1024 catch-all
+    // (parser-side reject) is replaced by Phase 3J's type-context check
+    // (validator-side). `Spend == "high"` no longer fails at parse — it
+    // parses to `Eq(Ref{Spend}, StrLiteral("high"))` and the validator
+    // catches the F64-vs-Str mismatch with MC1027.
     let yaml = simple_model(r#"if(Spend == \"high\", 1, 0)"#, r#""Spend""#);
     let result = mc_model::load_str(&yaml, Some("test".into()));
-    assert!(
-        result.is_err(),
-        "string literal outside is_element must fail"
-    );
+    assert!(result.is_err(), "Str compared with F64 measure must fail");
     let errs = result.unwrap_err();
-    let any = errs.iter().any(|e| {
-        let msg = format!("{e:?}");
-        msg.contains("MC1024") || msg.contains("StringLiteralMisplaced")
-    });
-    assert!(any, "expected MC1024 in errors: {errs:?}");
+    let any = errs.iter().any(|e| format!("{e:?}").contains("MC1027"));
+    assert!(any, "expected MC1027 in errors: {errs:?}");
 }
 
 // ============================================================================

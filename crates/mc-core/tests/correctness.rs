@@ -375,6 +375,12 @@ fn collect_self_refs(expr: &mc_core::Expr) -> std::collections::HashSet<mc_core:
                 acc.insert(*value);
                 acc.insert(*weight);
             }
+            // Phase 3J: string-domain primitives don't introduce SelfRef.
+            mc_core::Expr::StrLiteral(_) | mc_core::Expr::CurrentElementName(_) => {}
+            mc_core::Expr::StrEq(a, b) | mc_core::Expr::StrNeq(a, b) => {
+                walk(a, acc);
+                walk(b, acc);
+            }
         }
     }
     out

@@ -538,8 +538,31 @@ fn compile_expr(
         ParsedRuleBody::Lt(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Lt),
         ParsedRuleBody::Gte(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Gte),
         ParsedRuleBody::Lte(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Lte),
-        ParsedRuleBody::Eq(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Eq),
-        ParsedRuleBody::Neq(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Neq),
+        // Phase 3J item 1: dispatch `==` / `!=` to `Expr::StrEq` /
+        // `Expr::StrNeq` when at least one side statically returns
+        // `Str`. The validator (MC1027) has already rejected mixed
+        // Str/F64 operands, so by the time we reach here either:
+        //   - both sides are F64 (or Indeterminate) → use Expr::Eq/Neq
+        //   - both sides are Str (or one Str, other Indeterminate that
+        //     bottoms to Str at eval time) → use Expr::StrEq/StrNeq
+        ParsedRuleBody::Eq(b) => {
+            if needs_str_compare(&b.left, &b.right) {
+                let lhs = compile_expr(&b.left, refs, validated)?;
+                let rhs = compile_expr(&b.right, refs, validated)?;
+                Ok(Expr::StrEq(Box::new(lhs), Box::new(rhs)))
+            } else {
+                compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Eq)
+            }
+        }
+        ParsedRuleBody::Neq(b) => {
+            if needs_str_compare(&b.left, &b.right) {
+                let lhs = compile_expr(&b.left, refs, validated)?;
+                let rhs = compile_expr(&b.right, refs, validated)?;
+                Ok(Expr::StrNeq(Box::new(lhs), Box::new(rhs)))
+            } else {
+                compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Neq)
+            }
+        }
         // Phase 3E: logical
         ParsedRuleBody::And(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::And),
         ParsedRuleBody::Or(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Or),
@@ -791,7 +814,45 @@ fn compile_expr(
             let weight_measure = lookup_measure_id(refs, validated, &b.weight_measure)?;
             Ok(Expr::WAvgOver(dim_id, value_measure, weight_measure))
         }
+        // Phase 3J item 1: string literal lifts directly to the kernel
+        // `Expr::StrLiteral`. The validator pre-clears Str-in-disallowed
+        // contexts (MC1026/27/28, MC2058); compile is straight rewrite.
+        ParsedRuleBody::StrLiteral(b) => Ok(Expr::StrLiteral(b.str_literal.clone())),
+        // Phase 3J item 2: current_element(Dim). Dim is resolved at
+        // compile time; unknown dim names should have been caught by
+        // validate.
+        ParsedRuleBody::CurrentElement(b) => {
+            let dim_id =
+                refs.dimensions
+                    .get(&b.current_element)
+                    .copied()
+                    .ok_or(EngineError::Internal(
+                        "compile: current_element references unknown dimension",
+                    ))?;
+            Ok(Expr::CurrentElementName(dim_id))
+        }
     }
+}
+
+/// Phase 3J item 1: decide whether a `==` / `!=` should compile to the
+/// string-domain variants `Expr::StrEq` / `Expr::StrNeq`. Returns true
+/// iff at least one operand is a static-Str-returning expression
+/// (`StrLiteral` or `current_element`). The validator (MC1027) has
+/// rejected mixed Str/F64 operands; this helper just picks the right
+/// variant for the cases that survive validate.
+///
+/// We deliberately do NOT walk through `if` / `if_null` / `coalesce` to
+/// detect "both branches return Str" — those are `Indeterminate` per
+/// `expr_static_type`, and the runtime `Expr::Eq` falls back to Null on
+/// non-numeric operands, which is the correct behavior.
+fn needs_str_compare(left: &ParsedRuleBody, right: &ParsedRuleBody) -> bool {
+    let is_str_like = |b: &ParsedRuleBody| {
+        matches!(
+            b,
+            ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::CurrentElement(_)
+        )
+    };
+    is_str_like(left) || is_str_like(right)
 }
 
 fn compile_binop_pair(
