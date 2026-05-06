@@ -2,7 +2,7 @@
 
 > **What's live right now.** Update whenever a phase ships, a gate flips, or a deferral closes.
 
-**Last updated:** 2026-05-06 — Phase 6A.2 shipped. Closes 7 must-fix items from the post-6A audit (Sonnet × 3 lenses + Codex independent verification under `docs/audits/`): write-log replay via new `LoadPolicy` enum (P0 — write-then-read coherence restored); trace emits readable formula strings + array-shaped `inputs` with `child_count` (envelope `schema_version` bumped to `"1.1"` for trace only); MCP numeric coercion + parsed `structured` JsonValue across all 7 Phase 6A verbs; `mc tessera transform` now consumes real `mc_recipe::Recipe` schema; incremental SQL `WHERE` injection bug fixed; query envelope adds `limit`/`offset`/`count`/`truncated`/`next_offset` for pagination — tag `phase-6a-2-correctness-patch` at `7888f20`. Block 2/3 deferred to Phase 6A.3 (multi-cell whatif, single-compile sweep, `--metric-where`, `--group-by`, `write_id`, `ureq`, `would_affect` rename — independently scopable). **NBA totals cartridge** continues to pass 14/14 goldens on main (closed by 6A.1 CRIT-1's eval-site refactor). **763 / 0 / 5 tests.** 7 crates in workspace: `mc-core`, `mc-fixtures`, `mc-model`, `mc-cli`, `mc-recipe`, `mc-drivers`, `mc-tessera`. Toolchain stays Rust 1.78. **6 placeholder crate names reserved on crates.io** (`mosaic-cli`, `mosaic-engine`, `mosaic-lnm`, `mosaic-core`, `mosaic-recipe`, `mosaic-tessera`) — pre-distribution name-squatting protection ahead of Phase 6C+ release packaging.
+**Last updated:** 2026-05-06 — Phase 6A.3 shipped. Closes 7 deferred items from Phase 6A.2 Block 2/3: multi-cell `whatif` (atomic, snapshot-rollback on failure); single-compile `sweep` (snapshot/rollback per point instead of YAML reload); `sweep --metric-where` (filter scope reuses query parser); `query --group-by` with multi-dim cross-product (closes the per-market-aggregate Python loop pattern); `write_id` monotonic counter on writes + `as_of_write_id` echo on query envelope (durable handle for diff/audit); `ureq` replaces curl subprocess in `mc tessera transform` (auth headers, redirects, cert validation now work); `whatif --dry-run` field rename `would_affect` → `requested_outputs` — tag `phase-6a-3-agent-surface-polish` at `46b1f7a`. **The Phase 6A agent surface is now complete.** All 7 verbs + 12 MCP tools + envelope discipline + decision matrices closed; the next natural phase is either Phase 3I (formula language completion + indicators + math primitives) or Phase 6B (web UI). **785 / 0 / 5 tests** (763 → 785, +22 regression tests in 6A.3). 7 crates in workspace: `mc-core`, `mc-fixtures`, `mc-model`, `mc-cli`, `mc-recipe`, `mc-drivers`, `mc-tessera`. Toolchain stays Rust 1.78. **6 placeholder crate names reserved on crates.io** (`mosaic-cli`, `mosaic-engine`, `mosaic-lnm`, `mosaic-core`, `mosaic-recipe`, `mosaic-tessera`).
 
 **Selected commit / tag index:**
 - Phase 1A kernel: `4aa674a` / Phase 1B+2A: `48d52e9` (tag `phase-2a-cold-path-baseline`) / Phase 2B: `6ea58ab` (tag `phase-2b-consolidation-fast-path`) / Phase 2C: `789db15` (tag `phase-2c-workload-baseline`) / Phase 2D: `0678a98` (tag `phase-2d-bitset-and-invalidated-fix`)
@@ -10,9 +10,9 @@
 - Phase 3E–3G: `78a2193` (tag `phase-3e-3f-3g-formula-expansion`) / Phase 3F.1: `8adbe2b` / Phase 3H: `99477ef` (tag `phase-3h-fitted-model-evaluation`)
 - Phase 4A: `36af56c` (tag `phase-4a-mosaic-plugin`) / Phase 4B: `b5b6229` (tag `phase-4b-python-adapters`)
 - Phase 5A: `2f20d24` (tag `phase-5a-tessera-core`) / Phase 5B: `2f20d24` (tag `phase-5b-llm-recipe-authoring`) / Phase 5C: `0790bce` (tag `phase-5c-driver-expansion`)
-- Phase 6A: `e696379` (tag `phase-6a-agent-ready-cli`) / Phase 6A.1: `44a7437` (tag `phase-6a-1-review-fixes`) / Phase 6A.2: `7888f20` (tag `phase-6a-2-correctness-patch`)
+- Phase 6A: `e696379` (tag `phase-6a-agent-ready-cli`) / Phase 6A.1: `44a7437` (tag `phase-6a-1-review-fixes`) / Phase 6A.2: `7888f20` (tag `phase-6a-2-correctness-patch`) / Phase 6A.3: `46b1f7a` (tag `phase-6a-3-agent-surface-polish`)
 
-**Branch:** `main` at HEAD `7888f20` (tracking `origin/main` at github.com/edwinlov3tt/mc-v2)
+**Branch:** `main` at HEAD `46b1f7a` (tracking `origin/main` at github.com/edwinlov3tt/mc-v2)
 
 ---
 
@@ -73,7 +73,7 @@
 | Build | `cargo build --release --workspace` | ✓ zero warnings |
 | Format | `cargo fmt --check --all` | ✓ |
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` | ✓ |
-| Tests | `cargo test --workspace` | ✓ **763 / 0 / 5** (5 ignored require live external services — Postgres + DuckDB-Postgres scanner; documented as acceptable) |
+| Tests | `cargo test --workspace` | ✓ **785 / 0 / 5** (5 ignored require live external services — Postgres + DuckDB-Postgres scanner; documented as acceptable) |
 | Determinism (10×) | `for i in $(seq 1 10); do cargo test --workspace -q ...; done` | ✓ verified at 731 prior; not re-run for 6A.2 (no concurrency/ordering changes — see process-notes Rule 11 §"Lean gates") |
 | CLI demo (Rust path) | `./target/release/mc demo` | ✓ matches brief §4.6 |
 | CLI demo (YAML path) | `./target/release/mc demo --model crates/mc-model/examples/acme.yaml` | ✓ matches brief §4.6 |

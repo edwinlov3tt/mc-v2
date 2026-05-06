@@ -4,7 +4,7 @@
 >
 > Read this before inventing a phase name or starting work that isn't already on the list. If a new phase is needed and it isn't here, add it here first (and link the ADR explaining the decision).
 
-**Last updated:** 2026-05-06 (post-Phase 6A.2 agent surface correctness patch; 763 / 0 / 5 tests; HEAD `7888f20`)
+**Last updated:** 2026-05-06 (post-Phase 6A.3 agent surface polish; 785 / 0 / 5 tests; HEAD `46b1f7a`)
 **Maintained by:** project lead. New sub-phases require an ADR in [`../decisions/`](../decisions/).
 
 ---
@@ -58,7 +58,7 @@ Productization beyond the first usable product (multi-tenancy, customer-facing a
 | **6A** | Agent-Ready CLI — 7 verbs (`query`, `whatif`, `trace`, `sweep`, `diff`, `write`, `transform`) + 12 MCP tools + JSON envelope discipline + stable exit codes | **complete** | `phase-6a-agent-ready-cli` (`e696379`) |
 | **6A.1** | Review-driven fixes — CRIT-1 name-keyed standardization, MAJ-1 `time_format` wiring, CRIT-2/3 envelope discipline + I/O exit codes, MIN-1/4/5/6 safety polish, MAJ-2 atomic schedule write | **complete** (report at [`../reports/phase-6a-1-completion-report.md`](../reports/phase-6a-1-completion-report.md)) | `phase-6a-1-review-fixes` (`44a7437`) |
 | **6A.2** | Agent surface correctness patch — write-log replay (P0 LoadPolicy), trace formula readable (no Debug AST), trace JSON inputs array + schema_version "1.1", MCP numeric coercion + parsed structured, transform consumes real mc_recipe schema, incremental SQL `WHERE` injection bug, query pagination/truncation envelope | **complete** (report at [`../reports/phase-6a-2-completion-report.md`](../reports/phase-6a-2-completion-report.md)) | `phase-6a-2-correctness-patch` (`7888f20`) |
-| **6A.3** | Block 2/3 deferred from 6A.2 — multi-cell whatif, single-compile sweep, sweep `--metric-where`, query `--group-by`, write `revision_id`, ureq-instead-of-curl, whatif `would_affect` rename | not started (queued; binding scope in 6A.2 handoff §"Block 2") | — |
+| **6A.3** | Agent surface polish — 7 deferred items from 6A.2: multi-cell whatif, single-compile sweep, sweep `--metric-where`, query `--group-by` with cross-product aggregation, write `write_id` + query `as_of_write_id`, ureq-instead-of-curl in transform, whatif `would_affect` → `requested_outputs` rename | **complete** (report at [`../reports/phase-6a-3-completion-report.md`](../reports/phase-6a-3-completion-report.md)) | `phase-6a-3-agent-surface-polish` (`46b1f7a`) |
 | **6B** | UI / web app — drill-down planning grid; navigates the Phase 6A capability layer | not started | — |
 | **7** | Productization (customer-facing Media Partner App + multi-tenancy) | not started | — |
 
