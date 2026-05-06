@@ -3521,3 +3521,1068 @@ rules:
     // arithmetic" still triggers the falsy branch of `not`.
     assert_f64_eq(val, 1.0, "not(Spend - Spend) → true (1.0)");
 }
+
+// ============================================================================
+// Phase 3I — Item 2: Math primitives (pow, sqrt, ln, log10, round, floor,
+// ceil, mod, norm_inv)
+// ============================================================================
+
+/// Evaluate a single-coord expression by stamping it into a derived rule
+/// and reading the result. `inputs` writes Spend / Revenue if needed.
+fn eval_math_primitive(rule_body: &str, deps: &str, inputs: &[(&str, f64)]) -> ScalarValue {
+    let yaml = simple_model(rule_body, deps);
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    for (measure, value) in inputs {
+        write_f64(
+            &mut cube,
+            &compiled.refs,
+            p,
+            &[
+                ("Scenario", "Base"),
+                ("Version", "Working"),
+                ("Time", "P1"),
+                ("Channel", "Web"),
+                ("Market", "US"),
+                ("Measure", measure),
+            ],
+            *value,
+        );
+    }
+    read_value(
+        &mut cube,
+        &compiled.refs,
+        p,
+        &[
+            ("Scenario", "Base"),
+            ("Version", "Working"),
+            ("Time", "P1"),
+            ("Channel", "Web"),
+            ("Market", "US"),
+            ("Measure", "Result"),
+        ],
+    )
+}
+
+#[test]
+fn test_pow_basic() {
+    match eval_math_primitive("pow(2, 10)", "", &[]) {
+        ScalarValue::F64(v) => assert_f64_eq(v, 1024.0, "pow(2,10)"),
+        other => panic!("expected F64, got {other:?}"),
+    }
+    // Negative base + non-integer exp → Null (handoff item 2 W edge case)
+    assert_null(eval_math_primitive("pow(-1, 0.5)", "", &[]), "pow(-1, 0.5)");
+}
+
+#[test]
+fn test_sqrt_basic_and_negative_null() {
+    match eval_math_primitive("sqrt(16)", "", &[]) {
+        ScalarValue::F64(v) => assert_f64_eq(v, 4.0, "sqrt(16)"),
+        other => panic!("expected F64, got {other:?}"),
+    }
+    assert_null(eval_math_primitive("sqrt(-1)", "", &[]), "sqrt(-1)");
+}
+
+#[test]
+fn test_ln_and_negative_null() {
+    match eval_math_primitive("ln(2.718281828459045)", "", &[]) {
+        ScalarValue::F64(v) => assert_f64_eq(v, 1.0, "ln(e) ~= 1"),
+        other => panic!("expected F64, got {other:?}"),
+    }
+    assert_null(eval_math_primitive("ln(0)", "", &[]), "ln(0)");
+    assert_null(eval_math_primitive("ln(-1)", "", &[]), "ln(-1)");
+}
+
+#[test]
+fn test_log10_basic_and_zero_null() {
+    match eval_math_primitive("log10(1000)", "", &[]) {
+        ScalarValue::F64(v) => assert_f64_eq(v, 3.0, "log10(1000)"),
+        other => panic!("expected F64, got {other:?}"),
+    }
+    assert_null(eval_math_primitive("log10(0)", "", &[]), "log10(0)");
+}
+
+#[test]
+fn test_round_floor_ceil() {
+    match eval_math_primitive("round(2.7)", "", &[]) {
+        ScalarValue::F64(v) => assert_f64_eq(v, 3.0, "round(2.7)"),
+        other => panic!("expected F64, got {other:?}"),
+    }
+    match eval_math_primitive("floor(2.9)", "", &[]) {
+        ScalarValue::F64(v) => assert_f64_eq(v, 2.0, "floor(2.9)"),
+        other => panic!("expected F64, got {other:?}"),
+    }
+    match eval_math_primitive("ceil(2.1)", "", &[]) {
+        ScalarValue::F64(v) => assert_f64_eq(v, 3.0, "ceil(2.1)"),
+        other => panic!("expected F64, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_mod_basic_and_zero_divisor_null() {
+    match eval_math_primitive("mod(7, 3)", "", &[]) {
+        ScalarValue::F64(v) => assert_f64_eq(v, 1.0, "mod(7,3)"),
+        other => panic!("expected F64, got {other:?}"),
+    }
+    assert_null(eval_math_primitive("mod(7, 0)", "", &[]), "mod(7,0)");
+}
+
+#[test]
+fn test_norm_inv_basic_and_boundary_null() {
+    // Standard normal: norm_inv(0.5, 0, 1) = 0
+    match eval_math_primitive("norm_inv(0.5, 0, 1)", "", &[]) {
+        ScalarValue::F64(v) => assert!(v.abs() < 1e-6, "norm_inv(0.5, 0, 1) ≈ 0; got {v}"),
+        other => panic!("expected F64, got {other:?}"),
+    }
+    // Boundary: p = 0 or p = 1 → Null
+    assert_null(
+        eval_math_primitive("norm_inv(0, 0, 1)", "", &[]),
+        "norm_inv(0,..)",
+    );
+    assert_null(
+        eval_math_primitive("norm_inv(1, 0, 1)", "", &[]),
+        "norm_inv(1,..)",
+    );
+    // sigma <= 0 → Null
+    assert_null(
+        eval_math_primitive("norm_inv(0.5, 0, 0)", "", &[]),
+        "norm_inv(.., sigma=0)",
+    );
+}
+
+#[test]
+fn test_pow_and_sqrt_equivalence_for_positive() {
+    // Phase 3I item 2 W6 sanity: pow(x, 0.5) == sqrt(x) for positive x.
+    let pow_val = match eval_math_primitive("pow(9, 0.5)", "", &[]) {
+        ScalarValue::F64(v) => v,
+        other => panic!("expected F64, got {other:?}"),
+    };
+    let sqrt_val = match eval_math_primitive("sqrt(9)", "", &[]) {
+        ScalarValue::F64(v) => v,
+        other => panic!("expected F64, got {other:?}"),
+    };
+    assert!(
+        (pow_val - sqrt_val).abs() < 1e-9,
+        "pow(9, 0.5)={pow_val} should equal sqrt(9)={sqrt_val}"
+    );
+}
+
+#[test]
+fn test_norm_inv_inverts_norm_cdf() {
+    // norm_cdf(norm_inv(p, 0, 1), 0, 1) ≈ p for several p in (0, 1).
+    for &p in &[0.1, 0.25, 0.5, 0.75, 0.9, 0.95] {
+        let body = format!("norm_cdf(norm_inv({p}, 0, 1), 0, 1)");
+        match eval_math_primitive(&body, "", &[]) {
+            // Beasley-Springer-Moro central region accuracy is ~1e-4, tail
+            // region ~1e-9. norm_cdf approximation is ~7.5e-8. Combined
+            // round-trip tolerance: 1e-3 is comfortable.
+            ScalarValue::F64(v) => assert!(
+                (v - p).abs() < 1e-3,
+                "norm_cdf(norm_inv({p}, 0, 1), 0, 1) = {v}; expected ≈ {p}"
+            ),
+            other => panic!("expected F64, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn test_math_primitives_propagate_null() {
+    // Spend is not written → Null. Every math primitive should propagate.
+    for body in [
+        "pow(Spend, 2)",
+        "sqrt(Spend)",
+        "ln(Spend)",
+        "log10(Spend)",
+        "round(Spend)",
+        "floor(Spend)",
+        "ceil(Spend)",
+        "mod(Spend, 3)",
+        "norm_inv(Spend, 0, 1)",
+    ] {
+        let val = eval_math_primitive(body, r#""Spend""#, &[]);
+        assert_null(val, body);
+    }
+}
+
+// ============================================================================
+// Phase 3I — Item 6: ifs() / switch() (compile to nested If)
+// ============================================================================
+
+#[test]
+fn test_ifs_three_branches_picks_correct() {
+    // ifs(Spend > 1000, 0.05, Spend > 100, 0.10, 0.02) — write Spend=500
+    // → first cond false, second true → 0.10.
+    let body = "ifs(Spend > 1000, 0.05, Spend > 100, 0.10, 0.02)";
+    let yaml = simple_model(body, r#""Spend""#);
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_f64(
+        &mut cube,
+        &compiled.refs,
+        p,
+        &[
+            ("Scenario", "Base"),
+            ("Version", "Working"),
+            ("Time", "P1"),
+            ("Channel", "Web"),
+            ("Market", "US"),
+            ("Measure", "Spend"),
+        ],
+        500.0,
+    );
+    let val = read_f64(
+        &mut cube,
+        &compiled.refs,
+        p,
+        &[
+            ("Scenario", "Base"),
+            ("Version", "Working"),
+            ("Time", "P1"),
+            ("Channel", "Web"),
+            ("Market", "US"),
+            ("Measure", "Result"),
+        ],
+    );
+    assert_f64_eq(val, 0.10, "ifs picks second branch");
+}
+
+#[test]
+fn test_ifs_default_when_no_match() {
+    let body = "ifs(0 > 1, 100, 0 > 2, 200, 999)";
+    match eval_math_primitive(body, "", &[]) {
+        ScalarValue::F64(v) => assert_f64_eq(v, 999.0, "ifs falls through to default"),
+        other => panic!("expected F64, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_ifs_even_arg_count_fails_mc1004() {
+    // ifs(c1, v1, c2, v2) — missing default → 4 args (even) → MC1008.
+    // Per Phase 3E precedent (handoff item 6 W1), arity goes through MC1008.
+    let yaml = simple_model("ifs(1 > 0, 100, 0 > 1, 200)", "");
+    let result = mc_model::load_str(&yaml, Some("test".into()));
+    assert!(result.is_err(), "ifs with even arg count must fail");
+    let errs = result.unwrap_err();
+    let any_arity = errs.iter().any(|e| {
+        let msg = format!("{e:?}");
+        msg.contains("MC1008") || msg.contains("odd argument count")
+    });
+    assert!(
+        any_arity,
+        "expected MC1008 (arity) error for even ifs arg count, got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_switch_with_period_index_branches() {
+    // switch(period_index(), 0, 0.05, 1, 0.10, 0.02) at P1 → period_index=0 → 0.05
+    let body = "switch(period_index(), 0, 0.05, 1, 0.10, 0.02)";
+    match eval_math_primitive(body, "", &[]) {
+        ScalarValue::F64(v) => assert_f64_eq(v, 0.05, "switch period_index=0 → 0.05"),
+        other => panic!("expected F64, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_switch_default_when_no_match() {
+    // switch(period_index(), 99, 100, 999) — period_index is 0 (P1) so default 999.
+    let body = "switch(period_index(), 99, 100, 999)";
+    match eval_math_primitive(body, "", &[]) {
+        ScalarValue::F64(v) => assert_f64_eq(v, 999.0, "switch falls to default"),
+        other => panic!("expected F64, got {other:?}"),
+    }
+}
+
+// ============================================================================
+// Phase 3I — Item 1: is_element(Dim, "Element") narrow numeric form
+// ============================================================================
+
+/// Two-Market model so we can prove is_element discriminates between elements.
+fn is_element_model(rule_body: &str, deps: &str) -> String {
+    format!(
+        r#"
+model_format_version: 1
+metadata:
+  name: "IsElementTest"
+  description: "test"
+  author: "test"
+  created: "2026-01-01"
+dimensions:
+  - name: "Scenario"
+    kind: "Scenario"
+    elements:
+      - {{ name: "Base", scenario_meta: "Default" }}
+  - name: "Version"
+    kind: "Version"
+    elements:
+      - {{ name: "Working", version_state: "Draft" }}
+  - name: "Time"
+    kind: "Time"
+    elements:
+      - {{ name: "P1" }}
+  - name: "Channel"
+    kind: "Standard"
+    elements:
+      - {{ name: "Web" }}
+  - name: "Market"
+    kind: "Standard"
+    elements:
+      - {{ name: "Houston" }}
+      - {{ name: "Dallas" }}
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+measures:
+  - {{ name: "Spend", role: "Input", data_type: "F64", aggregation: "Sum" }}
+  - {{ name: "Result", role: "Derived", data_type: "F64", aggregation: "Sum" }}
+rules:
+  - name: "rule_result"
+    target_measure: "Result"
+    scope: "AllLeaves"
+    body: "{rule_body}"
+    declared_dependencies: [{deps}]
+"#
+    )
+}
+
+#[test]
+fn test_is_element_returns_one_at_matching_coord() {
+    let yaml = is_element_model(r#"is_element(Market, \"Houston\")"#, "");
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let val = read_f64(
+        &mut cube,
+        &compiled.refs,
+        compiled.root_principal,
+        &[
+            ("Scenario", "Base"),
+            ("Version", "Working"),
+            ("Time", "P1"),
+            ("Channel", "Web"),
+            ("Market", "Houston"),
+            ("Measure", "Result"),
+        ],
+    );
+    assert_f64_eq(val, 1.0, "is_element matches Houston");
+}
+
+#[test]
+fn test_is_element_returns_zero_elsewhere() {
+    let yaml = is_element_model(r#"is_element(Market, \"Houston\")"#, "");
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let val = read_f64(
+        &mut cube,
+        &compiled.refs,
+        compiled.root_principal,
+        &[
+            ("Scenario", "Base"),
+            ("Version", "Working"),
+            ("Time", "P1"),
+            ("Channel", "Web"),
+            ("Market", "Dallas"),
+            ("Measure", "Result"),
+        ],
+    );
+    assert_f64_eq(val, 0.0, "is_element does not match Dallas");
+}
+
+#[test]
+fn test_is_element_unknown_element_fails_validation_with_mc1022() {
+    let yaml = is_element_model(r#"is_element(Market, \"Houston_Typo\")"#, "");
+    let result = mc_model::load_str(&yaml, Some("test".into()));
+    assert!(result.is_err(), "unknown element must fail validation");
+    let errs = result.unwrap_err();
+    let any = errs.iter().any(|e| format!("{e:?}").contains("MC1022"));
+    assert!(any, "expected MC1022 in errors: {errs:?}");
+}
+
+#[test]
+fn test_is_element_with_quoted_string_outside_call_fails_with_mc1024() {
+    // String literal outside is_element() — MC1024 (parse-time).
+    let yaml = simple_model(r#"if(Spend == \"high\", 1, 0)"#, r#""Spend""#);
+    let result = mc_model::load_str(&yaml, Some("test".into()));
+    assert!(
+        result.is_err(),
+        "string literal outside is_element must fail"
+    );
+    let errs = result.unwrap_err();
+    let any = errs.iter().any(|e| {
+        let msg = format!("{e:?}");
+        msg.contains("MC1024") || msg.contains("StringLiteralMisplaced")
+    });
+    assert!(any, "expected MC1024 in errors: {errs:?}");
+}
+
+// ============================================================================
+// Phase 3I — Item 5: avg_over / min_over / max_over / wavg_over
+// ============================================================================
+
+/// Two markets so the *_over scans have something to aggregate.
+fn over_model(rule_body: &str, deps: &str) -> String {
+    format!(
+        r#"
+model_format_version: 1
+metadata:
+  name: "OverTest"
+  description: "test"
+  author: "test"
+  created: "2026-01-01"
+dimensions:
+  - name: "Scenario"
+    kind: "Scenario"
+    elements:
+      - {{ name: "Base", scenario_meta: "Default" }}
+  - name: "Version"
+    kind: "Version"
+    elements:
+      - {{ name: "Working", version_state: "Draft" }}
+  - name: "Time"
+    kind: "Time"
+    elements:
+      - {{ name: "P1" }}
+  - name: "Channel"
+    kind: "Standard"
+    elements:
+      - {{ name: "Web" }}
+  - name: "Market"
+    kind: "Standard"
+    elements:
+      - {{ name: "Houston" }}
+      - {{ name: "Dallas" }}
+      - {{ name: "Austin" }}
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+measures:
+  - {{ name: "Spend", role: "Input", data_type: "F64", aggregation: "Sum" }}
+  - {{ name: "Weight", role: "Input", data_type: "F64", aggregation: "Sum" }}
+  - {{ name: "Result", role: "Derived", data_type: "F64", aggregation: "Sum" }}
+rules:
+  - name: "rule_result"
+    target_measure: "Result"
+    scope: "AllLeaves"
+    body: "{rule_body}"
+    declared_dependencies: [{deps}]
+"#
+    )
+}
+
+fn write_market_inputs(
+    cube: &mut mc_core::Cube,
+    refs: &ModelRefs,
+    p: mc_core::PrincipalId,
+    measure: &str,
+    values: &[(&str, f64)],
+) {
+    for (market, value) in values {
+        write_f64(
+            cube,
+            refs,
+            p,
+            &[
+                ("Scenario", "Base"),
+                ("Version", "Working"),
+                ("Time", "P1"),
+                ("Channel", "Web"),
+                ("Market", market),
+                ("Measure", measure),
+            ],
+            *value,
+        );
+    }
+}
+
+fn read_houston_result(
+    cube: &mut mc_core::Cube,
+    refs: &ModelRefs,
+    p: mc_core::PrincipalId,
+) -> ScalarValue {
+    read_value(
+        cube,
+        refs,
+        p,
+        &[
+            ("Scenario", "Base"),
+            ("Version", "Working"),
+            ("Time", "P1"),
+            ("Channel", "Web"),
+            ("Market", "Houston"),
+            ("Measure", "Result"),
+        ],
+    )
+}
+
+#[test]
+fn test_avg_over_basic() {
+    let yaml = over_model("avg_over(Spend, Market)", r#""Spend""#);
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_market_inputs(
+        &mut cube,
+        &compiled.refs,
+        p,
+        "Spend",
+        &[("Houston", 100.0), ("Dallas", 200.0), ("Austin", 300.0)],
+    );
+    match read_houston_result(&mut cube, &compiled.refs, p) {
+        ScalarValue::F64(v) => assert_f64_eq(v, 200.0, "avg_over of [100, 200, 300]"),
+        other => panic!("expected F64, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_min_over_basic() {
+    let yaml = over_model("min_over(Spend, Market)", r#""Spend""#);
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_market_inputs(
+        &mut cube,
+        &compiled.refs,
+        p,
+        "Spend",
+        &[("Houston", 100.0), ("Dallas", 200.0), ("Austin", 50.0)],
+    );
+    match read_houston_result(&mut cube, &compiled.refs, p) {
+        ScalarValue::F64(v) => assert_f64_eq(v, 50.0, "min_over of [100, 200, 50]"),
+        other => panic!("expected F64, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_max_over_basic() {
+    let yaml = over_model("max_over(Spend, Market)", r#""Spend""#);
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_market_inputs(
+        &mut cube,
+        &compiled.refs,
+        p,
+        "Spend",
+        &[("Houston", 100.0), ("Dallas", 200.0), ("Austin", 50.0)],
+    );
+    match read_houston_result(&mut cube, &compiled.refs, p) {
+        ScalarValue::F64(v) => assert_f64_eq(v, 200.0, "max_over of [100, 200, 50]"),
+        other => panic!("expected F64, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_wavg_over_basic() {
+    // wavg_over(Spend, Market, Weight): values [100, 200, 300] weighted by [1, 2, 3]
+    // = (100 + 400 + 900) / 6 = 233.333...
+    let yaml = over_model("wavg_over(Spend, Market, Weight)", r#""Spend", "Weight""#);
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_market_inputs(
+        &mut cube,
+        &compiled.refs,
+        p,
+        "Spend",
+        &[("Houston", 100.0), ("Dallas", 200.0), ("Austin", 300.0)],
+    );
+    write_market_inputs(
+        &mut cube,
+        &compiled.refs,
+        p,
+        "Weight",
+        &[("Houston", 1.0), ("Dallas", 2.0), ("Austin", 3.0)],
+    );
+    match read_houston_result(&mut cube, &compiled.refs, p) {
+        ScalarValue::F64(v) => assert_f64_eq(v, 1400.0 / 6.0, "weighted avg"),
+        other => panic!("expected F64, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_avg_over_skips_nulls() {
+    // avg_over of [100, Null, 300] — skip the null, divide by 2 → 200.
+    let yaml = over_model("avg_over(Spend, Market)", r#""Spend""#);
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    // Don't write Dallas — it stays Null.
+    write_market_inputs(
+        &mut cube,
+        &compiled.refs,
+        p,
+        "Spend",
+        &[("Houston", 100.0), ("Austin", 300.0)],
+    );
+    match read_houston_result(&mut cube, &compiled.refs, p) {
+        ScalarValue::F64(v) => assert_f64_eq(v, 200.0, "avg_over skips null"),
+        other => panic!("expected F64, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_min_over_with_all_nulls_returns_null() {
+    let yaml = over_model("min_over(Spend, Market)", r#""Spend""#);
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    // No writes — all markets are Null.
+    let val = read_houston_result(&mut cube, &compiled.refs, p);
+    assert_null(val, "min_over of all-nulls");
+}
+
+#[test]
+fn test_wavg_over_zero_weights_returns_null() {
+    let yaml = over_model("wavg_over(Spend, Market, Weight)", r#""Spend", "Weight""#);
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_market_inputs(
+        &mut cube,
+        &compiled.refs,
+        p,
+        "Spend",
+        &[("Houston", 100.0), ("Dallas", 200.0), ("Austin", 300.0)],
+    );
+    write_market_inputs(
+        &mut cube,
+        &compiled.refs,
+        p,
+        "Weight",
+        &[("Houston", 0.0), ("Dallas", 0.0), ("Austin", 0.0)],
+    );
+    let val = read_houston_result(&mut cube, &compiled.refs, p);
+    assert_null(val, "wavg_over zero weights");
+}
+
+#[test]
+fn test_avg_over_equals_wavg_over_with_unit_weights() {
+    // Sanity: avg_over(Spend, Market) == wavg_over(Spend, Market, Weight)
+    // when all weights are 1.0.
+    let yaml1 = over_model("avg_over(Spend, Market)", r#""Spend""#);
+    let yaml2 = over_model("wavg_over(Spend, Market, Weight)", r#""Spend", "Weight""#);
+    let compiled1 = build_test_cube(&yaml1);
+    let compiled2 = build_test_cube(&yaml2);
+    let mut cube1 = compiled1.cube;
+    let mut cube2 = compiled2.cube;
+    write_market_inputs(
+        &mut cube1,
+        &compiled1.refs,
+        compiled1.root_principal,
+        "Spend",
+        &[("Houston", 100.0), ("Dallas", 200.0), ("Austin", 300.0)],
+    );
+    write_market_inputs(
+        &mut cube2,
+        &compiled2.refs,
+        compiled2.root_principal,
+        "Spend",
+        &[("Houston", 100.0), ("Dallas", 200.0), ("Austin", 300.0)],
+    );
+    write_market_inputs(
+        &mut cube2,
+        &compiled2.refs,
+        compiled2.root_principal,
+        "Weight",
+        &[("Houston", 1.0), ("Dallas", 1.0), ("Austin", 1.0)],
+    );
+    let v1 = read_houston_result(&mut cube1, &compiled1.refs, compiled1.root_principal);
+    let v2 = read_houston_result(&mut cube2, &compiled2.refs, compiled2.root_principal);
+    match (v1, v2) {
+        (ScalarValue::F64(a), ScalarValue::F64(b)) => {
+            assert!(
+                (a - b).abs() < 1e-9,
+                "avg_over={a} should equal wavg_over with unit weights={b}"
+            );
+        }
+        other => panic!("expected F64s, got {other:?}"),
+    }
+}
+
+// ============================================================================
+// Phase 3I — Item 3: Multi-key lookup_tables
+// ============================================================================
+
+fn lookup_yaml(lookup_block: &str, rule_body: &str, deps: &str) -> String {
+    format!(
+        r#"
+model_format_version: 1
+metadata:
+  name: "LookupTest"
+  description: "test"
+  author: "test"
+  created: "2026-01-01"
+dimensions:
+  - name: "Scenario"
+    kind: "Scenario"
+    elements:
+      - {{ name: "Base", scenario_meta: "Default" }}
+  - name: "Version"
+    kind: "Version"
+    elements:
+      - {{ name: "Working", version_state: "Draft" }}
+  - name: "Time"
+    kind: "Time"
+    elements:
+      - {{ name: "Jan_2026" }}
+      - {{ name: "Feb_2026" }}
+  - name: "Channel"
+    kind: "Standard"
+    elements:
+      - {{ name: "Web" }}
+  - name: "Market"
+    kind: "Standard"
+    elements:
+      - {{ name: "Houston" }}
+      - {{ name: "Dallas" }}
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+measures:
+  - {{ name: "Spend", role: "Input", data_type: "F64", aggregation: "Sum" }}
+  - {{ name: "Result", role: "Derived", data_type: "F64", aggregation: "Sum" }}
+{lookup_block}rules:
+  - name: "rule_result"
+    target_measure: "Result"
+    scope: "AllLeaves"
+    body: "{rule_body}"
+    declared_dependencies: [{deps}]
+"#
+    )
+}
+
+#[test]
+fn test_lookup_table_single_key_backward_compat() {
+    // Phase 3G shape (key_dimension: <single>) must continue to work.
+    let lookup_block = r#"lookup_tables:
+  - name: "tax_rate"
+    key_dimension: "Market"
+    values:
+      Houston: 0.08
+      Dallas: 0.06
+"#;
+    let yaml = lookup_yaml(
+        lookup_block,
+        r#"lookup(\"tax_rate\", Market) * Spend"#,
+        r#""Spend""#,
+    );
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_f64(
+        &mut cube,
+        &compiled.refs,
+        p,
+        &[
+            ("Scenario", "Base"),
+            ("Version", "Working"),
+            ("Time", "Jan_2026"),
+            ("Channel", "Web"),
+            ("Market", "Houston"),
+            ("Measure", "Spend"),
+        ],
+        1000.0,
+    );
+    let val = read_f64(
+        &mut cube,
+        &compiled.refs,
+        p,
+        &[
+            ("Scenario", "Base"),
+            ("Version", "Working"),
+            ("Time", "Jan_2026"),
+            ("Channel", "Web"),
+            ("Market", "Houston"),
+            ("Measure", "Result"),
+        ],
+    );
+    assert_f64_eq(val, 80.0, "single-key lookup * Spend");
+}
+
+#[test]
+fn test_lookup_table_multi_key_two_dims() {
+    // Phase 3I item 3: multi-key. key_dimensions: [Market, Time].
+    let lookup_block = r#"lookup_tables:
+  - name: "seasonality"
+    key_dimensions: ["Market", "Time"]
+    values:
+      "Houston|Jan_2026": 1.05
+      "Houston|Feb_2026": 1.12
+      "Dallas|Jan_2026": 0.95
+      "Dallas|Feb_2026": 0.97
+"#;
+    let yaml = lookup_yaml(
+        lookup_block,
+        r#"lookup(\"seasonality\", Market, Time) * Spend"#,
+        r#""Spend""#,
+    );
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_f64(
+        &mut cube,
+        &compiled.refs,
+        p,
+        &[
+            ("Scenario", "Base"),
+            ("Version", "Working"),
+            ("Time", "Feb_2026"),
+            ("Channel", "Web"),
+            ("Market", "Houston"),
+            ("Measure", "Spend"),
+        ],
+        1000.0,
+    );
+    let val = read_f64(
+        &mut cube,
+        &compiled.refs,
+        p,
+        &[
+            ("Scenario", "Base"),
+            ("Version", "Working"),
+            ("Time", "Feb_2026"),
+            ("Channel", "Web"),
+            ("Market", "Houston"),
+            ("Measure", "Result"),
+        ],
+    );
+    // Houston|Feb_2026 = 1.12 * 1000 = 1120
+    assert_f64_eq(val, 1120.0, "multi-key Houston|Feb_2026 lookup * Spend");
+}
+
+#[test]
+fn test_lookup_table_both_key_fields_set_fails_mc2050() {
+    let lookup_block = r#"lookup_tables:
+  - name: "bad_table"
+    key_dimension: "Market"
+    key_dimensions: ["Market", "Time"]
+    values:
+      Houston: 1.0
+"#;
+    let yaml = lookup_yaml(
+        lookup_block,
+        r#"lookup(\"bad_table\", Market) * Spend"#,
+        r#""Spend""#,
+    );
+    let result = mc_model::load_str(&yaml, Some("test".into()));
+    assert!(result.is_err(), "both key fields set must fail");
+    let errs = result.unwrap_err();
+    let any = errs.iter().any(|e| format!("{e:?}").contains("MC2050"));
+    assert!(any, "expected MC2050 in errors: {errs:?}");
+}
+
+#[test]
+fn test_lookup_table_pipe_in_element_name_fails_mc2051() {
+    // Build a model where Market has an element name containing '|'.
+    let yaml = r#"
+model_format_version: 1
+metadata:
+  name: "PipeTest"
+  description: "test"
+  author: "test"
+  created: "2026-01-01"
+dimensions:
+  - name: "Scenario"
+    kind: "Scenario"
+    elements:
+      - { name: "Base", scenario_meta: "Default" }
+  - name: "Version"
+    kind: "Version"
+    elements:
+      - { name: "Working", version_state: "Draft" }
+  - name: "Time"
+    kind: "Time"
+    elements:
+      - { name: "P1" }
+  - name: "Channel"
+    kind: "Standard"
+    elements:
+      - { name: "Web" }
+  - name: "Market"
+    kind: "Standard"
+    elements:
+      - { name: "Has|Pipe" }
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+measures:
+  - { name: "Spend", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "Result", role: "Derived", data_type: "F64", aggregation: "Sum" }
+lookup_tables:
+  - name: "bad"
+    key_dimensions: ["Market", "Time"]
+    values:
+      "Has|Pipe|P1": 1.0
+rules:
+  - name: "rule_result"
+    target_measure: "Result"
+    scope: "AllLeaves"
+    body: "lookup(\"bad\", Market, Time) * Spend"
+    declared_dependencies: ["Spend"]
+"#;
+    let result = mc_model::load_str(yaml, Some("test".into()));
+    assert!(result.is_err(), "pipe in element name must fail");
+    let errs = result.unwrap_err();
+    let any = errs.iter().any(|e| format!("{e:?}").contains("MC2051"));
+    assert!(any, "expected MC2051 in errors: {errs:?}");
+}
+
+#[test]
+fn test_lookup_table_key_arity_mismatch_fails_mc2052() {
+    // key_dimensions has 2 entries, but a value key only has 1 part.
+    let lookup_block = r#"lookup_tables:
+  - name: "seasonality"
+    key_dimensions: ["Market", "Time"]
+    values:
+      "Houston": 1.05
+"#;
+    let yaml = lookup_yaml(
+        lookup_block,
+        r#"lookup(\"seasonality\", Market, Time) * Spend"#,
+        r#""Spend""#,
+    );
+    let result = mc_model::load_str(&yaml, Some("test".into()));
+    assert!(result.is_err(), "key arity mismatch must fail");
+    let errs = result.unwrap_err();
+    let any = errs.iter().any(|e| format!("{e:?}").contains("MC2052"));
+    assert!(any, "expected MC2052 in errors: {errs:?}");
+}
+
+// ============================================================================
+// Phase 3I — Item 4: predict() arity validation (MC2057, not MC2053 — see audit §G)
+// ============================================================================
+
+fn predict_arity_yaml(predict_call: &str, deps: &str, n_coeffs: usize) -> String {
+    use std::fmt::Write;
+    // Build a fitted_models block with n_coeffs coefficients (Feature1..N)
+    let mut coeffs = String::new();
+    for i in 1..=n_coeffs {
+        let _ = writeln!(
+            coeffs,
+            "      - {{ feature: \"Feature{i}\", weight: {i}.0 }}"
+        );
+    }
+    let mut measures = String::new();
+    for i in 1..=n_coeffs {
+        let _ = writeln!(
+            measures,
+            "  - {{ name: \"Feature{i}\", role: \"Input\", data_type: \"F64\", aggregation: \"Sum\" }}"
+        );
+    }
+    format!(
+        r#"
+model_format_version: 1
+metadata:
+  name: "PredictArityTest"
+  description: "test"
+  author: "test"
+  created: "2026-01-01"
+dimensions:
+  - name: "Scenario"
+    kind: "Scenario"
+    elements:
+      - {{ name: "Base", scenario_meta: "Default" }}
+  - name: "Version"
+    kind: "Version"
+    elements:
+      - {{ name: "Working", version_state: "Draft" }}
+  - name: "Time"
+    kind: "Time"
+    elements:
+      - {{ name: "P1" }}
+  - name: "Channel"
+    kind: "Standard"
+    elements:
+      - {{ name: "Web" }}
+  - name: "Market"
+    kind: "Standard"
+    elements:
+      - {{ name: "US" }}
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+measures:
+{measures}  - {{ name: "Result", role: "Derived", data_type: "F64", aggregation: "Sum" }}
+fitted_models:
+  - name: "model_a"
+    method: "linear"
+    intercept: 0.0
+    coefficients:
+{coeffs}rules:
+  - name: "rule_result"
+    target_measure: "Result"
+    scope: "AllLeaves"
+    body: "{predict_call}"
+    declared_dependencies: [{deps}]
+"#
+    )
+}
+
+#[test]
+fn test_predict_too_few_features_fails_mc2057() {
+    // Model has 3 coefficients, predict() has 2 features → MC2057.
+    // (Handoff said MC2053; collision with Phase 3H — see audit §G.)
+    let yaml = predict_arity_yaml(
+        r#"predict(\"model_a\", Feature1, Feature2)"#,
+        r#""Feature1", "Feature2", "Feature3""#,
+        3,
+    );
+    let result = mc_model::load_str(&yaml, Some("test".into()));
+    assert!(result.is_err(), "predict with too few features must fail");
+    let errs = result.unwrap_err();
+    let any = errs.iter().any(|e| format!("{e:?}").contains("MC2057"));
+    assert!(any, "expected MC2057 in errors: {errs:?}");
+}
+
+#[test]
+fn test_predict_too_many_features_fails_mc2057() {
+    let yaml = predict_arity_yaml(
+        r#"predict(\"model_a\", Feature1, Feature2, Feature3)"#,
+        r#""Feature1", "Feature2", "Feature3""#,
+        2, // model has 2 coeffs but call passes 3 features
+    );
+    let result = mc_model::load_str(&yaml, Some("test".into()));
+    assert!(result.is_err(), "predict with too many features must fail");
+    let errs = result.unwrap_err();
+    let any = errs.iter().any(|e| format!("{e:?}").contains("MC2057"));
+    assert!(any, "expected MC2057 in errors: {errs:?}");
+}
+
+#[test]
+fn test_predict_correct_arity_validates_clean() {
+    let yaml = predict_arity_yaml(
+        r#"predict(\"model_a\", Feature1, Feature2)"#,
+        r#""Feature1", "Feature2""#,
+        2,
+    );
+    let result = mc_model::load_str(&yaml, Some("test".into()));
+    assert!(
+        result.is_ok(),
+        "predict with matching arity must validate: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn test_ifs_compiles_to_nested_if() {
+    // Snapshot: parsed AST shape matches nested If — verifies item 6 W3.
+    use mc_model::parse_expression;
+    use mc_model::ParsedRuleBody;
+    let body = "ifs(1 > 0, 100, 1 > 1, 200, 999)";
+    let parsed = parse_expression(body).expect("parse ifs");
+    // Top-level should be If (1 > 0, 100, If(1 > 1, 200, 999))
+    let ParsedRuleBody::If(outer) = parsed else {
+        panic!("expected top-level If, got {parsed:?}");
+    };
+    let ParsedRuleBody::If(inner) = *outer.else_branch else {
+        panic!("expected nested If in else, got {:?}", outer.else_branch);
+    };
+    let ParsedRuleBody::Const(default) = *inner.else_branch else {
+        panic!("expected Const in inner else, got {:?}", inner.else_branch);
+    };
+    match default.value {
+        mc_model::ParsedScalar::Float(v) => assert!((v - 999.0).abs() < 1e-9),
+        other => panic!("expected Float default, got {other:?}"),
+    }
+}

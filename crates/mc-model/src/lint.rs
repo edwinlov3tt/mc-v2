@@ -388,7 +388,11 @@ fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
             collect_body_refs(&b.window, out);
         }
         ParsedRuleBody::Benchmark(b) => collect_body_refs(&b.key_expr, out),
-        ParsedRuleBody::Lookup(b) => collect_body_refs(&b.key_expr, out),
+        ParsedRuleBody::Lookup(b) => {
+            for k in &b.key_exprs {
+                collect_body_refs(k, out);
+            }
+        }
         ParsedRuleBody::Bucket(b) => collect_body_refs(&b.value, out),
         ParsedRuleBody::SumOver(b) => {
             out.insert(b.measure.clone());
@@ -405,6 +409,34 @@ fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
             collect_body_refs(&b.x, out);
             collect_body_refs(&b.mu, out);
             collect_body_refs(&b.sigma, out);
+        }
+        // Phase 3I
+        ParsedRuleBody::Pow(b) => {
+            collect_body_refs(&b.base, out);
+            collect_body_refs(&b.exponent, out);
+        }
+        ParsedRuleBody::Sqrt(b)
+        | ParsedRuleBody::Ln(b)
+        | ParsedRuleBody::Log10(b)
+        | ParsedRuleBody::Round(b)
+        | ParsedRuleBody::Floor(b)
+        | ParsedRuleBody::Ceil(b) => collect_body_refs(&b.operand, out),
+        ParsedRuleBody::Mod(b) => {
+            collect_body_refs(&b.dividend, out);
+            collect_body_refs(&b.divisor, out);
+        }
+        ParsedRuleBody::NormInv(b) => {
+            collect_body_refs(&b.p, out);
+            collect_body_refs(&b.mu, out);
+            collect_body_refs(&b.sigma, out);
+        }
+        ParsedRuleBody::IsElement(_) => {}
+        ParsedRuleBody::AvgOver(b) | ParsedRuleBody::MinOver(b) | ParsedRuleBody::MaxOver(b) => {
+            out.insert(b.measure.clone());
+        }
+        ParsedRuleBody::WAvgOver(b) => {
+            out.insert(b.value_measure.clone());
+            out.insert(b.weight_measure.clone());
         }
     }
 }

@@ -142,6 +142,28 @@ pub enum ParseError {
         offset: usize,
         message: String,
     },
+
+    /// **MC1024** — String literal appears outside the second arg of
+    /// `is_element()` (and the named-arg slot of
+    /// benchmark/lookup/bucket/calibrate/predict). Phase 3I item 1 W4
+    /// keeps `ScalarValue::Str` out of general expressions.
+    #[error("rule {rule_name:?} formula at offset {offset}: {message}")]
+    FormulaStringLiteralMisplaced {
+        span: Span,
+        rule_name: String,
+        offset: usize,
+        message: String,
+    },
+
+    /// **MC1025** — Cross-coord operator used inside a `--where` filter
+    /// expression. Filters evaluate against single coordinates;
+    /// cross-coord operators are deferred to Phase 3J+. Phase 3I item 8 W2.
+    #[error("filter expression: {message}")]
+    FormulaCrossCoordInFilter {
+        span: Span,
+        offset: usize,
+        message: String,
+    },
 }
 
 impl ParseError {
@@ -158,6 +180,8 @@ impl ParseError {
             ParseError::FormulaWrongArgCount { .. } => "MC1008",
             ParseError::FormulaActualRefNonIdentifier { .. } => "MC1009",
             ParseError::FormulaCrossCoordNesting { .. } => "MC1013",
+            ParseError::FormulaStringLiteralMisplaced { .. } => "MC1024",
+            ParseError::FormulaCrossCoordInFilter { .. } => "MC1025",
         }
     }
 
@@ -175,7 +199,9 @@ impl ParseError {
             | ParseError::FormulaUnknownFunction { span, .. }
             | ParseError::FormulaWrongArgCount { span, .. }
             | ParseError::FormulaActualRefNonIdentifier { span, .. }
-            | ParseError::FormulaCrossCoordNesting { span, .. } => span,
+            | ParseError::FormulaCrossCoordNesting { span, .. }
+            | ParseError::FormulaStringLiteralMisplaced { span, .. }
+            | ParseError::FormulaCrossCoordInFilter { span, .. } => span,
         }
     }
 }

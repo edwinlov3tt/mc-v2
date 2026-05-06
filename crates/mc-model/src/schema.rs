@@ -333,6 +333,41 @@ pub enum ParsedRuleBody {
     Exp(ParsedUnaryBody),
     /// `norm_cdf(x, mu, sigma)` — normal distribution CDF
     NormCdf(ParsedNormCdfBody),
+
+    // -- Phase 3I: Math primitives (9) --
+    /// `pow(base, exp)`
+    Pow(ParsedPowBody),
+    /// `sqrt(x)`
+    Sqrt(ParsedUnaryBody),
+    /// `ln(x)`
+    Ln(ParsedUnaryBody),
+    /// `log10(x)`
+    Log10(ParsedUnaryBody),
+    /// `round(x)`
+    Round(ParsedUnaryBody),
+    /// `floor(x)`
+    Floor(ParsedUnaryBody),
+    /// `ceil(x)`
+    Ceil(ParsedUnaryBody),
+    /// `mod(a, b)`
+    Mod(ParsedModBody),
+    /// `norm_inv(p, mu, sigma)` — inverse of standard normal CDF.
+    NormInv(ParsedNormInvBody),
+
+    // -- Phase 3I: is_element narrow numeric form --
+    /// `is_element(Dim, "Element")` — returns 1.0 if current coord's element
+    /// in `Dim` is `"Element"`, 0.0 otherwise.
+    IsElement(ParsedIsElementBody),
+
+    // -- Phase 3I: cross-coord scans --
+    /// `avg_over(measure, dim)` — mean across leaf elements of `dim`.
+    AvgOver(ParsedSumOverBody),
+    /// `min_over(measure, dim)` — minimum across leaf elements of `dim`.
+    MinOver(ParsedSumOverBody),
+    /// `max_over(measure, dim)` — maximum across leaf elements of `dim`.
+    MaxOver(ParsedSumOverBody),
+    /// `wavg_over(measure, dim, weight_measure)` — weighted average.
+    WAvgOver(ParsedWAvgOverBody),
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -484,11 +519,13 @@ pub struct ParsedBenchmarkRefBody {
     pub key_expr: Box<ParsedRuleBody>,
 }
 
-/// `lookup("table", key_expr)`
+/// `lookup("table", key1, key2, ...)` — Phase 3I item 3 made the key
+/// expression list variadic. A 1-element vec corresponds to the
+/// original Phase 3G single-key shape.
 #[derive(Clone, Debug, Deserialize)]
 pub struct ParsedLookupRefBody {
     pub table: String,
-    pub key_expr: Box<ParsedRuleBody>,
+    pub key_exprs: Vec<Box<ParsedRuleBody>>,
 }
 
 /// `bucket(value, "threshold_name")`
@@ -529,6 +566,53 @@ pub struct ParsedNormCdfBody {
     pub x: Box<ParsedRuleBody>,
     pub mu: Box<ParsedRuleBody>,
     pub sigma: Box<ParsedRuleBody>,
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3I body structs
+// ---------------------------------------------------------------------------
+
+/// `pow(base, exponent)`
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedPowBody {
+    pub base: Box<ParsedRuleBody>,
+    pub exponent: Box<ParsedRuleBody>,
+}
+
+/// `mod(dividend, divisor)`
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedModBody {
+    pub dividend: Box<ParsedRuleBody>,
+    pub divisor: Box<ParsedRuleBody>,
+}
+
+/// `norm_inv(p, mu, sigma)` — inverse of normal-distribution CDF
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedNormInvBody {
+    pub p: Box<ParsedRuleBody>,
+    pub mu: Box<ParsedRuleBody>,
+    pub sigma: Box<ParsedRuleBody>,
+}
+
+/// `is_element(Dim, "Element")` — narrow numeric indicator.
+///
+/// `dimension` is a bare identifier (the dimension name); `element` is a
+/// quoted string literal. Per Phase 3I item 1 W4, string literals are
+/// allowed only as this second arg — a parse-time guarantee enforced by
+/// the formula parser.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedIsElementBody {
+    pub dimension: String,
+    pub element: String,
+}
+
+/// `wavg_over(value_measure, dim, weight_measure)` — weighted average
+/// across leaf elements of `dim`. Phase 3I item 5.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedWAvgOverBody {
+    pub dimension: String,
+    pub value_measure: String,
+    pub weight_measure: String,
 }
 
 /// `Const` payload. `f64` and `i64` are the common shapes; `bool` is
@@ -593,14 +677,42 @@ pub struct ParsedBenchmark {
 }
 
 /// Lookup table keyed by dimension element (Phase 3G).
+///
+/// Phase 3I item 3 made `key_dimension` optional and added the multi-key
+/// `key_dimensions: Vec<String>` field. Exactly one of the two must be
+/// set:
+///   - `key_dimension: Market` — single-key (Phase 3G shape, unchanged).
+///   - `key_dimensions: ["Market", "Time"]` — multi-key (Phase 3I).
+///
+/// MC2050 fires if both are set; MC2051 fires if any element name
+/// contains the pipe separator; MC2052 fires if a key has the wrong
+/// arity for the declared key_dimensions.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedLookupTable {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
-    pub key_dimension: String,
+    /// Single-key form. Backward compat with Phase 3G.
+    #[serde(default)]
+    pub key_dimension: Option<String>,
+    /// Multi-key form. Phase 3I item 3.
+    #[serde(default)]
+    pub key_dimensions: Option<Vec<String>>,
     pub values: BTreeMap<String, f64>,
+}
+
+impl ParsedLookupTable {
+    /// Phase 3I item 3: return the key dimensions as a slice regardless
+    /// of which form (`key_dimension` vs `key_dimensions`) was used.
+    /// Returns an empty slice if neither is set (validator catches that).
+    pub fn key_dims(&self) -> Vec<&str> {
+        match (&self.key_dimension, &self.key_dimensions) {
+            (Some(d), None) => vec![d.as_str()],
+            (None, Some(ds)) => ds.iter().map(String::as_str).collect(),
+            (Some(_), Some(_)) | (None, None) => Vec::new(),
+        }
+    }
 }
 
 /// Status threshold configuration with ordered bands (Phase 3G).

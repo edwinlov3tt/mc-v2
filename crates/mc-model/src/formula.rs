@@ -26,8 +26,9 @@
 use crate::schema::{
     ParsedActualRefBody, ParsedAddBody, ParsedBenchmarkRefBody, ParsedBinopBody, ParsedBucketBody,
     ParsedCalibrateBody, ParsedClampBody, ParsedConstBody, ParsedDivBody, ParsedIfBody,
-    ParsedIfNullBody, ParsedLagBody, ParsedLookupRefBody, ParsedMeasureRefBody, ParsedMulBody,
-    ParsedNormCdfBody, ParsedPredictBody, ParsedRefBody, ParsedRollingAvgBody, ParsedRuleBody,
+    ParsedIfNullBody, ParsedIsElementBody, ParsedLagBody, ParsedLookupRefBody,
+    ParsedMeasureRefBody, ParsedModBody, ParsedMulBody, ParsedNormCdfBody, ParsedNormInvBody,
+    ParsedPowBody, ParsedPredictBody, ParsedRefBody, ParsedRollingAvgBody, ParsedRuleBody,
     ParsedSafeDivBody, ParsedScalar, ParsedSubBody, ParsedSumOverBody, ParsedUnaryBody,
     ParsedVarargBody,
 };
@@ -56,6 +57,16 @@ pub fn parse(input: &str) -> Result<ParsedRuleBody, FormulaError> {
         ));
     }
     Ok(body)
+}
+
+/// Phase 3I item 8 W1: public alias for [`parse`]. Lets `mc-cli`'s
+/// `--where` filter parser delegate to the same recursive-descent
+/// expression grammar instead of maintaining a duplicate. Returns the
+/// parsed expression as [`ParsedRuleBody`]; the caller is responsible
+/// for any additional well-formedness checks (e.g., rejecting
+/// cross-coord operators when used as a single-coord predicate).
+pub fn parse_expression(input: &str) -> Result<ParsedRuleBody, FormulaError> {
+    parse(input)
 }
 
 /// Render a [`ParsedRuleBody`] tree back to formula text.
@@ -130,6 +141,28 @@ impl FormulaError {
     fn cross_coord_nesting(offset: usize, message: String) -> Self {
         Self {
             code: "MC1013",
+            offset,
+            message,
+        }
+    }
+    /// Phase 3I item 1 W4: string literal appeared outside the second
+    /// argument of `is_element()`. Phase 3I keeps `ScalarValue::Str`
+    /// out of the AST; general string-literal support is deferred.
+    #[allow(dead_code)]
+    pub(crate) fn string_literal_misplaced(offset: usize, message: String) -> Self {
+        Self {
+            code: "MC1024",
+            offset,
+            message,
+        }
+    }
+    /// Phase 3I item 8 W2: cross-coord operator used inside a
+    /// `--where` filter expression. Filters evaluate against single
+    /// coordinates; cross-coord ops are deferred.
+    #[allow(dead_code)]
+    pub(crate) fn cross_coord_in_filter(offset: usize, message: String) -> Self {
+        Self {
+            code: "MC1025",
             offset,
             message,
         }
@@ -432,6 +465,19 @@ impl<'a> Parser<'a> {
                 let n = self.parse_number()?;
                 Ok(const_f64(n))
             }
+            // Phase 3I item 1 W4: a string literal in primary position
+            // means it's outside the only legal slot (the second arg of
+            // `is_element` / `benchmark` / `lookup` / `bucket` / `calibrate`
+            // / `predict`, all of which call `parse_string_literal`
+            // directly and never reach this dispatch). Surface MC1024 so
+            // models / filter expressions get a precise diagnostic
+            // instead of the generic MC1004 "unexpected character".
+            b'"' => Err(FormulaError::string_literal_misplaced(
+                self.pos,
+                "string literals are only allowed as the second arg of is_element() \
+                 (and the named-arg slot of benchmark/lookup/bucket/calibrate/predict)"
+                    .into(),
+            )),
             other => Err(FormulaError::unexpected_token(
                 self.pos,
                 format!("unexpected character {:?}", other as char),
@@ -720,22 +766,30 @@ impl<'a> Parser<'a> {
                     }))
                 }
                 "lookup" => {
+                    // Phase 3I item 3: variadic — lookup("name", k1) for
+                    // single-key (Phase 3G shape, unchanged) and
+                    // lookup("name", k1, k2, ...) for multi-key.
                     self.skip_ws();
                     let tname = self.parse_string_literal("lookup", call_start)?;
                     self.skip_ws();
                     if self.peek_byte() != Some(b',') {
                         return Err(FormulaError::wrong_arg_count(
                             call_start,
-                            "lookup expects 2 arguments: lookup(\"table\", key_expr)".into(),
+                            "lookup expects at least 2 arguments: lookup(\"table\", key_expr, ...)"
+                                .into(),
                         ));
                     }
-                    self.advance(); // consume ','
-                    let key_expr = self.parse_or_expression()?;
-                    self.skip_ws();
+                    let mut keys = Vec::new();
+                    while self.peek_byte() == Some(b',') {
+                        self.advance(); // consume ','
+                        let k = self.parse_or_expression()?;
+                        keys.push(Box::new(k));
+                        self.skip_ws();
+                    }
                     self.expect_close_paren("lookup")?;
                     Ok(ParsedRuleBody::Lookup(ParsedLookupRefBody {
                         table: tname,
-                        key_expr: Box::new(key_expr),
+                        key_exprs: keys,
                     }))
                 }
                 "bucket" => {
@@ -843,6 +897,96 @@ impl<'a> Parser<'a> {
                         mu: Box::new(mu),
                         sigma: Box::new(sigma),
                     }))
+                }
+                // -- Phase 3I: math primitives --
+                "pow" => {
+                    let args = self.parse_arg_list()?;
+                    self.expect_close_paren("pow")?;
+                    if args.len() != 2 {
+                        return Err(FormulaError::wrong_arg_count(
+                            call_start,
+                            format!("pow expects exactly 2 arguments, got {}", args.len()),
+                        ));
+                    }
+                    let [base, exponent] = take2(args);
+                    Ok(ParsedRuleBody::Pow(ParsedPowBody {
+                        base: Box::new(base),
+                        exponent: Box::new(exponent),
+                    }))
+                }
+                "sqrt" => unary_math_call(self, name, call_start, ParsedRuleBody::Sqrt),
+                "ln" => unary_math_call(self, name, call_start, ParsedRuleBody::Ln),
+                "log10" => unary_math_call(self, name, call_start, ParsedRuleBody::Log10),
+                "round" => unary_math_call(self, name, call_start, ParsedRuleBody::Round),
+                "floor" => unary_math_call(self, name, call_start, ParsedRuleBody::Floor),
+                "ceil" => unary_math_call(self, name, call_start, ParsedRuleBody::Ceil),
+                "mod" => {
+                    let args = self.parse_arg_list()?;
+                    self.expect_close_paren("mod")?;
+                    if args.len() != 2 {
+                        return Err(FormulaError::wrong_arg_count(
+                            call_start,
+                            format!("mod expects exactly 2 arguments, got {}", args.len()),
+                        ));
+                    }
+                    let [dividend, divisor] = take2(args);
+                    Ok(ParsedRuleBody::Mod(ParsedModBody {
+                        dividend: Box::new(dividend),
+                        divisor: Box::new(divisor),
+                    }))
+                }
+                "norm_inv" => {
+                    let args = self.parse_arg_list()?;
+                    self.expect_close_paren("norm_inv")?;
+                    if args.len() != 3 {
+                        return Err(FormulaError::wrong_arg_count(
+                            call_start,
+                            format!("norm_inv expects exactly 3 arguments, got {}", args.len()),
+                        ));
+                    }
+                    let [p, mu, sigma] = take3(args);
+                    Ok(ParsedRuleBody::NormInv(ParsedNormInvBody {
+                        p: Box::new(p),
+                        mu: Box::new(mu),
+                        sigma: Box::new(sigma),
+                    }))
+                }
+                // -- Phase 3I item 1: is_element narrow numeric form --
+                "is_element" => {
+                    self.skip_ws();
+                    let dimension = self.parse_bare_identifier("is_element", call_start)?;
+                    self.skip_ws();
+                    if self.peek_byte() != Some(b',') {
+                        return Err(FormulaError::wrong_arg_count(
+                            call_start,
+                            "is_element expects 2 arguments: is_element(Dim, \"Element\")".into(),
+                        ));
+                    }
+                    self.advance(); // consume ','
+                    self.skip_ws();
+                    let element = self.parse_string_literal("is_element", call_start)?;
+                    self.skip_ws();
+                    self.expect_close_paren("is_element")?;
+                    Ok(ParsedRuleBody::IsElement(ParsedIsElementBody {
+                        dimension,
+                        element,
+                    }))
+                }
+                // -- Phase 3I item 5: avg/min/max/wavg over a dimension --
+                "avg_over" => parse_simple_over(self, "avg_over", call_start, OverKind::Avg),
+                "min_over" => parse_simple_over(self, "min_over", call_start, OverKind::Min),
+                "max_over" => parse_simple_over(self, "max_over", call_start, OverKind::Max),
+                "wavg_over" => parse_wavg_over(self, call_start),
+                // -- Phase 3I item 6: ifs() / switch() — desugar to nested If --
+                "ifs" => {
+                    let args = self.parse_arg_list()?;
+                    self.expect_close_paren("ifs")?;
+                    desugar_ifs(call_start, args)
+                }
+                "switch" => {
+                    let args = self.parse_arg_list()?;
+                    self.expect_close_paren("switch")?;
+                    desugar_switch(call_start, args)
                 }
                 _ => Err(FormulaError::unknown_function(
                     call_start,
@@ -1019,6 +1163,226 @@ enum CmpOp {
     Neq,
 }
 
+/// Phase 3I item 5: shared shape for `avg_over` / `min_over` / `max_over`.
+/// `wavg_over` has its own dedicated body (3 args) and bypasses this enum.
+#[derive(Clone, Copy)]
+enum OverKind {
+    Avg,
+    Min,
+    Max,
+}
+
+/// Phase 3I item 2: helper for unary math primitives that take exactly
+/// one argument (sqrt/ln/log10/round/floor/ceil). Centralizes the arity
+/// check and `take1` extraction.
+fn unary_math_call(
+    p: &mut Parser<'_>,
+    fn_name: &str,
+    call_start: usize,
+    ctor: fn(ParsedUnaryBody) -> ParsedRuleBody,
+) -> Result<ParsedRuleBody, FormulaError> {
+    let args = p.parse_arg_list()?;
+    p.expect_close_paren(fn_name)?;
+    if args.len() != 1 {
+        return Err(FormulaError::wrong_arg_count(
+            call_start,
+            format!("{fn_name} expects exactly 1 argument, got {}", args.len()),
+        ));
+    }
+    let [operand] = take1(args);
+    Ok(ctor(ParsedUnaryBody {
+        operand: Box::new(operand),
+    }))
+}
+
+/// Phase 3I item 5: parse `avg_over(measure, dim)` / `min_over(...)` /
+/// `max_over(...)`. Same shape as `sum_over` (Phase 3G).
+fn parse_simple_over(
+    p: &mut Parser<'_>,
+    fn_name: &str,
+    call_start: usize,
+    kind: OverKind,
+) -> Result<ParsedRuleBody, FormulaError> {
+    p.skip_ws();
+    let measure = p.parse_bare_identifier(fn_name, call_start)?;
+    p.skip_ws();
+    if p.peek_byte() != Some(b',') {
+        return Err(FormulaError::wrong_arg_count(
+            call_start,
+            format!("{fn_name} expects 2 arguments: {fn_name}(measure, dim)"),
+        ));
+    }
+    p.advance(); // consume ','
+    p.skip_ws();
+    let dimension = p.parse_bare_identifier(fn_name, call_start)?;
+    p.skip_ws();
+    p.expect_close_paren(fn_name)?;
+    let body = ParsedSumOverBody { dimension, measure };
+    Ok(match kind {
+        OverKind::Avg => ParsedRuleBody::AvgOver(body),
+        OverKind::Min => ParsedRuleBody::MinOver(body),
+        OverKind::Max => ParsedRuleBody::MaxOver(body),
+    })
+}
+
+/// Phase 3I item 5: `wavg_over(measure, dim, weight_measure)`.
+fn parse_wavg_over(p: &mut Parser<'_>, call_start: usize) -> Result<ParsedRuleBody, FormulaError> {
+    p.skip_ws();
+    let value_measure = p.parse_bare_identifier("wavg_over", call_start)?;
+    p.skip_ws();
+    if p.peek_byte() != Some(b',') {
+        return Err(FormulaError::wrong_arg_count(
+            call_start,
+            "wavg_over expects 3 arguments: wavg_over(measure, dim, weight_measure)".into(),
+        ));
+    }
+    p.advance();
+    p.skip_ws();
+    let dimension = p.parse_bare_identifier("wavg_over", call_start)?;
+    p.skip_ws();
+    if p.peek_byte() != Some(b',') {
+        return Err(FormulaError::wrong_arg_count(
+            call_start,
+            "wavg_over expects 3 arguments: wavg_over(measure, dim, weight_measure)".into(),
+        ));
+    }
+    p.advance();
+    p.skip_ws();
+    let weight_measure = p.parse_bare_identifier("wavg_over", call_start)?;
+    p.skip_ws();
+    p.expect_close_paren("wavg_over")?;
+    Ok(ParsedRuleBody::WAvgOver(
+        crate::schema::ParsedWAvgOverBody {
+            dimension,
+            value_measure,
+            weight_measure,
+        },
+    ))
+}
+
+/// Phase 3I item 6: desugar `ifs(c1, v1, c2, v2, ..., default)` to
+/// `if(c1, v1, if(c2, v2, ..., default))`. Total args must be odd
+/// (2N+1: N condition/value pairs plus a mandatory default). The
+/// degenerate one-arg form (just the default) emits a bare `Const` /
+/// reference for the default. No new `Expr` variant.
+fn desugar_ifs(
+    call_start: usize,
+    args: Vec<ParsedRuleBody>,
+) -> Result<ParsedRuleBody, FormulaError> {
+    if args.is_empty() {
+        return Err(FormulaError::wrong_arg_count(
+            call_start,
+            "ifs expects at least 1 argument (the default value)".into(),
+        ));
+    }
+    if args.len() % 2 == 0 {
+        return Err(FormulaError::wrong_arg_count(
+            call_start,
+            format!(
+                "ifs expects an odd argument count (N condition/value pairs + 1 default), got {}",
+                args.len()
+            ),
+        ));
+    }
+    // Per handoff item 6 W5: one-arg form (just default) is allowed —
+    // identical to a bare expression / constant.
+    let mut iter = args.into_iter().rev();
+    // SAFETY: len >= 1 verified above.
+    let mut result = match iter.next() {
+        Some(d) => d,
+        None => {
+            return Err(FormulaError::wrong_arg_count(
+                call_start,
+                "ifs: internal — empty after non-empty check".into(),
+            ));
+        }
+    };
+    while let Some(value) = iter.next() {
+        let condition = match iter.next() {
+            Some(c) => c,
+            None => {
+                return Err(FormulaError::wrong_arg_count(
+                    call_start,
+                    "ifs: internal — orphan value without condition".into(),
+                ));
+            }
+        };
+        result = ParsedRuleBody::If(ParsedIfBody {
+            condition: Box::new(condition),
+            then_branch: Box::new(value),
+            else_branch: Box::new(result),
+        });
+    }
+    Ok(result)
+}
+
+/// Phase 3I item 6: desugar `switch(expr, m1, v1, m2, v2, ..., default)`
+/// to `if(expr == m1, v1, if(expr == m2, v2, ..., default))`. The
+/// initial `expr` is cloned at each step (cheap — these are AST nodes).
+/// Total args must be even (1 expr + 2N for N match/value pairs + 1
+/// default = 2N+2). The minimum is 2 (expr + default; a "no matches"
+/// degenerate form that always returns default).
+fn desugar_switch(
+    call_start: usize,
+    args: Vec<ParsedRuleBody>,
+) -> Result<ParsedRuleBody, FormulaError> {
+    if args.len() < 2 {
+        return Err(FormulaError::wrong_arg_count(
+            call_start,
+            "switch expects at least 2 arguments: switch(expr, default)".into(),
+        ));
+    }
+    if args.len() % 2 != 0 {
+        return Err(FormulaError::wrong_arg_count(
+            call_start,
+            format!(
+                "switch expects an even argument count (initial expr + N match/value pairs + 1 default), got {}",
+                args.len()
+            ),
+        ));
+    }
+    let mut iter = args.into_iter();
+    let scrutinee = match iter.next() {
+        Some(s) => s,
+        None => {
+            return Err(FormulaError::wrong_arg_count(
+                call_start,
+                "switch: internal — empty after length check".into(),
+            ));
+        }
+    };
+    // Collect remaining as Vec so we can pop the default off the end.
+    let mut remaining: Vec<ParsedRuleBody> = iter.collect();
+    let default = remaining.pop().unwrap_or_else(|| {
+        ParsedRuleBody::Const(ParsedConstBody {
+            value: ParsedScalar::Null,
+        })
+    });
+    let mut pairs_iter = remaining.into_iter().rev();
+    let mut result = default;
+    while let Some(value) = pairs_iter.next() {
+        let match_target = match pairs_iter.next() {
+            Some(t) => t,
+            None => {
+                return Err(FormulaError::wrong_arg_count(
+                    call_start,
+                    "switch: internal — orphan value without match target".into(),
+                ));
+            }
+        };
+        let condition = ParsedRuleBody::Eq(ParsedBinopBody {
+            left: Box::new(scrutinee.clone()),
+            right: Box::new(match_target),
+        });
+        result = ParsedRuleBody::If(ParsedIfBody {
+            condition: Box::new(condition),
+            then_branch: Box::new(value),
+            else_branch: Box::new(result),
+        });
+    }
+    Ok(result)
+}
+
 // ---------------------------------------------------------------------------
 // Safe vec-to-array extraction helpers (avoid unwrap in library code)
 // ---------------------------------------------------------------------------
@@ -1150,7 +1514,21 @@ fn prec(body: &ParsedRuleBody) -> u8 {
         | ParsedRuleBody::Predict(_)
         | ParsedRuleBody::Calibrate(_)
         | ParsedRuleBody::Exp(_)
-        | ParsedRuleBody::NormCdf(_) => 8,
+        | ParsedRuleBody::NormCdf(_)
+        | ParsedRuleBody::Pow(_)
+        | ParsedRuleBody::Sqrt(_)
+        | ParsedRuleBody::Ln(_)
+        | ParsedRuleBody::Log10(_)
+        | ParsedRuleBody::Round(_)
+        | ParsedRuleBody::Floor(_)
+        | ParsedRuleBody::Ceil(_)
+        | ParsedRuleBody::Mod(_)
+        | ParsedRuleBody::NormInv(_)
+        | ParsedRuleBody::IsElement(_)
+        | ParsedRuleBody::AvgOver(_)
+        | ParsedRuleBody::MinOver(_)
+        | ParsedRuleBody::MaxOver(_)
+        | ParsedRuleBody::WAvgOver(_) => 8,
         // Multiplicative
         ParsedRuleBody::Mul(_) | ParsedRuleBody::Div(_) => 7,
         // Additive
@@ -1334,8 +1712,11 @@ fn write_node_bare(out: &mut String, body: &ParsedRuleBody) {
         ParsedRuleBody::Lookup(b) => {
             out.push_str("lookup(\"");
             out.push_str(&b.table);
-            out.push_str("\", ");
-            write_node(out, &b.key_expr, 0, false);
+            out.push('"');
+            for k in &b.key_exprs {
+                out.push_str(", ");
+                write_node(out, k, 0, false);
+            }
             out.push(')');
         }
         ParsedRuleBody::Bucket(b) => {
@@ -1385,7 +1766,84 @@ fn write_node_bare(out: &mut String, body: &ParsedRuleBody) {
             write_node(out, &b.sigma, 0, false);
             out.push(')');
         }
+        // Phase 3I: math primitives
+        ParsedRuleBody::Pow(b) => {
+            out.push_str("pow(");
+            write_node(out, &b.base, 0, false);
+            out.push_str(", ");
+            write_node(out, &b.exponent, 0, false);
+            out.push(')');
+        }
+        ParsedRuleBody::Sqrt(b) => write_unary(out, "sqrt", &b.operand),
+        ParsedRuleBody::Ln(b) => write_unary(out, "ln", &b.operand),
+        ParsedRuleBody::Log10(b) => write_unary(out, "log10", &b.operand),
+        ParsedRuleBody::Round(b) => write_unary(out, "round", &b.operand),
+        ParsedRuleBody::Floor(b) => write_unary(out, "floor", &b.operand),
+        ParsedRuleBody::Ceil(b) => write_unary(out, "ceil", &b.operand),
+        ParsedRuleBody::Mod(b) => {
+            out.push_str("mod(");
+            write_node(out, &b.dividend, 0, false);
+            out.push_str(", ");
+            write_node(out, &b.divisor, 0, false);
+            out.push(')');
+        }
+        ParsedRuleBody::NormInv(b) => {
+            out.push_str("norm_inv(");
+            write_node(out, &b.p, 0, false);
+            out.push_str(", ");
+            write_node(out, &b.mu, 0, false);
+            out.push_str(", ");
+            write_node(out, &b.sigma, 0, false);
+            out.push(')');
+        }
+        // Phase 3I: is_element narrow numeric form
+        ParsedRuleBody::IsElement(b) => {
+            out.push_str("is_element(");
+            out.push_str(&b.dimension);
+            out.push_str(", \"");
+            out.push_str(&b.element);
+            out.push_str("\")");
+        }
+        // Phase 3I: cross-coord scans
+        ParsedRuleBody::AvgOver(b) => {
+            out.push_str("avg_over(");
+            out.push_str(&b.measure);
+            out.push_str(", ");
+            out.push_str(&b.dimension);
+            out.push(')');
+        }
+        ParsedRuleBody::MinOver(b) => {
+            out.push_str("min_over(");
+            out.push_str(&b.measure);
+            out.push_str(", ");
+            out.push_str(&b.dimension);
+            out.push(')');
+        }
+        ParsedRuleBody::MaxOver(b) => {
+            out.push_str("max_over(");
+            out.push_str(&b.measure);
+            out.push_str(", ");
+            out.push_str(&b.dimension);
+            out.push(')');
+        }
+        ParsedRuleBody::WAvgOver(b) => {
+            out.push_str("wavg_over(");
+            out.push_str(&b.value_measure);
+            out.push_str(", ");
+            out.push_str(&b.dimension);
+            out.push_str(", ");
+            out.push_str(&b.weight_measure);
+            out.push(')');
+        }
     }
+}
+
+/// Phase 3I serializer helper: `name(operand)` for unary math primitives.
+fn write_unary(out: &mut String, name: &str, operand: &ParsedRuleBody) {
+    out.push_str(name);
+    out.push('(');
+    write_node(out, operand, 0, false);
+    out.push(')');
 }
 
 fn write_binop_vec(out: &mut String, args: &[ParsedRuleBody], op: &str, op_prec: u8) {
@@ -1446,7 +1904,11 @@ pub fn contains_cross_coord(body: &ParsedRuleBody) -> bool {
         | ParsedRuleBody::Lag(_)
         | ParsedRuleBody::Cumulative(_)
         | ParsedRuleBody::RollingAvg(_)
-        | ParsedRuleBody::SumOver(_) => true,
+        | ParsedRuleBody::SumOver(_)
+        | ParsedRuleBody::AvgOver(_)
+        | ParsedRuleBody::MinOver(_)
+        | ParsedRuleBody::MaxOver(_)
+        | ParsedRuleBody::WAvgOver(_) => true,
         ParsedRuleBody::Const(_)
         | ParsedRuleBody::Ref(_)
         | ParsedRuleBody::PeriodIndex(_)
@@ -1489,7 +1951,7 @@ pub fn contains_cross_coord(body: &ParsedRuleBody) -> bool {
                 || contains_cross_coord(&b.hi)
         }
         ParsedRuleBody::Benchmark(b) => contains_cross_coord(&b.key_expr),
-        ParsedRuleBody::Lookup(b) => contains_cross_coord(&b.key_expr),
+        ParsedRuleBody::Lookup(b) => b.key_exprs.iter().any(|k| contains_cross_coord(k)),
         ParsedRuleBody::Bucket(b) => contains_cross_coord(&b.value),
         // Phase 3H: predict/calibrate/exp/norm_cdf are not cross-coord functions
         // themselves, but their arguments may contain cross-coord functions.
@@ -1501,6 +1963,26 @@ pub fn contains_cross_coord(body: &ParsedRuleBody) -> bool {
                 || contains_cross_coord(&b.mu)
                 || contains_cross_coord(&b.sigma)
         }
+        // Phase 3I: math primitives are local — no cross-coord on their own.
+        ParsedRuleBody::Pow(b) => {
+            contains_cross_coord(&b.base) || contains_cross_coord(&b.exponent)
+        }
+        ParsedRuleBody::Sqrt(b)
+        | ParsedRuleBody::Ln(b)
+        | ParsedRuleBody::Log10(b)
+        | ParsedRuleBody::Round(b)
+        | ParsedRuleBody::Floor(b)
+        | ParsedRuleBody::Ceil(b) => contains_cross_coord(&b.operand),
+        ParsedRuleBody::Mod(b) => {
+            contains_cross_coord(&b.dividend) || contains_cross_coord(&b.divisor)
+        }
+        ParsedRuleBody::NormInv(b) => {
+            contains_cross_coord(&b.p)
+                || contains_cross_coord(&b.mu)
+                || contains_cross_coord(&b.sigma)
+        }
+        // Phase 3I: is_element is local (parse-time element resolution).
+        ParsedRuleBody::IsElement(_) => false,
     }
 }
 

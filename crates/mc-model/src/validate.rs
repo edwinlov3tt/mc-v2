@@ -96,6 +96,15 @@ pub fn validate(parsed: ParsedModel) -> Result<ValidatedModel, Vec<Error>> {
     // Phase 3F.1: time metadata + anchor validation
     check_time_metadata(&parsed, &mut val_errors);
     check_anchor_requirements(&parsed, &validated_rules, &mut val_errors);
+    // Phase 3I item 1: validate is_element(Dim, "Element") references.
+    // MC1023 (unknown dim) + MC1022 (unknown element).
+    // Phase 3I item 5: validate avg/min/max/wavg_over dim + measure refs.
+    check_is_element_and_over_refs(&parsed, &validated_rules, &mut val_errors);
+    // Phase 3I item 4: validate predict() arity against fitted-model
+    // coefficient counts. Requires fitted_models block. MC2057
+    // (handoff said MC2053 but that was already shipped by Phase 3H —
+    // see check_predict_arity doc comment for the audit-trail note).
+    check_predict_arity(&parsed, &validated_rules, &mut val_errors);
 
     errors.extend(val_errors.into_iter().map(Error::Validation));
 
@@ -248,6 +257,12 @@ fn formula_error_to_parse_error(rule_name: &str, fe: formula::FormulaError) -> P
             message: fe.message,
         },
         "MC1013" => ParseError::FormulaCrossCoordNesting {
+            span,
+            rule_name,
+            offset: fe.offset,
+            message: fe.message,
+        },
+        "MC1024" => ParseError::FormulaStringLiteralMisplaced {
             span,
             rule_name,
             offset: fe.offset,
@@ -642,7 +657,9 @@ fn check_binop_arity(body: &ParsedRuleBody, rule_name: &str, errors: &mut Vec<Va
             return;
         }
         ParsedRuleBody::Lookup(b) => {
-            check_binop_arity(&b.key_expr, rule_name, errors);
+            for k in &b.key_exprs {
+                check_binop_arity(k, rule_name, errors);
+            }
             return;
         }
         ParsedRuleBody::Bucket(b) => {
@@ -670,6 +687,37 @@ fn check_binop_arity(body: &ParsedRuleBody, rule_name: &str, errors: &mut Vec<Va
             check_binop_arity(&b.sigma, rule_name, errors);
             return;
         }
+        // Phase 3I
+        ParsedRuleBody::Pow(b) => {
+            check_binop_arity(&b.base, rule_name, errors);
+            check_binop_arity(&b.exponent, rule_name, errors);
+            return;
+        }
+        ParsedRuleBody::Sqrt(b)
+        | ParsedRuleBody::Ln(b)
+        | ParsedRuleBody::Log10(b)
+        | ParsedRuleBody::Round(b)
+        | ParsedRuleBody::Floor(b)
+        | ParsedRuleBody::Ceil(b) => {
+            check_binop_arity(&b.operand, rule_name, errors);
+            return;
+        }
+        ParsedRuleBody::Mod(b) => {
+            check_binop_arity(&b.dividend, rule_name, errors);
+            check_binop_arity(&b.divisor, rule_name, errors);
+            return;
+        }
+        ParsedRuleBody::NormInv(b) => {
+            check_binop_arity(&b.p, rule_name, errors);
+            check_binop_arity(&b.mu, rule_name, errors);
+            check_binop_arity(&b.sigma, rule_name, errors);
+            return;
+        }
+        ParsedRuleBody::IsElement(_)
+        | ParsedRuleBody::AvgOver(_)
+        | ParsedRuleBody::MinOver(_)
+        | ParsedRuleBody::MaxOver(_)
+        | ParsedRuleBody::WAvgOver(_) => return,
     };
     if let Some(args) = args {
         if args.len() != 2 {
@@ -753,7 +801,11 @@ fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
             collect_body_refs(&b.window, out);
         }
         ParsedRuleBody::Benchmark(b) => collect_body_refs(&b.key_expr, out),
-        ParsedRuleBody::Lookup(b) => collect_body_refs(&b.key_expr, out),
+        ParsedRuleBody::Lookup(b) => {
+            for k in &b.key_exprs {
+                collect_body_refs(k, out);
+            }
+        }
         ParsedRuleBody::Bucket(b) => collect_body_refs(&b.value, out),
         ParsedRuleBody::SumOver(b) => {
             out.insert(b.measure.clone());
@@ -770,6 +822,34 @@ fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
             collect_body_refs(&b.x, out);
             collect_body_refs(&b.mu, out);
             collect_body_refs(&b.sigma, out);
+        }
+        // Phase 3I
+        ParsedRuleBody::Pow(b) => {
+            collect_body_refs(&b.base, out);
+            collect_body_refs(&b.exponent, out);
+        }
+        ParsedRuleBody::Sqrt(b)
+        | ParsedRuleBody::Ln(b)
+        | ParsedRuleBody::Log10(b)
+        | ParsedRuleBody::Round(b)
+        | ParsedRuleBody::Floor(b)
+        | ParsedRuleBody::Ceil(b) => collect_body_refs(&b.operand, out),
+        ParsedRuleBody::Mod(b) => {
+            collect_body_refs(&b.dividend, out);
+            collect_body_refs(&b.divisor, out);
+        }
+        ParsedRuleBody::NormInv(b) => {
+            collect_body_refs(&b.p, out);
+            collect_body_refs(&b.mu, out);
+            collect_body_refs(&b.sigma, out);
+        }
+        ParsedRuleBody::IsElement(_) => {} // no measure dep
+        ParsedRuleBody::AvgOver(b) | ParsedRuleBody::MinOver(b) | ParsedRuleBody::MaxOver(b) => {
+            out.insert(b.measure.clone());
+        }
+        ParsedRuleBody::WAvgOver(b) => {
+            out.insert(b.value_measure.clone());
+            out.insert(b.weight_measure.clone());
         }
     }
 }
@@ -997,7 +1077,7 @@ fn uses_time_series(body: &ParsedRuleBody) -> bool {
         }
         ParsedRuleBody::ActualRef(_) | ParsedRuleBody::SumOver(_) => false,
         ParsedRuleBody::Benchmark(b) => uses_time_series(&b.key_expr),
-        ParsedRuleBody::Lookup(b) => uses_time_series(&b.key_expr),
+        ParsedRuleBody::Lookup(b) => b.key_exprs.iter().any(|k| uses_time_series(k)),
         ParsedRuleBody::Bucket(b) => uses_time_series(&b.value),
         // Phase 3H
         ParsedRuleBody::Predict(b) => b.features.iter().any(|f| uses_time_series(f)),
@@ -1006,6 +1086,24 @@ fn uses_time_series(body: &ParsedRuleBody) -> bool {
         ParsedRuleBody::NormCdf(b) => {
             uses_time_series(&b.x) || uses_time_series(&b.mu) || uses_time_series(&b.sigma)
         }
+        // Phase 3I: math primitives are local — recurse into operands.
+        ParsedRuleBody::Pow(b) => uses_time_series(&b.base) || uses_time_series(&b.exponent),
+        ParsedRuleBody::Sqrt(b)
+        | ParsedRuleBody::Ln(b)
+        | ParsedRuleBody::Log10(b)
+        | ParsedRuleBody::Round(b)
+        | ParsedRuleBody::Floor(b)
+        | ParsedRuleBody::Ceil(b) => uses_time_series(&b.operand),
+        ParsedRuleBody::Mod(b) => uses_time_series(&b.dividend) || uses_time_series(&b.divisor),
+        ParsedRuleBody::NormInv(b) => {
+            uses_time_series(&b.p) || uses_time_series(&b.mu) || uses_time_series(&b.sigma)
+        }
+        // Phase 3I: is_element + *_over family are non-time-series cross-coord scans.
+        ParsedRuleBody::IsElement(_)
+        | ParsedRuleBody::AvgOver(_)
+        | ParsedRuleBody::MinOver(_)
+        | ParsedRuleBody::MaxOver(_)
+        | ParsedRuleBody::WAvgOver(_) => false,
     }
 }
 
@@ -1058,7 +1156,7 @@ fn uses_actual_ref(body: &ParsedRuleBody) -> bool {
         | ParsedRuleBody::RollingAvg(_)
         | ParsedRuleBody::SumOver(_) => false,
         ParsedRuleBody::Benchmark(b) => uses_actual_ref(&b.key_expr),
-        ParsedRuleBody::Lookup(b) => uses_actual_ref(&b.key_expr),
+        ParsedRuleBody::Lookup(b) => b.key_exprs.iter().any(|k| uses_actual_ref(k)),
         ParsedRuleBody::Bucket(b) => uses_actual_ref(&b.value),
         // Phase 3H
         ParsedRuleBody::Predict(b) => b.features.iter().any(|f| uses_actual_ref(f)),
@@ -1067,6 +1165,23 @@ fn uses_actual_ref(body: &ParsedRuleBody) -> bool {
         ParsedRuleBody::NormCdf(b) => {
             uses_actual_ref(&b.x) || uses_actual_ref(&b.mu) || uses_actual_ref(&b.sigma)
         }
+        // Phase 3I
+        ParsedRuleBody::Pow(b) => uses_actual_ref(&b.base) || uses_actual_ref(&b.exponent),
+        ParsedRuleBody::Sqrt(b)
+        | ParsedRuleBody::Ln(b)
+        | ParsedRuleBody::Log10(b)
+        | ParsedRuleBody::Round(b)
+        | ParsedRuleBody::Floor(b)
+        | ParsedRuleBody::Ceil(b) => uses_actual_ref(&b.operand),
+        ParsedRuleBody::Mod(b) => uses_actual_ref(&b.dividend) || uses_actual_ref(&b.divisor),
+        ParsedRuleBody::NormInv(b) => {
+            uses_actual_ref(&b.p) || uses_actual_ref(&b.mu) || uses_actual_ref(&b.sigma)
+        }
+        ParsedRuleBody::IsElement(_)
+        | ParsedRuleBody::AvgOver(_)
+        | ParsedRuleBody::MinOver(_)
+        | ParsedRuleBody::MaxOver(_)
+        | ParsedRuleBody::WAvgOver(_) => false,
     }
 }
 
@@ -1224,7 +1339,7 @@ fn find_cross_coord_nesting(body: &ParsedRuleBody) -> Option<String> {
             .or_else(|| find_cross_coord_nesting(&b.lo))
             .or_else(|| find_cross_coord_nesting(&b.hi)),
         ParsedRuleBody::Benchmark(b) => find_cross_coord_nesting(&b.key_expr),
-        ParsedRuleBody::Lookup(b) => find_cross_coord_nesting(&b.key_expr),
+        ParsedRuleBody::Lookup(b) => b.key_exprs.iter().find_map(|k| find_cross_coord_nesting(k)),
         ParsedRuleBody::Bucket(b) => find_cross_coord_nesting(&b.value),
         // Phase 3H
         ParsedRuleBody::Predict(b) => b.features.iter().find_map(|f| find_cross_coord_nesting(f)),
@@ -1233,6 +1348,29 @@ fn find_cross_coord_nesting(body: &ParsedRuleBody) -> Option<String> {
         ParsedRuleBody::NormCdf(b) => find_cross_coord_nesting(&b.x)
             .or_else(|| find_cross_coord_nesting(&b.mu))
             .or_else(|| find_cross_coord_nesting(&b.sigma)),
+        // Phase 3I
+        ParsedRuleBody::Pow(b) => {
+            find_cross_coord_nesting(&b.base).or_else(|| find_cross_coord_nesting(&b.exponent))
+        }
+        ParsedRuleBody::Sqrt(b)
+        | ParsedRuleBody::Ln(b)
+        | ParsedRuleBody::Log10(b)
+        | ParsedRuleBody::Round(b)
+        | ParsedRuleBody::Floor(b)
+        | ParsedRuleBody::Ceil(b) => find_cross_coord_nesting(&b.operand),
+        ParsedRuleBody::Mod(b) => {
+            find_cross_coord_nesting(&b.dividend).or_else(|| find_cross_coord_nesting(&b.divisor))
+        }
+        ParsedRuleBody::NormInv(b) => find_cross_coord_nesting(&b.p)
+            .or_else(|| find_cross_coord_nesting(&b.mu))
+            .or_else(|| find_cross_coord_nesting(&b.sigma)),
+        // Phase 3I: avg_over/min_over/max_over/wavg_over are leaf cross-coord
+        // operators (their args are bare measure/dim names, not expressions).
+        ParsedRuleBody::AvgOver(_)
+        | ParsedRuleBody::MinOver(_)
+        | ParsedRuleBody::MaxOver(_)
+        | ParsedRuleBody::WAvgOver(_)
+        | ParsedRuleBody::IsElement(_) => None,
     }
 }
 
@@ -1307,22 +1445,113 @@ fn check_reference_data_blocks(parsed: &ParsedModel, errors: &mut Vec<Validation
             all_ref_names.insert(&lt.name, "lookup_tables");
         }
 
-        if !dim_names.contains(lt.key_dimension.as_str()) {
-            errors.push(ValidationError::Schema {
-                message: format!(
-                    "lookup_table {:?}: key_dimension {:?} is not a declared dimension (MC2038)",
-                    lt.name, lt.key_dimension
-                ),
-            });
-        } else if let Some(elements) = elem_by_dim.get(lt.key_dimension.as_str()) {
+        // Phase 3I item 3: enforce exactly-one-of (key_dimension XOR
+        // key_dimensions). MC2050 fires if both are set.
+        match (&lt.key_dimension, &lt.key_dimensions) {
+            (Some(_), Some(_)) => {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "lookup_table {:?}: cannot set both key_dimension and key_dimensions; pick one (MC2050)",
+                        lt.name
+                    ),
+                });
+                continue;
+            }
+            (None, None) => {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "lookup_table {:?}: must set either key_dimension (single-key) or key_dimensions (multi-key)",
+                        lt.name
+                    ),
+                });
+                continue;
+            }
+            _ => {}
+        }
+
+        let key_dims: Vec<&str> = lt.key_dims();
+
+        // MC2038: each key dimension must be declared
+        let mut all_dims_known = true;
+        for d in &key_dims {
+            if !dim_names.contains(d) {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "lookup_table {:?}: key dimension {:?} is not a declared dimension (MC2038)",
+                        lt.name, d
+                    ),
+                });
+                all_dims_known = false;
+            }
+        }
+        if !all_dims_known {
+            continue;
+        }
+
+        if key_dims.len() == 1 {
+            // Single-key: each value key must be an element of the dim.
+            let dim = key_dims[0];
+            if let Some(elements) = elem_by_dim.get(dim) {
+                for key in lt.values.keys() {
+                    if !elements.contains(key.as_str()) {
+                        errors.push(ValidationError::Schema {
+                            message: format!(
+                                "lookup_table {:?}: value key {:?} is not an element of dimension {:?} (MC2039)",
+                                lt.name, key, dim
+                            ),
+                        });
+                    }
+                }
+            }
+        } else {
+            // Phase 3I item 3 W2/W3: multi-key. Each value key is
+            // pipe-joined element names in the declared key_dimensions
+            // order. Validate (a) no element-name contains `|` (MC2051),
+            // (b) the joined-key arity matches len(key_dimensions)
+            // (MC2052), (c) each component is a valid element of the
+            // corresponding dim (MC2039).
+            for (dim_idx, d) in key_dims.iter().enumerate() {
+                if let Some(elements) = elem_by_dim.get(*d) {
+                    for elem in elements {
+                        if elem.contains('|') {
+                            errors.push(ValidationError::Schema {
+                                message: format!(
+                                    "lookup_table {:?}: dimension {:?} has element name {:?} containing the multi-key separator '|' (MC2051)",
+                                    lt.name, d, elem
+                                ),
+                            });
+                            // Don't return — keep accumulating diagnostics.
+                        }
+                    }
+                    let _ = dim_idx; // unused; reserved for future positional checks
+                }
+            }
             for key in lt.values.keys() {
-                if !elements.contains(key.as_str()) {
+                let parts: Vec<&str> = key.split('|').collect();
+                if parts.len() != key_dims.len() {
                     errors.push(ValidationError::Schema {
                         message: format!(
-                            "lookup_table {:?}: value key {:?} is not an element of dimension {:?} (MC2039)",
-                            lt.name, key, lt.key_dimension
+                            "lookup_table {:?}: key {:?} has {} parts but key_dimensions has {} (MC2052)",
+                            lt.name,
+                            key,
+                            parts.len(),
+                            key_dims.len()
                         ),
                     });
+                    continue;
+                }
+                for (i, part) in parts.iter().enumerate() {
+                    let dim = key_dims[i];
+                    if let Some(elements) = elem_by_dim.get(dim) {
+                        if !elements.contains(part) {
+                            errors.push(ValidationError::Schema {
+                                message: format!(
+                                    "lookup_table {:?}: key {:?} part {:?} is not an element of dimension {:?} (MC2039)",
+                                    lt.name, key, part, dim
+                                ),
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -1655,7 +1884,7 @@ fn uses_anchor_function(body: &ParsedRuleBody) -> bool {
         ParsedRuleBody::Lag(b) => uses_anchor_function(&b.periods),
         ParsedRuleBody::RollingAvg(b) => uses_anchor_function(&b.window),
         ParsedRuleBody::Benchmark(b) => uses_anchor_function(&b.key_expr),
-        ParsedRuleBody::Lookup(b) => uses_anchor_function(&b.key_expr),
+        ParsedRuleBody::Lookup(b) => b.key_exprs.iter().any(|k| uses_anchor_function(k)),
         ParsedRuleBody::Bucket(b) => uses_anchor_function(&b.value),
         // Phase 3H
         ParsedRuleBody::Predict(b) => b.features.iter().any(|f| uses_anchor_function(f)),
@@ -1666,6 +1895,29 @@ fn uses_anchor_function(body: &ParsedRuleBody) -> bool {
                 || uses_anchor_function(&b.mu)
                 || uses_anchor_function(&b.sigma)
         }
+        // Phase 3I
+        ParsedRuleBody::Pow(b) => {
+            uses_anchor_function(&b.base) || uses_anchor_function(&b.exponent)
+        }
+        ParsedRuleBody::Sqrt(b)
+        | ParsedRuleBody::Ln(b)
+        | ParsedRuleBody::Log10(b)
+        | ParsedRuleBody::Round(b)
+        | ParsedRuleBody::Floor(b)
+        | ParsedRuleBody::Ceil(b) => uses_anchor_function(&b.operand),
+        ParsedRuleBody::Mod(b) => {
+            uses_anchor_function(&b.dividend) || uses_anchor_function(&b.divisor)
+        }
+        ParsedRuleBody::NormInv(b) => {
+            uses_anchor_function(&b.p)
+                || uses_anchor_function(&b.mu)
+                || uses_anchor_function(&b.sigma)
+        }
+        ParsedRuleBody::IsElement(_)
+        | ParsedRuleBody::AvgOver(_)
+        | ParsedRuleBody::MinOver(_)
+        | ParsedRuleBody::MaxOver(_)
+        | ParsedRuleBody::WAvgOver(_) => false,
     }
 }
 
@@ -1841,6 +2093,403 @@ fn check_fitted_model_blocks(parsed: &ParsedModel, errors: &mut Vec<ValidationEr
                     ),
                 });
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3I — items 1 + 5 ref-resolution
+// ---------------------------------------------------------------------------
+
+/// Walk every rule body. For each `IsElement(dim, elem)` node:
+///   - MC1023 if `dim` is not a declared dimension.
+///   - MC1022 if `elem` is not a declared element of `dim`.
+/// For each `*_over(measure, dim, ...)` node (avg/min/max/wavg):
+///   - MC1016 if `dim` is not a declared dimension.
+///   - MC1018 if any measure ref is not a declared measure.
+fn check_is_element_and_over_refs(
+    parsed: &ParsedModel,
+    validated_rules: &[ValidatedRule],
+    errors: &mut Vec<ValidationError>,
+) {
+    let dim_names: BTreeMap<&str, &crate::schema::ParsedDimension> = parsed
+        .dimensions
+        .iter()
+        .map(|d| (d.name.as_str(), d))
+        .collect();
+    let known_measures: BTreeSet<&str> = parsed.measures.iter().map(|m| m.name.as_str()).collect();
+
+    for r in validated_rules {
+        walk_is_element_and_over(&r.body, &r.name, &dim_names, &known_measures, errors);
+    }
+}
+
+fn walk_is_element_and_over(
+    body: &ParsedRuleBody,
+    rule_name: &str,
+    dim_names: &BTreeMap<&str, &crate::schema::ParsedDimension>,
+    known_measures: &BTreeSet<&str>,
+    errors: &mut Vec<ValidationError>,
+) {
+    match body {
+        ParsedRuleBody::IsElement(b) => {
+            // MC1023: unknown dimension
+            let dim = match dim_names.get(b.dimension.as_str()) {
+                Some(d) => d,
+                None => {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "rule {rule_name:?}: is_element references unknown dimension {:?} (MC1023)",
+                            b.dimension
+                        ),
+                    });
+                    return;
+                }
+            };
+            // MC1022: unknown element in that dimension
+            let known_elems: BTreeSet<&str> =
+                dim.elements.iter().map(|e| e.name.as_str()).collect();
+            if !known_elems.contains(b.element.as_str()) {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "rule {rule_name:?}: is_element references unknown element {:?} in dimension {:?} (MC1022)",
+                        b.element, b.dimension
+                    ),
+                });
+            }
+        }
+        ParsedRuleBody::AvgOver(b) | ParsedRuleBody::MinOver(b) | ParsedRuleBody::MaxOver(b) => {
+            if !dim_names.contains_key(b.dimension.as_str()) {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "rule {rule_name:?}: *_over references unknown dimension {:?} (MC1016)",
+                        b.dimension
+                    ),
+                });
+            }
+            if !known_measures.contains(b.measure.as_str()) {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "rule {rule_name:?}: *_over references unknown measure {:?} (MC1018)",
+                        b.measure
+                    ),
+                });
+            }
+        }
+        ParsedRuleBody::WAvgOver(b) => {
+            if !dim_names.contains_key(b.dimension.as_str()) {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "rule {rule_name:?}: wavg_over references unknown dimension {:?} (MC1016)",
+                        b.dimension
+                    ),
+                });
+            }
+            for m in [&b.value_measure, &b.weight_measure] {
+                if !known_measures.contains(m.as_str()) {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "rule {rule_name:?}: wavg_over references unknown measure {:?} (MC1018)",
+                            m
+                        ),
+                    });
+                }
+            }
+        }
+        // Recurse into composite nodes
+        ParsedRuleBody::Const(_)
+        | ParsedRuleBody::Ref(_)
+        | ParsedRuleBody::PeriodIndex(_)
+        | ParsedRuleBody::AnchorIndex(_)
+        | ParsedRuleBody::IsPast(_)
+        | ParsedRuleBody::IsCurrent(_)
+        | ParsedRuleBody::IsFuture(_)
+        | ParsedRuleBody::PeriodsSinceAnchor(_)
+        | ParsedRuleBody::PeriodsToEnd(_)
+        | ParsedRuleBody::ActualRef(_)
+        | ParsedRuleBody::Prev(_)
+        | ParsedRuleBody::Cumulative(_)
+        | ParsedRuleBody::SumOver(_) => {}
+        ParsedRuleBody::Add(b) => {
+            for a in &b.add {
+                walk_is_element_and_over(a, rule_name, dim_names, known_measures, errors);
+            }
+        }
+        ParsedRuleBody::Sub(b) => {
+            for a in &b.sub {
+                walk_is_element_and_over(a, rule_name, dim_names, known_measures, errors);
+            }
+        }
+        ParsedRuleBody::Mul(b) => {
+            for a in &b.mul {
+                walk_is_element_and_over(a, rule_name, dim_names, known_measures, errors);
+            }
+        }
+        ParsedRuleBody::Div(b) => {
+            for a in &b.div {
+                walk_is_element_and_over(a, rule_name, dim_names, known_measures, errors);
+            }
+        }
+        ParsedRuleBody::IfNull(b) => {
+            for a in &b.if_null {
+                walk_is_element_and_over(a, rule_name, dim_names, known_measures, errors);
+            }
+        }
+        ParsedRuleBody::Gt(b)
+        | ParsedRuleBody::Lt(b)
+        | ParsedRuleBody::Gte(b)
+        | ParsedRuleBody::Lte(b)
+        | ParsedRuleBody::Eq(b)
+        | ParsedRuleBody::Neq(b)
+        | ParsedRuleBody::And(b)
+        | ParsedRuleBody::Or(b) => {
+            walk_is_element_and_over(&b.left, rule_name, dim_names, known_measures, errors);
+            walk_is_element_and_over(&b.right, rule_name, dim_names, known_measures, errors);
+        }
+        ParsedRuleBody::Not(b) | ParsedRuleBody::Abs(b) => {
+            walk_is_element_and_over(&b.operand, rule_name, dim_names, known_measures, errors);
+        }
+        ParsedRuleBody::If(b) => {
+            walk_is_element_and_over(&b.condition, rule_name, dim_names, known_measures, errors);
+            walk_is_element_and_over(&b.then_branch, rule_name, dim_names, known_measures, errors);
+            walk_is_element_and_over(&b.else_branch, rule_name, dim_names, known_measures, errors);
+        }
+        ParsedRuleBody::Min(b) | ParsedRuleBody::Max(b) | ParsedRuleBody::Coalesce(b) => {
+            for a in &b.args {
+                walk_is_element_and_over(a, rule_name, dim_names, known_measures, errors);
+            }
+        }
+        ParsedRuleBody::SafeDiv(b) => {
+            walk_is_element_and_over(&b.numerator, rule_name, dim_names, known_measures, errors);
+            walk_is_element_and_over(&b.denominator, rule_name, dim_names, known_measures, errors);
+            walk_is_element_and_over(&b.default, rule_name, dim_names, known_measures, errors);
+        }
+        ParsedRuleBody::Clamp(b) => {
+            walk_is_element_and_over(&b.value, rule_name, dim_names, known_measures, errors);
+            walk_is_element_and_over(&b.lo, rule_name, dim_names, known_measures, errors);
+            walk_is_element_and_over(&b.hi, rule_name, dim_names, known_measures, errors);
+        }
+        ParsedRuleBody::Lag(b) => {
+            walk_is_element_and_over(&b.periods, rule_name, dim_names, known_measures, errors);
+        }
+        ParsedRuleBody::RollingAvg(b) => {
+            walk_is_element_and_over(&b.window, rule_name, dim_names, known_measures, errors);
+        }
+        ParsedRuleBody::Benchmark(b) => {
+            walk_is_element_and_over(&b.key_expr, rule_name, dim_names, known_measures, errors);
+        }
+        ParsedRuleBody::Lookup(b) => {
+            for k in &b.key_exprs {
+                walk_is_element_and_over(k, rule_name, dim_names, known_measures, errors);
+            }
+        }
+        ParsedRuleBody::Bucket(b) => {
+            walk_is_element_and_over(&b.value, rule_name, dim_names, known_measures, errors);
+        }
+        ParsedRuleBody::Predict(b) => {
+            for f in &b.features {
+                walk_is_element_and_over(f, rule_name, dim_names, known_measures, errors);
+            }
+        }
+        ParsedRuleBody::Calibrate(b) => {
+            walk_is_element_and_over(&b.value, rule_name, dim_names, known_measures, errors);
+        }
+        ParsedRuleBody::Exp(b) => {
+            walk_is_element_and_over(&b.operand, rule_name, dim_names, known_measures, errors);
+        }
+        ParsedRuleBody::NormCdf(b) => {
+            walk_is_element_and_over(&b.x, rule_name, dim_names, known_measures, errors);
+            walk_is_element_and_over(&b.mu, rule_name, dim_names, known_measures, errors);
+            walk_is_element_and_over(&b.sigma, rule_name, dim_names, known_measures, errors);
+        }
+        ParsedRuleBody::Pow(b) => {
+            walk_is_element_and_over(&b.base, rule_name, dim_names, known_measures, errors);
+            walk_is_element_and_over(&b.exponent, rule_name, dim_names, known_measures, errors);
+        }
+        ParsedRuleBody::Sqrt(b)
+        | ParsedRuleBody::Ln(b)
+        | ParsedRuleBody::Log10(b)
+        | ParsedRuleBody::Round(b)
+        | ParsedRuleBody::Floor(b)
+        | ParsedRuleBody::Ceil(b) => {
+            walk_is_element_and_over(&b.operand, rule_name, dim_names, known_measures, errors);
+        }
+        ParsedRuleBody::Mod(b) => {
+            walk_is_element_and_over(&b.dividend, rule_name, dim_names, known_measures, errors);
+            walk_is_element_and_over(&b.divisor, rule_name, dim_names, known_measures, errors);
+        }
+        ParsedRuleBody::NormInv(b) => {
+            walk_is_element_and_over(&b.p, rule_name, dim_names, known_measures, errors);
+            walk_is_element_and_over(&b.mu, rule_name, dim_names, known_measures, errors);
+            walk_is_element_and_over(&b.sigma, rule_name, dim_names, known_measures, errors);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3I — item 4: predict() arity validation (MC2057)
+// ---------------------------------------------------------------------------
+
+/// Walk every rule body. For each `predict("model_name", f1, f2, ...)`
+/// call, look up the named fitted model and compare the call's feature
+/// count to the model's coefficient count. Mismatch → MC2057.
+///
+/// **NB**: handoff item 4 W1 specified MC2053, but MC2053 was already
+/// shipped by Phase 3H for "duplicate fitted-artifact name" in
+/// [`check_fitted_model_blocks`]. Per process-notes Rule 3 (CVE-style
+/// code retirement) we cannot reuse MC2053; MC2057 is the next free
+/// slot above the existing 2050-2056 range. Surfaced during the Phase
+/// 3I self-audit (section G); see completion report §"Drift vs
+/// handoff" for the audit trail.
+fn check_predict_arity(
+    parsed: &ParsedModel,
+    validated_rules: &[ValidatedRule],
+    errors: &mut Vec<ValidationError>,
+) {
+    use crate::schema::ParsedFittedModel;
+    let models: BTreeMap<&str, &ParsedFittedModel> = parsed
+        .fitted_models
+        .iter()
+        .map(|m| (m.name.as_str(), m))
+        .collect();
+    for r in validated_rules {
+        walk_predict_arity(&r.body, &r.name, &models, errors);
+    }
+}
+
+fn walk_predict_arity(
+    body: &ParsedRuleBody,
+    rule_name: &str,
+    models: &BTreeMap<&str, &crate::schema::ParsedFittedModel>,
+    errors: &mut Vec<ValidationError>,
+) {
+    match body {
+        ParsedRuleBody::Predict(b) => {
+            if let Some(model) = models.get(b.model_id.as_str()) {
+                let expected = model.coefficients.len();
+                let actual = b.features.len();
+                if actual != expected {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "rule {rule_name:?}: predict({:?}, ...) has {actual} feature \
+                             argument(s) but fitted_model {:?} declares {expected} coefficient(s) (MC2057)",
+                            b.model_id, b.model_id
+                        ),
+                    });
+                }
+            }
+            // Unknown model_id is left to the runtime (returns Null) — this
+            // check is purely about arity, not model existence.
+            for f in &b.features {
+                walk_predict_arity(f, rule_name, models, errors);
+            }
+        }
+        ParsedRuleBody::Const(_)
+        | ParsedRuleBody::Ref(_)
+        | ParsedRuleBody::PeriodIndex(_)
+        | ParsedRuleBody::AnchorIndex(_)
+        | ParsedRuleBody::IsPast(_)
+        | ParsedRuleBody::IsCurrent(_)
+        | ParsedRuleBody::IsFuture(_)
+        | ParsedRuleBody::PeriodsSinceAnchor(_)
+        | ParsedRuleBody::PeriodsToEnd(_)
+        | ParsedRuleBody::ActualRef(_)
+        | ParsedRuleBody::Prev(_)
+        | ParsedRuleBody::Cumulative(_)
+        | ParsedRuleBody::SumOver(_)
+        | ParsedRuleBody::IsElement(_)
+        | ParsedRuleBody::AvgOver(_)
+        | ParsedRuleBody::MinOver(_)
+        | ParsedRuleBody::MaxOver(_)
+        | ParsedRuleBody::WAvgOver(_) => {}
+        ParsedRuleBody::Add(b) => b
+            .add
+            .iter()
+            .for_each(|a| walk_predict_arity(a, rule_name, models, errors)),
+        ParsedRuleBody::Sub(b) => b
+            .sub
+            .iter()
+            .for_each(|a| walk_predict_arity(a, rule_name, models, errors)),
+        ParsedRuleBody::Mul(b) => b
+            .mul
+            .iter()
+            .for_each(|a| walk_predict_arity(a, rule_name, models, errors)),
+        ParsedRuleBody::Div(b) => b
+            .div
+            .iter()
+            .for_each(|a| walk_predict_arity(a, rule_name, models, errors)),
+        ParsedRuleBody::IfNull(b) => b
+            .if_null
+            .iter()
+            .for_each(|a| walk_predict_arity(a, rule_name, models, errors)),
+        ParsedRuleBody::Gt(b)
+        | ParsedRuleBody::Lt(b)
+        | ParsedRuleBody::Gte(b)
+        | ParsedRuleBody::Lte(b)
+        | ParsedRuleBody::Eq(b)
+        | ParsedRuleBody::Neq(b)
+        | ParsedRuleBody::And(b)
+        | ParsedRuleBody::Or(b) => {
+            walk_predict_arity(&b.left, rule_name, models, errors);
+            walk_predict_arity(&b.right, rule_name, models, errors);
+        }
+        ParsedRuleBody::Not(b) | ParsedRuleBody::Abs(b) => {
+            walk_predict_arity(&b.operand, rule_name, models, errors);
+        }
+        ParsedRuleBody::If(b) => {
+            walk_predict_arity(&b.condition, rule_name, models, errors);
+            walk_predict_arity(&b.then_branch, rule_name, models, errors);
+            walk_predict_arity(&b.else_branch, rule_name, models, errors);
+        }
+        ParsedRuleBody::Min(b) | ParsedRuleBody::Max(b) | ParsedRuleBody::Coalesce(b) => {
+            for a in &b.args {
+                walk_predict_arity(a, rule_name, models, errors);
+            }
+        }
+        ParsedRuleBody::SafeDiv(b) => {
+            walk_predict_arity(&b.numerator, rule_name, models, errors);
+            walk_predict_arity(&b.denominator, rule_name, models, errors);
+            walk_predict_arity(&b.default, rule_name, models, errors);
+        }
+        ParsedRuleBody::Clamp(b) => {
+            walk_predict_arity(&b.value, rule_name, models, errors);
+            walk_predict_arity(&b.lo, rule_name, models, errors);
+            walk_predict_arity(&b.hi, rule_name, models, errors);
+        }
+        ParsedRuleBody::Lag(b) => walk_predict_arity(&b.periods, rule_name, models, errors),
+        ParsedRuleBody::RollingAvg(b) => walk_predict_arity(&b.window, rule_name, models, errors),
+        ParsedRuleBody::Benchmark(b) => walk_predict_arity(&b.key_expr, rule_name, models, errors),
+        ParsedRuleBody::Lookup(b) => {
+            for k in &b.key_exprs {
+                walk_predict_arity(k, rule_name, models, errors);
+            }
+        }
+        ParsedRuleBody::Bucket(b) => walk_predict_arity(&b.value, rule_name, models, errors),
+        ParsedRuleBody::Calibrate(b) => walk_predict_arity(&b.value, rule_name, models, errors),
+        ParsedRuleBody::Exp(b) => walk_predict_arity(&b.operand, rule_name, models, errors),
+        ParsedRuleBody::NormCdf(b) => {
+            walk_predict_arity(&b.x, rule_name, models, errors);
+            walk_predict_arity(&b.mu, rule_name, models, errors);
+            walk_predict_arity(&b.sigma, rule_name, models, errors);
+        }
+        ParsedRuleBody::Pow(b) => {
+            walk_predict_arity(&b.base, rule_name, models, errors);
+            walk_predict_arity(&b.exponent, rule_name, models, errors);
+        }
+        ParsedRuleBody::Sqrt(b)
+        | ParsedRuleBody::Ln(b)
+        | ParsedRuleBody::Log10(b)
+        | ParsedRuleBody::Round(b)
+        | ParsedRuleBody::Floor(b)
+        | ParsedRuleBody::Ceil(b) => walk_predict_arity(&b.operand, rule_name, models, errors),
+        ParsedRuleBody::Mod(b) => {
+            walk_predict_arity(&b.dividend, rule_name, models, errors);
+            walk_predict_arity(&b.divisor, rule_name, models, errors);
+        }
+        ParsedRuleBody::NormInv(b) => {
+            walk_predict_arity(&b.p, rule_name, models, errors);
+            walk_predict_arity(&b.mu, rule_name, models, errors);
+            walk_predict_arity(&b.sigma, rule_name, models, errors);
         }
     }
 }

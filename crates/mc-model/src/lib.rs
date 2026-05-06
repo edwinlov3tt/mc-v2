@@ -53,6 +53,7 @@ pub use diagnostic::{
     ModelPath, Severity, SCHEMA_VERSION,
 };
 pub use error::{Error, ParseError, ParseErrorKind, Span, ValidationError};
+pub use formula::parse_expression;
 pub use inputs::{
     apply_canonical_inputs, apply_fixture, resolve_inputs, ResolvedFixture, ResolvedInputSet,
     ResolvedInputs, ResolvedRow, VALUE_COLUMN,
@@ -64,11 +65,12 @@ pub use schema::{
     ParsedActualRefBody, ParsedBenchmark, ParsedBenchmarkRefBody, ParsedBinopBody,
     ParsedBucketBody, ParsedClampBody, ParsedDimension, ParsedElement, ParsedFixture,
     ParsedGoldenTest, ParsedHierarchy, ParsedHierarchyEdge, ParsedIfBody, ParsedInlineRows,
-    ParsedInputSet, ParsedLagBody, ParsedLookupRefBody, ParsedLookupTable, ParsedMeasure,
-    ParsedMeasureRefBody, ParsedMetadata, ParsedModel, ParsedRollingAvgBody, ParsedRowCell,
-    ParsedRule, ParsedRuleBody, ParsedRuleBodyForm, ParsedSafeDivBody, ParsedScalar,
-    ParsedStatusThreshold, ParsedSumOverBody, ParsedThresholdBand, ParsedUnaryBody,
-    ParsedVarargBody, ValidatedModel, ValidatedRule,
+    ParsedInputSet, ParsedIsElementBody, ParsedLagBody, ParsedLookupRefBody, ParsedLookupTable,
+    ParsedMeasure, ParsedMeasureRefBody, ParsedMetadata, ParsedModBody, ParsedModel,
+    ParsedNormInvBody, ParsedPowBody, ParsedRollingAvgBody, ParsedRowCell, ParsedRule,
+    ParsedRuleBody, ParsedRuleBodyForm, ParsedSafeDivBody, ParsedScalar, ParsedStatusThreshold,
+    ParsedSumOverBody, ParsedThresholdBand, ParsedUnaryBody, ParsedVarargBody, ParsedWAvgOverBody,
+    ValidatedModel, ValidatedRule,
 };
 pub use validate::validate;
 
