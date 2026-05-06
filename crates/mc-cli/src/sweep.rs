@@ -160,128 +160,122 @@ pub fn run_captured(cmd: SweepCommand) -> (i32, String) {
     // Parse metric expression: mean(Measure), sum(Measure), etc.
     let metric_fn = cmd.metric.trim();
 
-    // For each sweep point, load model fresh, apply override, evaluate metric.
-    // (The true baseline is computed separately below; the first-point reading
-    // here is no longer wired into the output.)
+    // Phase 6A.3 item 2: compile the model exactly once. Each sweep point
+    // mutates the same cube via snapshot/rollback rather than reloading
+    // the YAML. Combined with pre-resolving coefficient indices and the
+    // --set coordinate before the loop, this turns 100 points × 2 YAML
+    // reads into 1 YAML read + 100 cheap snapshot/rollback cycles.
+    let loaded = match load_model_with_policy(&cmd.path, LoadPolicy::Reproducible) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return (e.exit_code(), String::new());
+        }
+    };
+    let mut cube = loaded.cube;
+    let principal = loaded.root_principal;
+    let refs = &loaded.refs;
+
+    // Apply time-anchor override (carries through every iteration).
+    if let Some(anchor_name) = &cmd.time_anchor {
+        let anchor_idx = cube.dimensions().iter().find_map(|dim| {
+            dim.elements.iter().enumerate().find_map(|(idx, elem)| {
+                if elem.name == *anchor_name {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+        });
+        if let Some(idx) = anchor_idx {
+            cube.reference_data.time_anchor_index = Some(idx);
+        }
+    }
+
+    // Phase 6A.3 item 2 W3: fail-fast resolution BEFORE entering the loop.
+    // Either --coefficient (with --model) or --set is required; whichever
+    // applies, validate it once. A typo in --coefficient now fails before
+    // the first point's metric evaluation rather than after N iterations.
+    enum SweepTarget {
+        Coefficient { model_name: String, index: usize },
+        Cell { coord: mc_core::CellCoordinate },
+    }
+    let target = if let Some(coeff_name) = &cmd.coefficient {
+        let Some(model_name) = &cmd.model_name else {
+            eprintln!("error: --model is required when using --coefficient");
+            return (2, String::new());
+        };
+        let Some(coeff_idx) = find_coefficient_index(&cmd.path, model_name, coeff_name) else {
+            eprintln!("error: coefficient '{coeff_name}' not found in model '{model_name}'");
+            return (1, String::new());
+        };
+        SweepTarget::Coefficient {
+            model_name: model_name.clone(),
+            index: coeff_idx,
+        }
+    } else if let Some(set_str) = &cmd.set_coord {
+        let coord_names = crate::query::parse_coord_string(set_str);
+        let Some(coord) = refs.coord_from_names(&coord_names) else {
+            eprintln!("error: could not resolve --set coordinate: {set_str}");
+            return (1, String::new());
+        };
+        SweepTarget::Cell { coord }
+    } else {
+        eprintln!("error: either --coefficient (with --model) or --set is required");
+        return (2, String::new());
+    };
+
+    // Phase 6A.3 item 2: baseline (un-overridden) metric evaluated against
+    // the freshly-loaded cube before any iteration. Captured here so the
+    // sweep loop's snapshot is the post-baseline starting point.
+    let baseline_result = eval_metric(&mut cube, refs, principal, metric_fn);
+
+    // Phase 6A.3 item 2 W1: take ONE snapshot before the loop. Each
+    // iteration rolls back to this snapshot, applies its override, and
+    // evaluates the metric. Snapshot/rollback is O(store size); for Acme
+    // (~25K cells) this is a few hundred microseconds vs. the multi-ms
+    // YAML compile path.
+    let baseline_snapshot = cube.snapshot(Some("phase-6a-3:sweep:pre-overrides"));
     let mut results: Vec<SweepPoint> = Vec::new();
 
     for &point_value in points.iter() {
-        let loaded = match load_model_with_policy(&cmd.path, LoadPolicy::Reproducible) {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("error: {e}");
-                return (e.exit_code(), String::new());
-            }
-        };
-        let mut cube = loaded.cube;
-        let principal = loaded.root_principal;
-        let refs = &loaded.refs;
-
-        // Apply time-anchor override
-        if let Some(anchor_name) = &cmd.time_anchor {
-            let anchor_idx = cube.dimensions().iter().find_map(|dim| {
-                dim.elements.iter().enumerate().find_map(|(idx, elem)| {
-                    if elem.name == *anchor_name {
-                        Some(idx)
-                    } else {
-                        None
-                    }
-                })
-            });
-            if let Some(idx) = anchor_idx {
-                cube.reference_data.time_anchor_index = Some(idx);
-            }
+        // Reset to the un-overridden baseline before each point.
+        if let Err(e) = cube.rollback_to(&baseline_snapshot) {
+            eprintln!("error: snapshot rollback failed: {e}");
+            return (1, String::new());
         }
 
-        // Apply the override: either coefficient override or cell override
-        if let Some(coeff_name) = &cmd.coefficient {
-            // Override a fitted model coefficient
-            if let Some(model_name) = &cmd.model_name {
-                let coeff_idx = match find_coefficient_index(&cmd.path, model_name, coeff_name) {
-                    Some(idx) => idx,
-                    None => {
-                        eprintln!(
-                            "error: coefficient '{coeff_name}' not found in model '{model_name}'"
-                        );
-                        return (1, String::new());
-                    }
-                };
-                let overridden =
-                    override_coefficient(&mut cube, model_name, coeff_idx, point_value);
-                if !overridden {
+        match &target {
+            SweepTarget::Coefficient { model_name, index } => {
+                if !override_coefficient(&mut cube, model_name, *index, point_value) {
                     eprintln!(
-                        "error: could not override coefficient {coeff_name} in model {model_name}"
+                        "error: could not override coefficient at index {index} in model {model_name:?}"
                     );
                     return (1, String::new());
                 }
-            } else {
-                eprintln!("error: --model is required when using --coefficient");
-                return (2, String::new());
             }
-        } else if let Some(set_str) = &cmd.set_coord {
-            // Override a specific cell
-            let coord_names = crate::query::parse_coord_string(set_str);
-            let coord = match refs.coord_from_names(&coord_names) {
-                Some(c) => c,
-                None => {
-                    eprintln!("error: could not resolve --set coordinate: {set_str}");
+            SweepTarget::Cell { coord } => {
+                let write_result = cube.write(WritebackRequest {
+                    coord: coord.clone(),
+                    new_value: ScalarValue::F64(point_value),
+                    principal,
+                    intent: WriteIntent::Set,
+                    expected_revision: None,
+                    now_unix_seconds: 0,
+                });
+                if let Err(e) = write_result {
+                    eprintln!("error: write failed at point {point_value}: {e}");
                     return (1, String::new());
                 }
-            };
-            let write_result = cube.write(WritebackRequest {
-                coord,
-                new_value: ScalarValue::F64(point_value),
-                principal,
-                intent: WriteIntent::Set,
-                expected_revision: None,
-                now_unix_seconds: 0,
-            });
-            if let Err(e) = write_result {
-                eprintln!("error: write failed at point {point_value}: {e}");
-                return (1, String::new());
             }
-        } else {
-            eprintln!("error: either --coefficient (with --model) or --set is required");
-            return (2, String::new());
         }
 
-        // Evaluate metric
         let metric_value = eval_metric(&mut cube, refs, principal, metric_fn);
-
         results.push(SweepPoint {
             parameter_value: point_value,
             metric_value,
         });
     }
-
-    // Also get the un-overridden baseline
-    let baseline_result = {
-        let loaded = match load_model_with_policy(&cmd.path, LoadPolicy::Reproducible) {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("error: {e}");
-                return (e.exit_code(), String::new());
-            }
-        };
-        let mut cube = loaded.cube;
-        let principal = loaded.root_principal;
-        let refs = &loaded.refs;
-        if let Some(anchor_name) = &cmd.time_anchor {
-            let anchor_idx = cube.dimensions().iter().find_map(|dim| {
-                dim.elements.iter().enumerate().find_map(|(idx, elem)| {
-                    if elem.name == *anchor_name {
-                        Some(idx)
-                    } else {
-                        None
-                    }
-                })
-            });
-            if let Some(idx) = anchor_idx {
-                cube.reference_data.time_anchor_index = Some(idx);
-            }
-        }
-        eval_metric(&mut cube, refs, principal, metric_fn)
-    };
 
     // Find optimal
     let optimal = if cmd.goal == "minimize" {

@@ -1813,3 +1813,96 @@ fn test_whatif_dry_run_does_not_persist_overrides() {
         "dry-run must NOT persist; pre={pre}, post={post}"
     );
 }
+
+// ===========================================================================
+// Phase 6A.3 item 2 — single-compile sweep
+// ===========================================================================
+
+/// 6A.3 item 2: a 10-point sweep should compile the model exactly once.
+/// We measure wall-clock and assert it stays well below the previous
+/// per-point-load floor: 10 reloads on Acme is ~5–6 seconds in dev
+/// builds; the single-compile path finishes in well under 2 seconds.
+#[test]
+fn test_sweep_does_not_reload_yaml_per_point() {
+    use std::time::Instant;
+    let path = acme_yaml();
+    let t0 = Instant::now();
+    let output = run_mc(&[
+        "model",
+        "sweep",
+        path.to_str().unwrap(),
+        "--set",
+        COORD_SPEND_JAN_TAMPA,
+        "--range",
+        "1000:10000:1000", // 10 points
+        "--metric",
+        "mean(Clicks)",
+        "--goal",
+        "maximize",
+        "--format",
+        "json",
+    ]);
+    let elapsed = t0.elapsed();
+    assert!(
+        output.status.success(),
+        "sweep failed: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = parse_json(&output.stdout);
+    let sweep = json
+        .get("sweep")
+        .and_then(|s| s.as_array())
+        .expect("sweep array");
+    assert_eq!(sweep.len(), 10, "10 points expected");
+
+    // Tunable upper bound. With per-point-reload, a 10-point Acme sweep
+    // measures ~5 seconds in dev / ~1.5 seconds in release. The
+    // single-compile path is well under 1 second in dev. We give 4
+    // seconds of headroom to keep the test stable on slow CI hardware
+    // while still failing if a regression reintroduces per-point loads.
+    assert!(
+        elapsed.as_secs_f64() < 4.0,
+        "10-point sweep took {:.2}s — single-compile regression suspected (was the baseline-load + per-iteration load reintroduced?)",
+        elapsed.as_secs_f64()
+    );
+}
+
+/// 6A.3 item 2 W3: an unknown coefficient must error BEFORE the loop
+/// starts (exit code 1, no partial sweep output).
+#[test]
+fn test_sweep_unknown_coefficient_fails_before_loop() {
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "sweep",
+        path.to_str().unwrap(),
+        "--model",
+        "nonexistent_model",
+        "--coefficient",
+        "totally_made_up_feature",
+        "--range",
+        "0:1:0.1",
+        "--metric",
+        "mean(Spend)",
+        "--goal",
+        "maximize",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "unknown coefficient must exit 1; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "no sweep output should leak to stdout when validation fails before the loop; got: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not found") || stderr.contains("coefficient"),
+        "stderr should mention the missing coefficient; got: {stderr}"
+    );
+}
