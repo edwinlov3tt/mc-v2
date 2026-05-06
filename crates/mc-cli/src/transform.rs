@@ -25,6 +25,9 @@ pub struct TransformCommand {
     pub output: Option<String>,
     pub format: OutputFormat,
     pub preview: Option<usize>,
+    /// Phase 6A.3 item 6 W3: HTTP request timeout in seconds for URL
+    /// sources. Defaults to 30s. File sources ignore this flag.
+    pub timeout_secs: u64,
 }
 
 pub fn parse(args: &[String]) -> Result<TransformCommand, String> {
@@ -33,6 +36,7 @@ pub fn parse(args: &[String]) -> Result<TransformCommand, String> {
     let mut output: Option<String> = None;
     let mut format = OutputFormat::Csv;
     let mut preview: Option<usize> = None;
+    let mut timeout_secs: u64 = 30;
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -65,6 +69,14 @@ pub fn parse(args: &[String]) -> Result<TransformCommand, String> {
                 }
                 None => return Err("--preview requires a number".into()),
             },
+            "--timeout-secs" => match iter.next() {
+                Some(v) => {
+                    timeout_secs = v
+                        .parse::<u64>()
+                        .map_err(|_| format!("--timeout-secs must be a number, got {v:?}"))?;
+                }
+                None => return Err("--timeout-secs requires a number".into()),
+            },
             other => return Err(format!("unknown argument: {other:?}")),
         }
     }
@@ -76,6 +88,7 @@ pub fn parse(args: &[String]) -> Result<TransformCommand, String> {
         output,
         format,
         preview,
+        timeout_secs,
     })
 }
 
@@ -125,7 +138,7 @@ pub fn run_captured(cmd: TransformCommand) -> (i32, String) {
 
     // 3. Fetch source data. CLI flag `--source` overrides the recipe's
     // `source.path` / `source.url` per Decision Matrix W5.
-    let raw_data = match fetch_source(&cmd.source) {
+    let raw_data = match fetch_source(&cmd.source, cmd.timeout_secs) {
         Ok(data) => data,
         Err(e) => {
             eprintln!("error: could not fetch source: {e}");
@@ -171,26 +184,62 @@ pub fn run_captured(cmd: TransformCommand) -> (i32, String) {
 // Source fetching
 // ---------------------------------------------------------------------------
 
-fn fetch_source(source: &str) -> Result<String, String> {
+fn fetch_source(source: &str, timeout_secs: u64) -> Result<String, String> {
     if source.starts_with("http://") || source.starts_with("https://") {
-        fetch_url(source)
+        fetch_url(source, timeout_secs)
     } else {
         std::fs::read_to_string(source).map_err(|e| format!("could not read file {source}: {e}"))
     }
 }
 
-fn fetch_url(url: &str) -> Result<String, String> {
-    // Phase 6A invariant: no new CLI deps. Shell out to curl for HTTP.
-    // Block 2.6 (if shipped this phase) replaces this with `ureq`.
-    let output = std::process::Command::new("curl")
-        .args(["-sS", "-L", "--max-time", "30", url])
-        .output()
-        .map_err(|e| format!("failed to execute curl: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("curl failed: {stderr}"));
+/// Maximum response body accepted from a URL fetch — 100 MB. Per
+/// handoff Decision Matrix W4: agent-safe default; transform isn't
+/// streaming-aware and a multi-GB download would OOM the process.
+const DEFAULT_MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
+
+/// Resolve the response-byte cap, honoring the test-only escape hatch
+/// `MC_TRANSFORM_MAX_BYTES`. Production users get the 100 MB default;
+/// `test_transform_url_oversized_response_returns_error` sets the env
+/// var to a tiny number so it can validate the cap behavior without
+/// transferring 100 MB over loopback.
+fn max_response_bytes() -> u64 {
+    std::env::var("MC_TRANSFORM_MAX_BYTES")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES)
+}
+
+fn fetch_url(url: &str, timeout_secs: u64) -> Result<String, String> {
+    // Phase 6A.3 item 6: replace the curl subprocess with an in-process
+    // ureq call. ureq is already pinned at the workspace level via
+    // mc-drivers, so adding it as an explicit mc-cli dep does NOT
+    // change Cargo.lock. The default timeout (W3) is 30 s, configurable
+    // via --timeout-secs. The default response cap (W4) is 100 MB.
+    // HTTPS cert validation uses the system root CAs (W5: no
+    // `--insecure` flag).
+    use std::io::Read;
+    let response = ureq::get(url)
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .call()
+        .map_err(|e| match e {
+            ureq::Error::Status(code, resp) => {
+                let preview = resp.into_string().unwrap_or_default();
+                let preview = preview.chars().take(200).collect::<String>();
+                format!("HTTP {code} from {url}: {preview}")
+            }
+            ureq::Error::Transport(t) => format!("transport error fetching {url}: {t}"),
+        })?;
+
+    let cap = max_response_bytes();
+    let mut reader = response.into_reader().take(cap + 1);
+    let mut buf: Vec<u8> = Vec::new();
+    reader
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("read failed for {url}: {e}"))?;
+    if buf.len() as u64 > cap {
+        return Err(format!("response from {url} exceeded the {cap} byte cap"));
     }
-    String::from_utf8(output.stdout).map_err(|e| format!("response is not valid UTF-8: {e}"))
+    String::from_utf8(buf).map_err(|e| format!("response is not valid UTF-8: {e}"))
 }
 
 // ---------------------------------------------------------------------------

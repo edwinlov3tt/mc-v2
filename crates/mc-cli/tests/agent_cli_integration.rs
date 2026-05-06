@@ -1561,3 +1561,1195 @@ fn test_mcp_trace_accepts_integer_depth() {
         "trace structured carries the bumped schema_version"
     );
 }
+
+// ===========================================================================
+// Phase 6A.3 item 1 — multi-cell whatif (--set repeatable)
+// ===========================================================================
+
+const COORD_AOV_JAN_TAMPA: &str =
+    "Scenario=Baseline,Version=Working,Time=Jan_2026,Channel=Paid_Search,Market=Tampa,Measure=AOV";
+
+/// 6A.3 item 1: two `--set` flags apply atomically. Revenue =
+/// Customers * AOV, and Customers depends on Spend; setting both Spend
+/// and AOV at the same anchor coord must produce a Revenue delta that
+/// reflects BOTH overrides (cross-effect).
+#[test]
+fn test_whatif_multiple_set_flags_apply_atomically() {
+    let path = acme_yaml();
+    let path_str = path.to_str().unwrap();
+
+    // Baseline run: only override Spend; record the resulting Revenue
+    // delta. Uses the new --set "coord=value" form to exercise the
+    // repeatable parser path even on the single-override side.
+    let only_spend = run_mc(&[
+        "model",
+        "whatif",
+        path_str,
+        "--set",
+        &format!("{COORD_SPEND_JAN_TAMPA}=20000"),
+        "--show",
+        "Revenue",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        only_spend.status.success(),
+        "single-override (new form) must succeed: stderr={}",
+        String::from_utf8_lossy(&only_spend.stderr)
+    );
+    let only_spend_json = parse_json(&only_spend.stdout);
+    let only_spend_delta = only_spend_json
+        .get("affected_measures")
+        .and_then(|a| a.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|m| m.get("measure").and_then(|v| v.as_str()) == Some("Revenue"))
+        })
+        .and_then(|m| m.get("delta").and_then(|v| v.as_f64()))
+        .expect("Revenue delta on Spend-only override");
+
+    // Multi-override run: override Spend AND AOV at the same anchor.
+    let both = run_mc(&[
+        "model",
+        "whatif",
+        path_str,
+        "--set",
+        &format!("{COORD_SPEND_JAN_TAMPA}=20000"),
+        "--set",
+        &format!("{COORD_AOV_JAN_TAMPA}=500"),
+        "--show",
+        "Revenue",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        both.status.success(),
+        "multi-override must succeed: stderr={}",
+        String::from_utf8_lossy(&both.stderr)
+    );
+    let both_json = parse_json(&both.stdout);
+    let overrides = both_json
+        .get("overrides")
+        .and_then(|o| o.as_array())
+        .expect("overrides[] must be an array");
+    assert_eq!(
+        overrides.len(),
+        2,
+        "two --set flags must produce two overrides[] entries"
+    );
+    let both_delta = both_json
+        .get("affected_measures")
+        .and_then(|a| a.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|m| m.get("measure").and_then(|v| v.as_str()) == Some("Revenue"))
+        })
+        .and_then(|m| m.get("delta").and_then(|v| v.as_f64()))
+        .expect("Revenue delta on multi-override");
+
+    // The two-override Revenue delta MUST differ from the Spend-only
+    // delta — that is the entire point of multi-cell whatif. AOV is a
+    // direct factor in Revenue, so changing both Spend and AOV is
+    // strictly more impactful than changing Spend alone.
+    assert!(
+        (both_delta - only_spend_delta).abs() > 1e-6,
+        "multi-override Revenue delta ({both_delta}) must differ from Spend-only delta ({only_spend_delta})"
+    );
+}
+
+/// 6A.3 item 1 W1: when the same coordinate appears in two `--set`
+/// flags, the LAST value wins. Document-as-spec; matches whatif
+/// semantics ("apply all in order, then read"). No error is raised.
+#[test]
+fn test_whatif_same_coord_set_twice_last_wins() {
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "whatif",
+        path.to_str().unwrap(),
+        "--set",
+        &format!("{COORD_SPEND_JAN_TAMPA}=12345"),
+        "--set",
+        &format!("{COORD_SPEND_JAN_TAMPA}=20000"),
+        "--show",
+        "Spend,Revenue",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        output.status.success(),
+        "duplicate-coord overrides must NOT error: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = parse_json(&output.stdout);
+
+    // The last override wins on the cube, so Spend@anchor reads back as 20000.
+    let after_spend = json
+        .get("affected_measures")
+        .and_then(|a| a.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|m| m.get("measure").and_then(|v| v.as_str()) == Some("Spend"))
+        })
+        .and_then(|m| m.get("after").and_then(|v| v.as_f64()))
+        .expect("Spend after value");
+    assert!(
+        (after_spend - 20000.0).abs() < 1e-9,
+        "last-write-wins: Spend after must be 20000, got {after_spend}"
+    );
+}
+
+/// 6A.3 item 1 W3: if any override fails (e.g., target is a derived
+/// measure that the kernel rejects), every override is rolled back and
+/// exit code is 1. The agent never observes partial state.
+#[test]
+fn test_whatif_one_override_fails_rolls_back_all() {
+    let path = acme_yaml();
+    // Clicks is a derived measure (Clicks = Spend / CPC). Writing to it
+    // is rejected by the kernel — see Cube::write derived-rejection path.
+    let coord_clicks = "Scenario=Baseline,Version=Working,Time=Jan_2026,\
+        Channel=Paid_Search,Market=Tampa,Measure=Clicks";
+    let output = run_mc(&[
+        "model",
+        "whatif",
+        path.to_str().unwrap(),
+        // One valid input override + one derived target → batch must fail.
+        "--set",
+        &format!("{COORD_SPEND_JAN_TAMPA}=22222"),
+        "--set",
+        &format!("{coord_clicks}=99999"),
+        "--show",
+        "Revenue",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "atomic write must exit 1 when any override fails (handoff W3); stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // No JSON envelope on stderr-only failure path; stdout should be empty.
+    assert!(
+        output.stdout.is_empty(),
+        "failed atomic whatif must not emit a partial deltas envelope on stdout; got: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+/// 6A.3 item 7: `whatif --dry-run --format json` emits
+/// `requested_outputs` (the renamed field) and NEVER `would_affect`
+/// (the previous misleading name). The previous field-name implied
+/// "cells that would change" but actually echoed --show; the rename
+/// is honest about what the field contains.
+#[test]
+fn test_whatif_dry_run_emits_requested_outputs_field() {
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "whatif",
+        path.to_str().unwrap(),
+        "--set",
+        COORD_SPEND_JAN_TAMPA,
+        "--value",
+        "12345",
+        "--show",
+        "Clicks,Revenue",
+        "--dry-run",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        output.status.success(),
+        "dry-run failed: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = parse_json(&output.stdout);
+    let requested = json
+        .get("requested_outputs")
+        .and_then(|v| v.as_array())
+        .expect("`requested_outputs` field must be present");
+    let names: Vec<&str> = requested.iter().filter_map(|v| v.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["Clicks", "Revenue"],
+        "requested_outputs must echo --show"
+    );
+    assert!(
+        json.get("would_affect").is_none(),
+        "the legacy `would_affect` field must be gone (Phase 6A.3 item 7); got: {}",
+        json
+    );
+}
+
+/// 6A.3 item 1 W5: `--dry-run` with multi-cell overrides. Reports
+/// would-be deltas and never persists. Verified by reading the same
+/// coord in a fresh process: it must equal the canonical (pre-dry-run)
+/// value, not the dry-run override.
+#[test]
+fn test_whatif_dry_run_does_not_persist_overrides() {
+    let path = acme_yaml();
+    let path_str = path.to_str().unwrap();
+
+    // Sanity: read the canonical Spend value first.
+    let q1 = run_mc(&[
+        "model",
+        "query",
+        path_str,
+        "--coord",
+        COORD_SPEND_JAN_TAMPA,
+        "--format",
+        "json",
+    ]);
+    assert!(q1.status.success(), "pre-query failed");
+    let pre = parse_json(&q1.stdout)
+        .get("value")
+        .and_then(|v| v.as_f64())
+        .expect("pre value");
+
+    // Multi-cell dry-run.
+    let dry = run_mc(&[
+        "model",
+        "whatif",
+        path_str,
+        "--set",
+        &format!("{COORD_SPEND_JAN_TAMPA}=99999"),
+        "--set",
+        &format!("{COORD_AOV_JAN_TAMPA}=42"),
+        "--show",
+        "Revenue",
+        "--dry-run",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        dry.status.success(),
+        "dry-run multi-cell must succeed: stderr={}",
+        String::from_utf8_lossy(&dry.stderr)
+    );
+    let dry_json = parse_json(&dry.stdout);
+    assert_eq!(
+        dry_json.get("dry_run").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    let overrides = dry_json
+        .get("overrides")
+        .and_then(|o| o.as_array())
+        .expect("dry-run overrides[] must be an array");
+    assert_eq!(overrides.len(), 2);
+
+    // Re-query the same coord — it must equal the pre value, not 99999.
+    let q2 = run_mc(&[
+        "model",
+        "query",
+        path_str,
+        "--coord",
+        COORD_SPEND_JAN_TAMPA,
+        "--format",
+        "json",
+    ]);
+    assert!(q2.status.success(), "post-query failed");
+    let post = parse_json(&q2.stdout)
+        .get("value")
+        .and_then(|v| v.as_f64())
+        .expect("post value");
+    assert!(
+        (post - pre).abs() < 1e-9,
+        "dry-run must NOT persist; pre={pre}, post={post}"
+    );
+}
+
+// ===========================================================================
+// Phase 6A.3 item 2 — single-compile sweep
+// ===========================================================================
+
+/// 6A.3 item 2: a 10-point sweep should compile the model exactly once.
+/// We measure wall-clock and assert it stays well below the previous
+/// per-point-load floor: 10 reloads on Acme is ~5–6 seconds in dev
+/// builds; the single-compile path finishes in well under 2 seconds.
+#[test]
+fn test_sweep_does_not_reload_yaml_per_point() {
+    use std::time::Instant;
+    let path = acme_yaml();
+    let t0 = Instant::now();
+    let output = run_mc(&[
+        "model",
+        "sweep",
+        path.to_str().unwrap(),
+        "--set",
+        COORD_SPEND_JAN_TAMPA,
+        "--range",
+        "1000:10000:1000", // 10 points
+        "--metric",
+        "mean(Clicks)",
+        "--goal",
+        "maximize",
+        "--format",
+        "json",
+    ]);
+    let elapsed = t0.elapsed();
+    assert!(
+        output.status.success(),
+        "sweep failed: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = parse_json(&output.stdout);
+    let sweep = json
+        .get("sweep")
+        .and_then(|s| s.as_array())
+        .expect("sweep array");
+    assert_eq!(sweep.len(), 10, "10 points expected");
+
+    // Tunable upper bound. With per-point-reload, a 10-point Acme sweep
+    // measures ~5 seconds in dev / ~1.5 seconds in release. The
+    // single-compile path is well under 1 second in dev. We give 4
+    // seconds of headroom to keep the test stable on slow CI hardware
+    // while still failing if a regression reintroduces per-point loads.
+    assert!(
+        elapsed.as_secs_f64() < 4.0,
+        "10-point sweep took {:.2}s — single-compile regression suspected (was the baseline-load + per-iteration load reintroduced?)",
+        elapsed.as_secs_f64()
+    );
+}
+
+/// 6A.3 item 3: `--metric-where Market=Tampa` restricts the metric to
+/// the Tampa subset. The Tampa-only mean(Clicks) must differ from the
+/// global mean(Clicks) at the same sweep value.
+#[test]
+fn test_sweep_metric_where_restricts_to_subset() {
+    let path = acme_yaml();
+    let path_str = path.to_str().unwrap();
+    let common_args: &[&str] = &[
+        "model",
+        "sweep",
+        path_str,
+        "--set",
+        COORD_SPEND_JAN_TAMPA,
+        "--range",
+        "10000:10000:1000", // single point
+        "--metric",
+        "mean(Clicks)",
+        "--goal",
+        "maximize",
+        "--format",
+        "json",
+    ];
+
+    // Unfiltered metric.
+    let global = run_mc(common_args);
+    assert!(
+        global.status.success(),
+        "global sweep failed: stderr={}",
+        String::from_utf8_lossy(&global.stderr)
+    );
+    let global_metric = parse_json(&global.stdout)
+        .get("sweep")
+        .and_then(|s| s.as_array())
+        .and_then(|a| a.first().cloned())
+        .and_then(|p| p.get("metric").and_then(|v| v.as_f64()))
+        .expect("global metric");
+
+    // Tampa-only metric.
+    let mut filtered_args: Vec<&str> = common_args.to_vec();
+    filtered_args.push("--metric-where");
+    filtered_args.push("Market == \"Tampa\"");
+    let filtered = run_mc(&filtered_args);
+    assert!(
+        filtered.status.success(),
+        "filtered sweep failed: stderr={}",
+        String::from_utf8_lossy(&filtered.stderr)
+    );
+    let tampa_metric = parse_json(&filtered.stdout)
+        .get("sweep")
+        .and_then(|s| s.as_array())
+        .and_then(|a| a.first().cloned())
+        .and_then(|p| p.get("metric").and_then(|v| v.as_f64()))
+        .expect("tampa metric");
+
+    assert!(
+        (global_metric - tampa_metric).abs() > 1e-6,
+        "Tampa-only metric ({tampa_metric}) must differ from global ({global_metric})"
+    );
+}
+
+/// 6A.3 item 3 W3: when `--metric-where` matches zero coords, the metric
+/// is reported as JSON null (not zero, not an error). The sweep
+/// completes successfully — the user asked a valid question, and the
+/// answer is "nothing matched."
+#[test]
+fn test_sweep_metric_where_zero_matches_returns_null() {
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "sweep",
+        path.to_str().unwrap(),
+        "--set",
+        COORD_SPEND_JAN_TAMPA,
+        "--range",
+        "10000:10000:1000",
+        "--metric",
+        "mean(Clicks)",
+        "--goal",
+        "maximize",
+        "--metric-where",
+        "Market == \"NotARealMarket\"",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        output.status.success(),
+        "zero-match sweep must succeed: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = parse_json(&output.stdout);
+    let metric = json
+        .get("sweep")
+        .and_then(|s| s.as_array())
+        .and_then(|a| a.first().cloned())
+        .and_then(|p| p.get("metric").cloned())
+        .expect("metric field");
+    assert!(
+        metric.is_null(),
+        "metric must be JSON null when filter matches zero coords; got {metric}"
+    );
+    let optimal = json.get("optimal").expect("optimal");
+    assert!(
+        optimal.is_null(),
+        "optimal must be null when no point produced a numeric metric; got {optimal}"
+    );
+}
+
+/// 6A.3 item 3 W4: `--metric-where` AND-combines with the rest of the
+/// sweep configuration. Filtering by a dimension value while ALSO
+/// fixing a Spend coord with `--set` produces a metric specific to the
+/// filtered subset, distinct from the un-filtered run.
+#[test]
+fn test_sweep_metric_where_combines_with_existing_scope_flags() {
+    let path = acme_yaml();
+    let path_str = path.to_str().unwrap();
+
+    // Single point with a Spend override AND a metric filter scoped
+    // narrower than the override (Channel filter on top of a Spend
+    // coord that already pins Channel=Paid_Search). The filter must
+    // be applied on top of the scope, producing a different aggregate
+    // than the same run without the filter.
+    let with_filter = run_mc(&[
+        "model",
+        "sweep",
+        path_str,
+        "--set",
+        COORD_SPEND_JAN_TAMPA,
+        "--range",
+        "10000:10000:1000",
+        "--metric",
+        "sum(Spend)",
+        "--goal",
+        "maximize",
+        "--metric-where",
+        "Channel == \"Paid_Search\" AND Market == \"Tampa\"",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        with_filter.status.success(),
+        "filter+scope sweep failed: stderr={}",
+        String::from_utf8_lossy(&with_filter.stderr)
+    );
+    let with_metric = parse_json(&with_filter.stdout)
+        .get("sweep")
+        .and_then(|s| s.as_array())
+        .and_then(|a| a.first().cloned())
+        .and_then(|p| p.get("metric").and_then(|v| v.as_f64()))
+        .expect("with-filter metric");
+
+    let without_filter = run_mc(&[
+        "model",
+        "sweep",
+        path_str,
+        "--set",
+        COORD_SPEND_JAN_TAMPA,
+        "--range",
+        "10000:10000:1000",
+        "--metric",
+        "sum(Spend)",
+        "--goal",
+        "maximize",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        without_filter.status.success(),
+        "no-filter sweep failed: stderr={}",
+        String::from_utf8_lossy(&without_filter.stderr)
+    );
+    let without_metric = parse_json(&without_filter.stdout)
+        .get("sweep")
+        .and_then(|s| s.as_array())
+        .and_then(|a| a.first().cloned())
+        .and_then(|p| p.get("metric").and_then(|v| v.as_f64()))
+        .expect("no-filter metric");
+
+    // Tampa+Paid_Search slice of total Spend is a small fraction of
+    // the global sum. The two values must differ by a meaningful margin.
+    assert!(
+        with_metric < without_metric,
+        "filtered sum(Spend) ({with_metric}) must be < global sum(Spend) ({without_metric})"
+    );
+    assert!(
+        (without_metric - with_metric).abs() > 1.0,
+        "filtered metric must differ from global by more than rounding noise"
+    );
+}
+
+// ===========================================================================
+// Phase 6A.3 item 4 — query --group-by
+// ===========================================================================
+
+/// 6A.3 item 4: --group-by Market returns one row per leaf market with
+/// a per-market aggregate value. Acme has 7 markets; the rows must be
+/// sorted lexicographically by market name (W5).
+#[test]
+fn test_query_group_by_market_returns_per_market_aggregate() {
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--aggregate",
+        "sum(Spend)",
+        "--group-by",
+        "Market",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        output.status.success(),
+        "group-by failed: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = parse_json(&output.stdout);
+    let rows = json.get("rows").and_then(|r| r.as_array()).expect("rows[]");
+    assert!(rows.len() >= 2, "should have at least 2 market groups");
+    // Lexicographic sort: collect market names from rows in order.
+    let names: Vec<&str> = rows
+        .iter()
+        .filter_map(|r| {
+            r.get("group")
+                .and_then(|g| g.get("Market"))
+                .and_then(|v| v.as_str())
+        })
+        .collect();
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(
+        names, sorted,
+        "rows must be sorted lexicographically by group key (W5)"
+    );
+    // Each row must carry the aggregate.
+    for row in rows {
+        let agg = row
+            .get("aggregates")
+            .and_then(|a| a.get("sum(Spend)"))
+            .and_then(|v| v.as_f64())
+            .expect("each row must have sum(Spend)");
+        assert!(agg > 0.0, "per-market sum(Spend) should be positive");
+    }
+}
+
+/// 6A.3 item 4 W1: two `--group-by` flags produce a cross-product —
+/// one row per (Market, Time) tuple.
+#[test]
+fn test_query_group_by_two_dims_returns_cross_product() {
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--aggregate",
+        "sum(Spend)",
+        "--group-by",
+        "Market",
+        "--group-by",
+        "Time",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        output.status.success(),
+        "two-dim group-by failed: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = parse_json(&output.stdout);
+    let rows = json.get("rows").and_then(|r| r.as_array()).expect("rows[]");
+    // Acme has 7 markets × 12 leaf months = 84 distinct (Market, Time)
+    // tuples; with --limit default 10000 they should all appear.
+    assert!(
+        rows.len() >= 14,
+        "cross-product must produce many more rows than single dim (got {})",
+        rows.len()
+    );
+    // Every row must have both group keys present.
+    for row in rows {
+        let group = row.get("group").expect("group");
+        assert!(group.get("Market").is_some(), "Market key in group");
+        assert!(group.get("Time").is_some(), "Time key in group");
+    }
+}
+
+/// 6A.3 item 4 W4: --group-by + --show is mutually exclusive (exit 2 =
+/// CLI usage error).
+#[test]
+fn test_query_group_by_with_show_errors() {
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--aggregate",
+        "sum(Spend)",
+        "--group-by",
+        "Market",
+        "--show",
+        "Spend",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "--group-by + --show must exit 2 (CLI usage error); stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("group-by") && stderr.contains("show"),
+        "stderr must explain the conflict; got: {stderr}"
+    );
+}
+
+/// 6A.3 item 4 W6: empty groups (no matching coords for a given key)
+/// are skipped — they don't appear as zero-value rows.
+#[test]
+fn test_query_group_by_empty_group_skipped() {
+    let path = acme_yaml();
+    // Filter to Market=Tampa; --group-by Market should then return
+    // exactly one group (Tampa), not 7 (with the others as empty).
+    let output = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--where",
+        "Market == \"Tampa\"",
+        "--aggregate",
+        "sum(Spend)",
+        "--group-by",
+        "Market",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        output.status.success(),
+        "filtered group-by failed: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = parse_json(&output.stdout);
+    let rows = json.get("rows").and_then(|r| r.as_array()).expect("rows[]");
+    assert_eq!(
+        rows.len(),
+        1,
+        "only Tampa should appear; other markets must be skipped (W6)"
+    );
+    assert_eq!(
+        rows[0]
+            .get("group")
+            .and_then(|g| g.get("Market"))
+            .and_then(|v| v.as_str()),
+        Some("Tampa")
+    );
+}
+
+/// 6A.3 item 4 W7: --limit and --offset paginate the GROUP rows (not
+/// the underlying matched coords).
+#[test]
+fn test_query_group_by_with_limit_paginates_groups() {
+    let path = acme_yaml();
+    let path_str = path.to_str().unwrap();
+
+    // Full result first to know the total group count.
+    let full = run_mc(&[
+        "model",
+        "query",
+        path_str,
+        "--aggregate",
+        "sum(Spend)",
+        "--group-by",
+        "Market",
+        "--format",
+        "json",
+    ]);
+    assert!(full.status.success());
+    let full_json = parse_json(&full.stdout);
+    let total_groups = full_json
+        .get("rows")
+        .and_then(|r| r.as_array())
+        .expect("rows[]")
+        .len();
+    assert!(total_groups >= 4, "need at least 4 markets for this test");
+
+    // Now ask for 2 groups.
+    let limited = run_mc(&[
+        "model",
+        "query",
+        path_str,
+        "--aggregate",
+        "sum(Spend)",
+        "--group-by",
+        "Market",
+        "--limit",
+        "2",
+        "--format",
+        "json",
+    ]);
+    assert!(limited.status.success(), "limited group-by failed");
+    let json = parse_json(&limited.stdout);
+    let rows = json.get("rows").and_then(|r| r.as_array()).expect("rows[]");
+    assert_eq!(rows.len(), 2, "--limit 2 must return exactly 2 group rows");
+    assert_eq!(
+        json.get("count").and_then(|v| v.as_u64()),
+        Some(2),
+        "envelope count tracks group rows, not coords"
+    );
+    assert_eq!(
+        json.get("truncated").and_then(|v| v.as_bool()),
+        Some(true),
+        "--limit < total must set truncated=true"
+    );
+    assert_eq!(
+        json.get("next_offset").and_then(|v| v.as_u64()),
+        Some(2),
+        "next_offset must equal first-skip for the next page"
+    );
+}
+
+// ===========================================================================
+// Phase 6A.3 item 5 — write_id + as_of_write_id
+// ===========================================================================
+
+/// 6A.3 item 5 W1/W2: two consecutive writes return write_id 1 then 2
+/// (1-indexed, monotonic, computed by counting newlines in writes.jsonl
+/// before append).
+#[test]
+fn test_write_response_includes_monotonic_write_id() {
+    let (dir, yaml) = make_acme_workdir("write-id-monotonic");
+
+    let w1 = run_mc(&[
+        "model",
+        "write",
+        yaml.to_str().unwrap(),
+        "--coord",
+        COORD_SPEND_JAN_TAMPA,
+        "--value",
+        "100",
+        "--format",
+        "json",
+    ]);
+    assert!(w1.status.success(), "first write failed");
+    let id1 = parse_json(&w1.stdout)
+        .get("write_id")
+        .and_then(|v| v.as_u64())
+        .expect("write_id missing on first write");
+    assert_eq!(id1, 1, "first write must return write_id 1");
+
+    let w2 = run_mc(&[
+        "model",
+        "write",
+        yaml.to_str().unwrap(),
+        "--coord",
+        COORD_SPEND_JAN_TAMPA,
+        "--value",
+        "200",
+        "--format",
+        "json",
+    ]);
+    assert!(w2.status.success(), "second write failed");
+    let id2 = parse_json(&w2.stdout)
+        .get("write_id")
+        .and_then(|v| v.as_u64())
+        .expect("write_id missing on second write");
+    assert_eq!(id2, 2, "second write must return write_id 2");
+
+    drop(dir);
+}
+
+/// 6A.3 item 5 W4: each writes.jsonl entry carries its `write_id`.
+#[test]
+fn test_writes_jsonl_entries_include_write_id() {
+    let (dir, yaml) = make_acme_workdir("write-id-jsonl");
+    for v in &["111", "222", "333"] {
+        let w = run_mc(&[
+            "model",
+            "write",
+            yaml.to_str().unwrap(),
+            "--coord",
+            COORD_SPEND_JAN_TAMPA,
+            "--value",
+            v,
+            "--format",
+            "json",
+        ]);
+        assert!(w.status.success(), "write failed for value {v}");
+    }
+    let log_path = dir.path().join(".tessera").join("writes.jsonl");
+    let content = std::fs::read_to_string(log_path).expect("read jsonl");
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(lines.len(), 3, "three writes → three lines");
+    for (i, line) in lines.iter().enumerate() {
+        let entry: serde_json::Value =
+            serde_json::from_str(line).expect("each line must be valid JSON");
+        let id = entry
+            .get("write_id")
+            .and_then(|v| v.as_u64())
+            .expect("each entry must include write_id");
+        assert_eq!(
+            id,
+            (i + 1) as u64,
+            "JSONL line {} (1-indexed) must carry write_id {}",
+            i + 1,
+            i + 1
+        );
+    }
+    drop(dir);
+}
+
+/// 6A.3 item 5 W6/W7: query envelope includes `as_of_write_id`. After
+/// two writes, querying any coord returns `as_of_write_id: 2`.
+#[test]
+fn test_query_envelope_includes_as_of_write_id() {
+    let (dir, yaml) = make_acme_workdir("write-id-query");
+    for v in &["100", "200"] {
+        let w = run_mc(&[
+            "model",
+            "write",
+            yaml.to_str().unwrap(),
+            "--coord",
+            COORD_SPEND_JAN_TAMPA,
+            "--value",
+            v,
+            "--format",
+            "json",
+        ]);
+        assert!(w.status.success(), "write failed for value {v}");
+    }
+    let q = run_mc(&[
+        "model",
+        "query",
+        yaml.to_str().unwrap(),
+        "--coord",
+        COORD_SPEND_JAN_TAMPA,
+        "--format",
+        "json",
+    ]);
+    assert!(q.status.success());
+    let id = parse_json(&q.stdout)
+        .get("as_of_write_id")
+        .and_then(|v| v.as_u64())
+        .expect("query envelope must carry as_of_write_id after writes");
+    assert_eq!(id, 2, "after 2 writes, as_of_write_id must equal 2");
+    drop(dir);
+}
+
+// ===========================================================================
+// Phase 6A.3 item 6 — ureq replaces the curl subprocess
+// ===========================================================================
+
+mod transform_url_helpers {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    /// Spawn a one-shot HTTP server that responds with `(status, body)`
+    /// to the next request. Returns the URL the client should use.
+    pub fn one_shot_server(status: u16, body: String) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+        let port = listener.local_addr().expect("local_addr").port();
+        let url = format!("http://127.0.0.1:{port}/data");
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut stream, _addr) = match listener.accept() {
+                Ok(p) => p,
+                Err(_) => return,
+            };
+            // Drain request headers (until blank line) so the client can finish.
+            let mut reader = BufReader::new(&stream);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                if line == "\r\n" || line == "\n" {
+                    break;
+                }
+            }
+            drop(reader);
+            let status_line = match status {
+                200 => "HTTP/1.1 200 OK",
+                404 => "HTTP/1.1 404 Not Found",
+                500 => "HTTP/1.1 500 Internal Server Error",
+                _ => "HTTP/1.1 200 OK",
+            };
+            let response = format!(
+                "{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                status_line,
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            let _ = tx.send(());
+        });
+        let _ = rx.recv_timeout(Duration::from_millis(100));
+        url
+    }
+
+    /// Spawn a server that accepts the connection but never sends a
+    /// response. Used to trigger client-side timeouts.
+    pub fn hanging_server() -> (String, std::sync::Arc<TcpListener>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+        let port = listener.local_addr().expect("local_addr").port();
+        let url = format!("http://127.0.0.1:{port}/data");
+        let listener = std::sync::Arc::new(listener);
+        let listener_clone = std::sync::Arc::clone(&listener);
+        thread::spawn(move || {
+            // Accept the connection and hold it open until the client
+            // gives up; the client's --timeout-secs governs.
+            if let Ok((mut stream, _addr)) = listener_clone.accept() {
+                // Read the request to ensure the client has begun the
+                // exchange; then sleep instead of responding.
+                let mut buf = [0u8; 1024];
+                use std::io::Read;
+                let _ = stream.read(&mut buf);
+                std::thread::sleep(Duration::from_secs(60));
+            }
+        });
+        (url, listener)
+    }
+}
+
+/// Minimal http_json recipe pointing at the test URL. The CLI's
+/// `--source` flag overrides the recipe's URL at runtime, so the URL
+/// here is a placeholder.
+fn write_http_json_recipe(dir: &std::path::Path, placeholder_url: &str) -> PathBuf {
+    let path = dir.join("test.recipe.yaml");
+    let model_path = acme_yaml();
+    let body = format!(
+        r#"version: 1
+name: test_http_recipe
+description: "test http json recipe"
+model: {model_path:?}
+
+source:
+  driver: http_json
+  url: "{placeholder_url}"
+
+columns:
+  - {{ source: market, dimension: Market }}
+  - {{ source: channel, dimension: Channel }}
+  - {{ source: time, dimension: Time }}
+  - {{ source: spend, measure: Spend, type: f64 }}
+
+defaults:
+  Scenario: Baseline
+  Version: Working
+
+write_disposition: replace
+incremental: false
+on_missing_element: error
+"#
+    );
+    std::fs::write(&path, body).expect("write recipe");
+    path
+}
+
+/// 6A.3 item 6: a localhost HTTP fetch must succeed end-to-end against
+/// the new ureq path. The previous curl subprocess required `curl` on
+/// PATH; the new path is in-process.
+#[test]
+fn test_transform_url_fetch_uses_ureq_not_curl() {
+    let body = r#"[
+        {"market": "Tampa", "channel": "Paid_Search", "time": "Jan_2026", "spend": 1234.5},
+        {"market": "Tampa", "channel": "Paid_Search", "time": "Feb_2026", "spend": 2345.6}
+    ]"#;
+    let url = transform_url_helpers::one_shot_server(200, body.to_string());
+
+    let (dir, _yaml) = make_acme_workdir("transform-ureq-fetch");
+    let recipe_path = write_http_json_recipe(dir.path(), &url);
+
+    let output = run_mc(&[
+        "tessera",
+        "transform",
+        "--source",
+        &url,
+        "--recipe",
+        recipe_path.to_str().unwrap(),
+        "--format",
+        "csv",
+    ]);
+    assert!(
+        output.status.success(),
+        "transform url fetch failed: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Tampa") && stdout.contains("1234.5"),
+        "transform output should include the fetched JSON rows; got: {stdout}"
+    );
+    drop(dir);
+}
+
+/// 6A.3 item 6 W3: --timeout-secs governs the URL fetch. A server that
+/// hangs forever must trigger a timeout error and exit 3 (I/O class).
+#[test]
+fn test_transform_url_timeout_returns_exit_3() {
+    let (_url, _listener) = transform_url_helpers::hanging_server();
+    // Use the URL as both placeholder and --source.
+    let url = _url.clone();
+    let (dir, _yaml) = make_acme_workdir("transform-ureq-timeout");
+    let recipe_path = write_http_json_recipe(dir.path(), &url);
+
+    let output = run_mc(&[
+        "tessera",
+        "transform",
+        "--source",
+        &url,
+        "--recipe",
+        recipe_path.to_str().unwrap(),
+        "--timeout-secs",
+        "1",
+        "--format",
+        "csv",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "url timeout must return exit 3 (I/O class); stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    drop(dir);
+}
+
+/// 6A.3 item 6 W4: the response-byte cap rejects oversized bodies. The
+/// production cap is 100 MB; this test sets `MC_TRANSFORM_MAX_BYTES=64`
+/// (a test-only escape hatch documented in transform.rs) so it can
+/// validate the cap behavior with a tiny body.
+#[test]
+fn test_transform_url_oversized_response_returns_error() {
+    // 200-byte body, well over the 64-byte cap set below.
+    let body = "x".repeat(200);
+    let url = transform_url_helpers::one_shot_server(200, body);
+
+    let (dir, _yaml) = make_acme_workdir("transform-ureq-cap");
+    let recipe_path = write_http_json_recipe(dir.path(), &url);
+
+    let output = Command::new(mc_binary())
+        .env("MC_TRANSFORM_MAX_BYTES", "64")
+        .args([
+            "tessera",
+            "transform",
+            "--source",
+            &url,
+            "--recipe",
+            recipe_path.to_str().unwrap(),
+            "--format",
+            "csv",
+        ])
+        .output()
+        .expect("spawn mc");
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "oversized response must return exit 3; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cap") || stderr.contains("exceeded"),
+        "stderr should mention the response cap; got: {stderr}"
+    );
+    drop(dir);
+}
+
+/// 6A.3 item 5 W6/W7: when no writes.jsonl exists, the query envelope's
+/// `as_of_write_id` is JSON null (NOT 0, NOT missing).
+#[test]
+fn test_query_envelope_as_of_write_id_null_when_no_writes() {
+    let (dir, yaml) = make_acme_workdir("write-id-null");
+    let log_path = dir.path().join(".tessera").join("writes.jsonl");
+    assert!(
+        !log_path.exists(),
+        "fixture must start with no writes.jsonl"
+    );
+    let q = run_mc(&[
+        "model",
+        "query",
+        yaml.to_str().unwrap(),
+        "--coord",
+        COORD_SPEND_JAN_TAMPA,
+        "--format",
+        "json",
+    ]);
+    assert!(q.status.success());
+    let json = parse_json(&q.stdout);
+    let as_of = json
+        .get("as_of_write_id")
+        .expect("as_of_write_id must be present (additive field)");
+    assert!(
+        as_of.is_null(),
+        "as_of_write_id must be null when writes.jsonl does not exist; got {as_of}"
+    );
+    drop(dir);
+}
+
+/// 6A.3 item 2 W3: an unknown coefficient must error BEFORE the loop
+/// starts (exit code 1, no partial sweep output).
+#[test]
+fn test_sweep_unknown_coefficient_fails_before_loop() {
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "sweep",
+        path.to_str().unwrap(),
+        "--model",
+        "nonexistent_model",
+        "--coefficient",
+        "totally_made_up_feature",
+        "--range",
+        "0:1:0.1",
+        "--metric",
+        "mean(Spend)",
+        "--goal",
+        "maximize",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "unknown coefficient must exit 1; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "no sweep output should leak to stdout when validation fails before the loop; got: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not found") || stderr.contains("coefficient"),
+        "stderr should mention the missing coefficient; got: {stderr}"
+    );
+}

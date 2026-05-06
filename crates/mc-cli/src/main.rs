@@ -123,12 +123,17 @@ fn print_help() {
         "    mc model query  <path> [--where <expr>] [--show <measures>] [--format text|json|csv]"
     );
     println!("                           [--coord <coord>] [--aggregate <fns>] [--output <file>]");
+    println!("                           [--group-by <Dim>] (repeatable; requires --aggregate)");
     println!(
-        "    mc model whatif <path> --set <coord> --value <n> --show <measures> [--format ...]"
+        "    mc model whatif <path> --set <coord>=<n> [--set ...] --show <measures> [--format ...]"
+    );
+    println!(
+        "                           (legacy single-cell form: --set <coord> --value <n>; --set is repeatable)"
     );
     println!("    mc model trace  <path> --coord <coord> [--depth <n>] [--format text|json|csv]");
     println!("    mc model sweep  <path> --range <start:end:step> --metric <fn> --goal <min|max>");
     println!("                           [--model <name> --coefficient <name>] [--set <coord>]");
+    println!("                           [--metric-where <expr>] [--format text|json|csv]");
     println!(
         "    mc model diff   <path> --left <filter> --right <filter> [--format text|json|csv]"
     );
@@ -138,7 +143,9 @@ fn print_help() {
     println!("    mc tessera dry-run    <recipe.yaml>            [--format text|json]");
     println!("    mc tessera propose    --source <path> --model <path>");
     println!("    mc tessera transform  --source <path|url> --recipe <path> [--output <file>]");
-    println!("                           [--format csv|json|text] [--preview <n>]");
+    println!(
+        "                           [--format csv|json|text] [--preview <n>] [--timeout-secs <n>]"
+    );
     println!("    mc tessera history    <model_dir>              [--format text|json]");
     println!("    mc tessera rollback   <import_id> --model-dir <path> [--format text|json]");
     println!("    mc tessera audit      <model_dir>              [--format text|json]");

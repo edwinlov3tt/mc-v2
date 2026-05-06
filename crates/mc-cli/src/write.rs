@@ -183,9 +183,14 @@ pub fn run_captured(cmd: WriteCommand) -> (i32, String) {
                 }
             }
             let log_path = tessera_dir.join("writes.jsonl");
+            // Phase 6A.3 item 5 W2: compute write_id BEFORE append by
+            // counting newlines in the existing file. 1-indexed; first
+            // write returns write_id == 1. Single-writer assumption (W3);
+            // concurrent writes are out of scope for Phase 6A.
+            let write_id = next_write_id(&log_path);
             let timestamp = chrono_now_iso();
             let log_entry = format!(
-                "{{\"timestamp\":\"{timestamp}\",\"coord\":{},\"value\":{},\"source\":\"mc model write\"}}\n",
+                "{{\"write_id\":{write_id},\"timestamp\":\"{timestamp}\",\"coord\":{},\"value\":{},\"source\":\"mc model write\"}}\n",
                 serde_json::to_string(&cmd.coord).unwrap_or_else(|_| format!("\"{}\"", cmd.coord)),
                 cmd.value
             );
@@ -203,13 +208,14 @@ pub fn run_captured(cmd: WriteCommand) -> (i32, String) {
                     out.push_str(",\n  \"before\": ");
                     push_scalar_val(&mut out, &before);
                     let _ = write!(out, ",\n  \"after\": {}", cmd.value);
+                    let _ = write!(out, ",\n  \"write_id\": {write_id}");
                     let _ = write!(out, ",\n  \"invalidated_cells\": {invalidated}");
                     out.push_str("\n}\n");
                     out
                 }
                 _ => {
                     format!(
-                        "Written: {} = {} (was {})\nInvalidated: {invalidated} derived cells\n",
+                        "Written: {} = {} (was {}, write_id {write_id})\nInvalidated: {invalidated} derived cells\n",
                         cmd.coord,
                         cmd.value,
                         format_scalar(&before)
@@ -222,6 +228,17 @@ pub fn run_captured(cmd: WriteCommand) -> (i32, String) {
             eprintln!("error: write failed: {e}");
             (1, String::new())
         }
+    }
+}
+
+/// Phase 6A.3 item 5 W1/W2: compute the next monotonic write_id by
+/// counting `\n`-terminated lines in the existing writes.jsonl. 1-indexed:
+/// a missing or empty file returns `1` (first write). Single-writer
+/// assumption — concurrent processes are out of scope for Phase 6A.
+fn next_write_id(log_path: &std::path::Path) -> u64 {
+    match std::fs::read_to_string(log_path) {
+        Ok(s) => s.lines().count() as u64 + 1,
+        Err(_) => 1,
     }
 }
 

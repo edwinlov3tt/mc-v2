@@ -24,6 +24,11 @@ pub struct SweepCommand {
     pub goal: String, // "minimize" or "maximize"
     pub dry_run: bool,
     pub time_anchor: Option<String>,
+    /// Phase 6A.3 item 3: optional filter expression that restricts the
+    /// leaf coordinates the metric ranges over. Same syntax as
+    /// `query --where`. Default (None) preserves the previous behaviour
+    /// of evaluating the metric across every leaf coord.
+    pub metric_where: Option<String>,
 }
 
 pub fn parse(args: &[String]) -> Result<SweepCommand, String> {
@@ -37,6 +42,7 @@ pub fn parse(args: &[String]) -> Result<SweepCommand, String> {
     let mut goal = "minimize".to_string();
     let mut dry_run = false;
     let mut time_anchor: Option<String> = None;
+    let mut metric_where: Option<String> = None;
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -78,6 +84,10 @@ pub fn parse(args: &[String]) -> Result<SweepCommand, String> {
                 Some(v) => time_anchor = Some(v.clone()),
                 None => return Err("--time-anchor requires an element name".into()),
             },
+            "--metric-where" => match iter.next() {
+                Some(v) => metric_where = Some(v.clone()),
+                None => return Err("--metric-where requires an expression argument".into()),
+            },
             other if !other.starts_with("--") && path.is_none() => {
                 path = Some(other.to_string());
             }
@@ -98,6 +108,7 @@ pub fn parse(args: &[String]) -> Result<SweepCommand, String> {
         goal,
         dry_run,
         time_anchor,
+        metric_where,
     })
 }
 
@@ -160,142 +171,173 @@ pub fn run_captured(cmd: SweepCommand) -> (i32, String) {
     // Parse metric expression: mean(Measure), sum(Measure), etc.
     let metric_fn = cmd.metric.trim();
 
-    // For each sweep point, load model fresh, apply override, evaluate metric.
-    // (The true baseline is computed separately below; the first-point reading
-    // here is no longer wired into the output.)
+    // Phase 6A.3 item 2: compile the model exactly once. Each sweep point
+    // mutates the same cube via snapshot/rollback rather than reloading
+    // the YAML. Combined with pre-resolving coefficient indices and the
+    // --set coordinate before the loop, this turns 100 points × 2 YAML
+    // reads into 1 YAML read + 100 cheap snapshot/rollback cycles.
+    let loaded = match load_model_with_policy(&cmd.path, LoadPolicy::Reproducible) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return (e.exit_code(), String::new());
+        }
+    };
+    let mut cube = loaded.cube;
+    let principal = loaded.root_principal;
+    let refs = &loaded.refs;
+
+    // Apply time-anchor override (carries through every iteration).
+    if let Some(anchor_name) = &cmd.time_anchor {
+        let anchor_idx = cube.dimensions().iter().find_map(|dim| {
+            dim.elements.iter().enumerate().find_map(|(idx, elem)| {
+                if elem.name == *anchor_name {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+        });
+        if let Some(idx) = anchor_idx {
+            cube.reference_data.time_anchor_index = Some(idx);
+        }
+    }
+
+    // Phase 6A.3 item 3: parse `--metric-where` once before the loop. The
+    // filter expression is the same syntax as `query --where`; reusing
+    // `Filter::parse` keeps the two parsers identical until Phase 3I
+    // unifies them. Empty/absent filter falls back to "every leaf coord."
+    let metric_filter = match &cmd.metric_where {
+        Some(expr) => match crate::query::Filter::parse(expr, refs, &cube) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                eprintln!("error: invalid --metric-where expression: {e}");
+                return (2, String::new());
+            }
+        },
+        None => None,
+    };
+
+    // Phase 6A.3 item 2 W3: fail-fast resolution BEFORE entering the loop.
+    // Either --coefficient (with --model) or --set is required; whichever
+    // applies, validate it once. A typo in --coefficient now fails before
+    // the first point's metric evaluation rather than after N iterations.
+    enum SweepTarget {
+        Coefficient { model_name: String, index: usize },
+        Cell { coord: mc_core::CellCoordinate },
+    }
+    let target = if let Some(coeff_name) = &cmd.coefficient {
+        let Some(model_name) = &cmd.model_name else {
+            eprintln!("error: --model is required when using --coefficient");
+            return (2, String::new());
+        };
+        let Some(coeff_idx) = find_coefficient_index(&cmd.path, model_name, coeff_name) else {
+            eprintln!("error: coefficient '{coeff_name}' not found in model '{model_name}'");
+            return (1, String::new());
+        };
+        SweepTarget::Coefficient {
+            model_name: model_name.clone(),
+            index: coeff_idx,
+        }
+    } else if let Some(set_str) = &cmd.set_coord {
+        let coord_names = crate::query::parse_coord_string(set_str);
+        let Some(coord) = refs.coord_from_names(&coord_names) else {
+            eprintln!("error: could not resolve --set coordinate: {set_str}");
+            return (1, String::new());
+        };
+        SweepTarget::Cell { coord }
+    } else {
+        eprintln!("error: either --coefficient (with --model) or --set is required");
+        return (2, String::new());
+    };
+
+    // Phase 6A.3 item 2: baseline (un-overridden) metric evaluated against
+    // the freshly-loaded cube before any iteration. Captured here so the
+    // sweep loop's snapshot is the post-baseline starting point. Phase 6A.3
+    // item 3: if `--metric-where` is set, the baseline is also restricted
+    // to matching coords (so `delta_from_baseline` stays meaningful).
+    let baseline_result = eval_metric(
+        &mut cube,
+        refs,
+        principal,
+        metric_fn,
+        metric_filter.as_ref(),
+    );
+
+    // Phase 6A.3 item 2 W1: take ONE snapshot before the loop. Each
+    // iteration rolls back to this snapshot, applies its override, and
+    // evaluates the metric. Snapshot/rollback is O(store size); for Acme
+    // (~25K cells) this is a few hundred microseconds vs. the multi-ms
+    // YAML compile path.
+    let baseline_snapshot = cube.snapshot(Some("phase-6a-3:sweep:pre-overrides"));
     let mut results: Vec<SweepPoint> = Vec::new();
 
     for &point_value in points.iter() {
-        let loaded = match load_model_with_policy(&cmd.path, LoadPolicy::Reproducible) {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("error: {e}");
-                return (e.exit_code(), String::new());
-            }
-        };
-        let mut cube = loaded.cube;
-        let principal = loaded.root_principal;
-        let refs = &loaded.refs;
-
-        // Apply time-anchor override
-        if let Some(anchor_name) = &cmd.time_anchor {
-            let anchor_idx = cube.dimensions().iter().find_map(|dim| {
-                dim.elements.iter().enumerate().find_map(|(idx, elem)| {
-                    if elem.name == *anchor_name {
-                        Some(idx)
-                    } else {
-                        None
-                    }
-                })
-            });
-            if let Some(idx) = anchor_idx {
-                cube.reference_data.time_anchor_index = Some(idx);
-            }
+        // Reset to the un-overridden baseline before each point.
+        if let Err(e) = cube.rollback_to(&baseline_snapshot) {
+            eprintln!("error: snapshot rollback failed: {e}");
+            return (1, String::new());
         }
 
-        // Apply the override: either coefficient override or cell override
-        if let Some(coeff_name) = &cmd.coefficient {
-            // Override a fitted model coefficient
-            if let Some(model_name) = &cmd.model_name {
-                let coeff_idx = match find_coefficient_index(&cmd.path, model_name, coeff_name) {
-                    Some(idx) => idx,
-                    None => {
-                        eprintln!(
-                            "error: coefficient '{coeff_name}' not found in model '{model_name}'"
-                        );
-                        return (1, String::new());
-                    }
-                };
-                let overridden =
-                    override_coefficient(&mut cube, model_name, coeff_idx, point_value);
-                if !overridden {
+        match &target {
+            SweepTarget::Coefficient { model_name, index } => {
+                if !override_coefficient(&mut cube, model_name, *index, point_value) {
                     eprintln!(
-                        "error: could not override coefficient {coeff_name} in model {model_name}"
+                        "error: could not override coefficient at index {index} in model {model_name:?}"
                     );
                     return (1, String::new());
                 }
-            } else {
-                eprintln!("error: --model is required when using --coefficient");
-                return (2, String::new());
             }
-        } else if let Some(set_str) = &cmd.set_coord {
-            // Override a specific cell
-            let coord_names = crate::query::parse_coord_string(set_str);
-            let coord = match refs.coord_from_names(&coord_names) {
-                Some(c) => c,
-                None => {
-                    eprintln!("error: could not resolve --set coordinate: {set_str}");
+            SweepTarget::Cell { coord } => {
+                let write_result = cube.write(WritebackRequest {
+                    coord: coord.clone(),
+                    new_value: ScalarValue::F64(point_value),
+                    principal,
+                    intent: WriteIntent::Set,
+                    expected_revision: None,
+                    now_unix_seconds: 0,
+                });
+                if let Err(e) = write_result {
+                    eprintln!("error: write failed at point {point_value}: {e}");
                     return (1, String::new());
                 }
-            };
-            let write_result = cube.write(WritebackRequest {
-                coord,
-                new_value: ScalarValue::F64(point_value),
-                principal,
-                intent: WriteIntent::Set,
-                expected_revision: None,
-                now_unix_seconds: 0,
-            });
-            if let Err(e) = write_result {
-                eprintln!("error: write failed at point {point_value}: {e}");
-                return (1, String::new());
             }
-        } else {
-            eprintln!("error: either --coefficient (with --model) or --set is required");
-            return (2, String::new());
         }
 
-        // Evaluate metric
-        let metric_value = eval_metric(&mut cube, refs, principal, metric_fn);
-
+        let metric_value = eval_metric(
+            &mut cube,
+            refs,
+            principal,
+            metric_fn,
+            metric_filter.as_ref(),
+        );
         results.push(SweepPoint {
             parameter_value: point_value,
             metric_value,
         });
     }
 
-    // Also get the un-overridden baseline
-    let baseline_result = {
-        let loaded = match load_model_with_policy(&cmd.path, LoadPolicy::Reproducible) {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("error: {e}");
-                return (e.exit_code(), String::new());
-            }
-        };
-        let mut cube = loaded.cube;
-        let principal = loaded.root_principal;
-        let refs = &loaded.refs;
-        if let Some(anchor_name) = &cmd.time_anchor {
-            let anchor_idx = cube.dimensions().iter().find_map(|dim| {
-                dim.elements.iter().enumerate().find_map(|(idx, elem)| {
-                    if elem.name == *anchor_name {
-                        Some(idx)
-                    } else {
-                        None
-                    }
-                })
-            });
-            if let Some(idx) = anchor_idx {
-                cube.reference_data.time_anchor_index = Some(idx);
-            }
-        }
-        eval_metric(&mut cube, refs, principal, metric_fn)
-    };
-
-    // Find optimal
-    let optimal = if cmd.goal == "minimize" {
-        results.iter().min_by(|a, b| {
-            a.metric_value
-                .partial_cmp(&b.metric_value)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+    // Find optimal among the points that produced a numeric metric. Points
+    // where `--metric-where` matched zero coords return None and are
+    // ignored when picking the optimal.
+    let optimal: Option<&SweepPoint> = if cmd.goal == "minimize" {
+        results
+            .iter()
+            .filter(|p| p.metric_value.is_some())
+            .min_by(|a, b| {
+                a.metric_value
+                    .partial_cmp(&b.metric_value)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
     } else {
-        results.iter().max_by(|a, b| {
-            a.metric_value
-                .partial_cmp(&b.metric_value)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+        results
+            .iter()
+            .filter(|p| p.metric_value.is_some())
+            .max_by(|a, b| {
+                a.metric_value
+                    .partial_cmp(&b.metric_value)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
     };
 
     let output_str = format_sweep_output(&cmd, &results, baseline_result, optimal, cmd.format);
@@ -304,7 +346,10 @@ pub fn run_captured(cmd: SweepCommand) -> (i32, String) {
 
 struct SweepPoint {
     parameter_value: f64,
-    metric_value: f64,
+    /// Phase 6A.3 item 3: `None` when `--metric-where` matches no coords
+    /// at this point. Without `--metric-where` this is always `Some`
+    /// (fall-through aggregations of an empty set return `Some(0.0)`).
+    metric_value: Option<f64>,
 }
 
 fn override_coefficient(
@@ -336,95 +381,100 @@ fn find_coefficient_index(yaml_path: &str, model_name: &str, coeff_name: &str) -
     None
 }
 
+/// Phase 6A.3 item 3: evaluate the metric over the leaf-coord set
+/// optionally restricted by `filter`. Returns `None` when a non-empty
+/// filter matches zero coordinates (handoff Decision Matrix W3); without
+/// a filter, an empty leaf set falls through to the aggregator's
+/// historical empty-result default (0.0 for all four aggregators).
 fn eval_metric(
     cube: &mut mc_core::Cube,
     refs: &mc_model::ModelRefs,
     principal: mc_core::PrincipalId,
     metric_expr: &str,
-) -> f64 {
-    // Parse metric: mean(Measure), sum(Measure), max(Measure), etc.
+    filter: Option<&crate::query::Filter>,
+) -> Option<f64> {
     let trimmed = metric_expr.trim();
-    if let Some(inner) = strip_fn("mean", trimmed) {
-        let coords = crate::query::enumerate_leaf_coords(cube, refs);
-        let mut sum = 0.0;
-        let mut count = 0usize;
-        for coord in &coords {
-            if let ScalarValue::F64(v) =
-                crate::query::read_measure_at(cube, refs, principal, coord, inner)
-            {
-                sum += v;
-                count += 1;
-            }
-        }
-        if count > 0 {
-            sum / count as f64
-        } else {
-            0.0
-        }
-    } else if let Some(inner) = strip_fn("sum", trimmed) {
-        let coords = crate::query::enumerate_leaf_coords(cube, refs);
-        let mut sum = 0.0;
-        for coord in &coords {
-            if let ScalarValue::F64(v) =
-                crate::query::read_measure_at(cube, refs, principal, coord, inner)
-            {
-                sum += v;
-            }
-        }
-        sum
-    } else if let Some(inner) = strip_fn("max", trimmed) {
-        let coords = crate::query::enumerate_leaf_coords(cube, refs);
-        let mut max = f64::NEG_INFINITY;
-        for coord in &coords {
-            if let ScalarValue::F64(v) =
-                crate::query::read_measure_at(cube, refs, principal, coord, inner)
-            {
-                if v > max {
-                    max = v;
-                }
-            }
-        }
-        if max == f64::NEG_INFINITY {
-            0.0
-        } else {
-            max
-        }
-    } else if let Some(inner) = strip_fn("min", trimmed) {
-        let coords = crate::query::enumerate_leaf_coords(cube, refs);
-        let mut min = f64::INFINITY;
-        for coord in &coords {
-            if let ScalarValue::F64(v) =
-                crate::query::read_measure_at(cube, refs, principal, coord, inner)
-            {
-                if v < min {
-                    min = v;
-                }
-            }
-        }
-        if min == f64::INFINITY {
-            0.0
-        } else {
-            min
-        }
+    let all_coords = crate::query::enumerate_leaf_coords(cube, refs);
+    let coords: Vec<mc_core::CellCoordinate> = if let Some(f) = filter {
+        all_coords
+            .into_iter()
+            .filter(|c| crate::query::eval_filter(f, c, cube, principal, refs))
+            .collect()
     } else {
-        // Treat as single measure name — return mean across all coords
-        let coords = crate::query::enumerate_leaf_coords(cube, refs);
-        let mut sum = 0.0;
-        let mut count = 0usize;
-        for coord in &coords {
-            if let ScalarValue::F64(v) =
-                crate::query::read_measure_at(cube, refs, principal, coord, trimmed)
-            {
-                sum += v;
-                count += 1;
+        all_coords
+    };
+    // W3: restricted-to-empty returns Null. The unrestricted-empty path
+    // (cube genuinely has no leaves — extremely rare in practice) falls
+    // through to the historical empty-aggregate default below for parity.
+    if filter.is_some() && coords.is_empty() {
+        return None;
+    }
+
+    // Pick the inner measure name + aggregator, or fall back to "treat
+    // the whole expression as a measure name and mean it" for parity
+    // with the previous behaviour.
+    let (measure, agg) = if let Some(inner) = strip_fn("mean", trimmed) {
+        (inner, Aggregator::Mean)
+    } else if let Some(inner) = strip_fn("sum", trimmed) {
+        (inner, Aggregator::Sum)
+    } else if let Some(inner) = strip_fn("max", trimmed) {
+        (inner, Aggregator::Max)
+    } else if let Some(inner) = strip_fn("min", trimmed) {
+        (inner, Aggregator::Min)
+    } else {
+        (trimmed, Aggregator::Mean)
+    };
+
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    for coord in &coords {
+        if let ScalarValue::F64(v) =
+            crate::query::read_measure_at(cube, refs, principal, coord, measure)
+        {
+            sum += v;
+            count += 1;
+            if v < min {
+                min = v;
             }
-        }
-        if count > 0 {
-            sum / count as f64
-        } else {
-            0.0
+            if v > max {
+                max = v;
+            }
         }
     }
+    let value = match agg {
+        Aggregator::Mean => {
+            if count > 0 {
+                sum / count as f64
+            } else {
+                0.0
+            }
+        }
+        Aggregator::Sum => sum,
+        Aggregator::Max => {
+            if max == f64::NEG_INFINITY {
+                0.0
+            } else {
+                max
+            }
+        }
+        Aggregator::Min => {
+            if min == f64::INFINITY {
+                0.0
+            } else {
+                min
+            }
+        }
+    };
+    Some(value)
+}
+
+enum Aggregator {
+    Mean,
+    Sum,
+    Max,
+    Min,
 }
 
 fn strip_fn<'a>(name: &str, expr: &'a str) -> Option<&'a str> {
@@ -440,10 +490,19 @@ fn strip_fn<'a>(name: &str, expr: &'a str) -> Option<&'a str> {
 fn format_sweep_output(
     cmd: &SweepCommand,
     results: &[SweepPoint],
-    baseline: f64,
+    baseline: Option<f64>,
     optimal: Option<&SweepPoint>,
     format: OutputFormat,
 ) -> String {
+    // Phase 6A.3 item 3: when `baseline` or a per-point metric is None
+    // (the `--metric-where` filter matched zero coords), emit JSON `null`
+    // and an "n/a" placeholder for text/CSV deltas.
+    let delta_of = |m: Option<f64>| -> Option<f64> {
+        match (m, baseline) {
+            (Some(a), Some(b)) => Some(a - b),
+            _ => None,
+        }
+    };
     match format {
         OutputFormat::Json => {
             let mut out = String::new();
@@ -453,15 +512,14 @@ fn format_sweep_output(
             out.push_str(",\n  \"goal\": ");
             push_json_str(&mut out, &cmd.goal);
             out.push_str(",\n  \"baseline\": ");
-            let _ = write!(out, "{baseline}");
+            push_opt_f64_json(&mut out, baseline);
             out.push_str(",\n  \"sweep\": [\n");
             for (i, point) in results.iter().enumerate() {
-                let delta = point.metric_value - baseline;
-                let _ = write!(
-                    out,
-                    "    {{\"value\":{},\"metric\":{},\"delta_from_baseline\":{}}}",
-                    point.parameter_value, point.metric_value, delta
-                );
+                let _ = write!(out, "    {{\"value\":{},\"metric\":", point.parameter_value);
+                push_opt_f64_json(&mut out, point.metric_value);
+                out.push_str(",\"delta_from_baseline\":");
+                push_opt_f64_json(&mut out, delta_of(point.metric_value));
+                out.push('}');
                 if i + 1 < results.len() {
                     out.push(',');
                 }
@@ -469,11 +527,9 @@ fn format_sweep_output(
             }
             out.push_str("  ],\n  \"optimal\": ");
             if let Some(opt) = optimal {
-                let _ = write!(
-                    out,
-                    "{{\"value\":{},\"metric\":{}}}",
-                    opt.parameter_value, opt.metric_value
-                );
+                let _ = write!(out, "{{\"value\":{},\"metric\":", opt.parameter_value);
+                push_opt_f64_json(&mut out, opt.metric_value);
+                out.push('}');
             } else {
                 out.push_str("null");
             }
@@ -485,21 +541,21 @@ fn format_sweep_output(
             let param_label = cmd.coefficient.as_deref().unwrap_or("parameter");
             let _ = writeln!(out, "Sweep: {} over range {}", param_label, cmd.range);
             let _ = writeln!(out, "Metric: {} (goal: {})", cmd.metric, cmd.goal);
-            let _ = writeln!(out, "Baseline: {}\n", format_f64(baseline));
+            let _ = writeln!(out, "Baseline: {}\n", format_opt_f64(baseline));
             let _ = writeln!(out, "{:<12} {:<15} {:<15}", "Value", "Metric", "Delta");
             let _ = writeln!(out, "{}", "-".repeat(42));
             for point in results {
-                let delta = point.metric_value - baseline;
-                let delta_str = if delta >= 0.0 {
-                    format!("+{}", format_f64(delta))
-                } else {
-                    format_f64(delta)
+                let delta = delta_of(point.metric_value);
+                let delta_str = match delta {
+                    Some(v) if v >= 0.0 => format!("+{}", format_f64(v)),
+                    Some(v) => format_f64(v),
+                    None => "n/a".into(),
                 };
                 let _ = writeln!(
                     out,
                     "{:<12} {:<15} {:<15}",
                     format_f64(point.parameter_value),
-                    format_f64(point.metric_value),
+                    format_opt_f64(point.metric_value),
                     delta_str
                 );
             }
@@ -509,7 +565,7 @@ fn format_sweep_output(
                     "\nOptimal: {} = {} (metric = {})",
                     param_label,
                     format_f64(opt.parameter_value),
-                    format_f64(opt.metric_value)
+                    format_opt_f64(opt.metric_value)
                 );
             }
             out
@@ -517,15 +573,33 @@ fn format_sweep_output(
         OutputFormat::Csv => {
             let mut out = String::from("parameter_value,metric_value,delta_from_baseline\n");
             for point in results {
-                let delta = point.metric_value - baseline;
+                let delta = delta_of(point.metric_value);
                 let _ = writeln!(
                     out,
-                    "{},{},{delta}",
-                    point.parameter_value, point.metric_value
+                    "{},{},{}",
+                    point.parameter_value,
+                    format_opt_f64(point.metric_value),
+                    format_opt_f64(delta)
                 );
             }
             out
         }
+    }
+}
+
+fn push_opt_f64_json(out: &mut String, v: Option<f64>) {
+    match v {
+        Some(f) => {
+            let _ = write!(out, "{f}");
+        }
+        None => out.push_str("null"),
+    }
+}
+
+fn format_opt_f64(v: Option<f64>) -> String {
+    match v {
+        Some(f) => format_f64(f),
+        None => "null".into(),
     }
 }
 

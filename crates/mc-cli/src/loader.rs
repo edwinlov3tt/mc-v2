@@ -145,6 +145,13 @@ pub struct LoadedModel {
     /// strings (e.g. `"Spend / CPC"`) instead of debug-formatted AST
     /// node names (e.g. `"Div"`).
     pub formulas: HashMap<String, String>,
+    /// Phase 6A.3 item 5: highest `write_id` replayed from
+    /// `.tessera/writes.jsonl`. Equal to the line count in that file at
+    /// load time. `None` when the file does not exist OR when the
+    /// `Reproducible` policy was used (write log was not replayed).
+    /// Agents use this to chain queries to a specific revision via
+    /// the `as_of_write_id` envelope field.
+    pub as_of_write_id: Option<u64>,
 }
 
 /// Load a YAML model with the given replay policy. See [`LoadPolicy`]
@@ -200,10 +207,11 @@ pub fn load_model_with_policy(
     }
 
     // 3 + 4: Tessera audit replay + post-hoc writes — only for CurrentReality.
+    let mut as_of_write_id: Option<u64> = None;
     if policy == LoadPolicy::CurrentReality {
         let dir = model_dir.unwrap_or_else(|| Path::new("."));
         apply_tessera_active_imports(&mut cube, principal, dir)?;
-        apply_writes_log(&mut cube, principal, &compiled.refs, dir)?;
+        as_of_write_id = apply_writes_log(&mut cube, principal, &compiled.refs, dir)?;
     }
 
     Ok(LoadedModel {
@@ -212,6 +220,7 @@ pub fn load_model_with_policy(
         refs: compiled.refs,
         policy,
         formulas,
+        as_of_write_id,
     })
 }
 
@@ -292,10 +301,10 @@ fn apply_writes_log(
     principal: PrincipalId,
     refs: &ModelRefs,
     model_dir: &Path,
-) -> Result<(), LoadModelError> {
+) -> Result<Option<u64>, LoadModelError> {
     let log_path = model_dir.join(".tessera").join("writes.jsonl");
     if !log_path.exists() {
-        return Ok(());
+        return Ok(None);
     }
     let content = match std::fs::read_to_string(&log_path) {
         Ok(c) => c,
@@ -304,6 +313,18 @@ fn apply_writes_log(
                 "could not read .tessera/writes.jsonl: {e}"
             )));
         }
+    };
+    // Phase 6A.3 item 5 W2: write_id == 1-indexed line position. The
+    // loader's `as_of_write_id` is the highest line position seen — i.e.
+    // the count of `\n`-terminated lines in the file. An empty file
+    // (zero lines) returns None to keep the envelope-null contract for
+    // "no writes have happened yet" indistinguishable from a missing
+    // file (handoff Decision Matrix W6).
+    let line_count = content.lines().count() as u64;
+    let max_write_id = if line_count == 0 {
+        None
+    } else {
+        Some(line_count)
     };
     for (idx, line) in content.lines().enumerate() {
         let line_number = idx + 1;
@@ -357,7 +378,7 @@ fn apply_writes_log(
             });
         }
     }
-    Ok(())
+    Ok(max_write_id)
 }
 
 /// Parse `"Dim1=Elem1,Dim2=Elem2,..."` into a name-keyed map. Same shape
