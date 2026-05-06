@@ -180,6 +180,16 @@ pub enum Expr {
     /// Inherits the same cross-coord dep-graph performance debt as
     /// `ActualRef` (Amendment §12).
     ScenarioRef(ElementId, ElementId),
+    /// Phase 3J item 7: `extrapolate_last_value(measure)` — scan
+    /// backward through the Time dim from the current coord, returning
+    /// the most recent non-Null value of `measure`. If no prior
+    /// non-Null exists, returns `Null`. Per ADR-0016 Decision 9 +
+    /// Amendment §11, the validator (MC2067) requires `scope:
+    /// FutureLeaves` OR `allow_past_extrapolation: true` to be set on
+    /// the rule using this function. Amendment §5 reserves a future
+    /// 2-arg form `extrapolate_last_value(measure, max_periods)`,
+    /// not implemented in v1.
+    ExtrapolateLastValue(ElementId),
 
     // -- Phase 3J item 1: ScalarValue::Str first-class in eval --
     /// String literal value. Per ADR-0016 Decision 2, `Str` values exist
@@ -388,6 +398,10 @@ fn collect_self_refs(expr: &Expr) -> AHashSet<ElementId> {
             Expr::ScenarioRef(m, _scenario) => {
                 out.insert(*m);
             }
+            // Phase 3J item 7
+            Expr::ExtrapolateLastValue(m) => {
+                out.insert(*m);
+            }
             Expr::Add(a, b)
             | Expr::Sub(a, b)
             | Expr::Mul(a, b)
@@ -554,6 +568,8 @@ pub fn expr_depth(expr: &Expr) -> u32 {
         // Phase 3J item 6
         Expr::ActualRefWithFallback(_, fallback) => 1 + expr_depth(fallback),
         Expr::ScenarioRef(_, _) => 1,
+        // Phase 3J item 7
+        Expr::ExtrapolateLastValue(_) => 1,
     }
 }
 
@@ -1045,6 +1061,10 @@ where
                 measure: *measure,
             })
         }
+        // Phase 3J item 7: extrapolate_last_value(measure).
+        Expr::ExtrapolateLastValue(measure) => {
+            lookup_cross(&CrossCoordRead::ExtrapolateLastValue { measure: *measure })
+        }
     }
 }
 
@@ -1277,6 +1297,11 @@ pub enum CrossCoordRead {
         scenario_element: ElementId,
         measure: ElementId,
     },
+    /// Phase 3J item 7: scan backward in Time from the current coord,
+    /// returning the most recent non-Null value of `measure`. If no
+    /// prior non-Null exists, returns Null. Implements LOCF (last-
+    /// observation-carry-forward) for forecasting / gap-fill.
+    ExtrapolateLastValue { measure: ElementId },
     // -- Phase 3I: narrow element-match indicator --
     /// Returns 1.0 if the current coord's element in `dimension` is
     /// `element`, else 0.0. Element resolution is parse-time so the
@@ -1728,6 +1753,12 @@ where
         Expr::ScenarioRef(measure, scenario_element) => {
             handler(EvalLookup::Cross(&CrossCoordRead::ScenarioElementShift {
                 scenario_element: *scenario_element,
+                measure: *measure,
+            }))
+        }
+        // Phase 3J item 7: extrapolate_last_value(measure).
+        Expr::ExtrapolateLastValue(measure) => {
+            handler(EvalLookup::Cross(&CrossCoordRead::ExtrapolateLastValue {
                 measure: *measure,
             }))
         }

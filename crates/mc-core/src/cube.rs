@@ -1175,6 +1175,40 @@ impl Cube {
                 let cv = self.read_inner(&shifted_coord, principal, false)?;
                 Ok(cv.value)
             }
+            // Phase 3J item 7: scan backward through Time from the
+            // target coord, returning the most recent non-Null value
+            // of `measure`. If no prior non-Null exists, returns Null.
+            CrossCoordRead::ExtrapolateLastValue { measure } => {
+                let time_pos = match self.find_time_dimension_position() {
+                    Some(p) => p,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let time_dim = &self.dimensions[time_pos];
+                let current_element = target_coord.element_at(time_pos);
+                let current_idx = match time_dim.element_index.get(&current_element).copied() {
+                    Some(i) => i,
+                    None => return Ok(ScalarValue::Null),
+                };
+                // Snapshot the prior-element ids upfront to avoid
+                // holding a `&self.dimensions` borrow across read_inner.
+                let prior_elements: Vec<ElementId> = time_dim.elements[..current_idx]
+                    .iter()
+                    .map(|e| e.id)
+                    .rev()
+                    .collect();
+                for prior_elem in prior_elements {
+                    let mut elements: SmallVec<[ElementId; 8]> =
+                        target_coord.elements().iter().copied().collect();
+                    elements[time_pos] = prior_elem;
+                    elements[measure_dim_position] = *measure;
+                    let shifted = CellCoordinate::from_parts(cube_id, elements.iter().copied());
+                    let cv = self.read_inner(&shifted, principal, false)?;
+                    if !cv.value.is_null() {
+                        return Ok(cv.value);
+                    }
+                }
+                Ok(ScalarValue::Null)
+            }
             // Phase 3I: narrow element-match indicator. Per item 1 W1, the
             // element name was resolved at parse-time to ElementId so the
             // hot path does only an integer compare.
@@ -2905,6 +2939,14 @@ fn validate_expr_well_typed(expr: &Expr, measure_dim: &Dimension) -> Result<(), 
             validate_expr_well_typed(fallback, measure_dim)
         }
         Expr::ScenarioRef(m, _scenario) => {
+            let _ = measure_dim
+                .element(*m)
+                .ok_or(EngineError::ElementNotFound(*m, measure_dim.id))?;
+            Ok(())
+        }
+        // Phase 3J item 7: extrapolate_last_value's measure ref must
+        // exist in the measure dim.
+        Expr::ExtrapolateLastValue(m) => {
             let _ = measure_dim
                 .element(*m)
                 .ok_or(EngineError::ElementNotFound(*m, measure_dim.id))?;

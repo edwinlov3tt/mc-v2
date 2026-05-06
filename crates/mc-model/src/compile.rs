@@ -741,6 +741,11 @@ fn compile_expr(
             let measure = lookup_measure_id(refs, validated, &b.measure)?;
             Ok(Expr::Cumulative(measure))
         }
+        // Phase 3J item 7: extrapolate_last_value(measure).
+        ParsedRuleBody::ExtrapolateLastValue(b) => {
+            let measure = lookup_measure_id(refs, validated, &b.measure)?;
+            Ok(Expr::ExtrapolateLastValue(measure))
+        }
         ParsedRuleBody::RollingAvg(b) => {
             let measure = lookup_measure_id(refs, validated, &b.measure)?;
             let window = compile_expr(&b.window, refs, validated)?;

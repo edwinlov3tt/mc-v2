@@ -134,6 +134,10 @@ pub fn validate(parsed: ParsedModel) -> Result<ValidatedModel, Vec<Error>> {
     // names; MC2066 catches actual_ref fallback type mismatches (best-
     // effort static type analysis).
     check_scenario_ref_and_fallback(&parsed, &validated_rules, &mut val_errors);
+    // Phase 3J item 7 + Amendment §11: extrapolate_last_value used at
+    // a scope other than `FutureLeaves` requires the rule to set
+    // `allow_past_extrapolation: true`. MC2067 fires otherwise.
+    check_extrapolate_scope(&validated_rules, &mut val_errors);
 
     errors.extend(val_errors.into_iter().map(Error::Validation));
 
@@ -231,6 +235,7 @@ fn parse_rule_formulas(rules: &[ParsedRule], errors: &mut Vec<Error>) -> Vec<Val
                 description: r.description.clone(),
                 body,
                 declared_dependencies: r.declared_dependencies.clone(),
+                allow_past_extrapolation: r.allow_past_extrapolation,
             }
         })
         .collect()
@@ -671,6 +676,7 @@ fn check_binop_arity(body: &ParsedRuleBody, rule_name: &str, errors: &mut Vec<Va
         }
         ParsedRuleBody::ActualRef(_)
         | ParsedRuleBody::ScenarioRef(_)
+        | ParsedRuleBody::ExtrapolateLastValue(_)
         | ParsedRuleBody::Prev(_)
         | ParsedRuleBody::Cumulative(_)
         | ParsedRuleBody::SumOver(_) => return,
@@ -832,6 +838,10 @@ fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
         }
         // Phase 3J item 6: scenario_ref's measure participates in deps.
         ParsedRuleBody::ScenarioRef(b) => {
+            out.insert(b.measure.clone());
+        }
+        // Phase 3J item 7: extrapolate_last_value's measure dep.
+        ParsedRuleBody::ExtrapolateLastValue(b) => {
             out.insert(b.measure.clone());
         }
         ParsedRuleBody::Prev(b) | ParsedRuleBody::Cumulative(b) => {
@@ -1138,7 +1148,9 @@ fn uses_time_series(body: &ParsedRuleBody) -> bool {
             None => false,
             Some(fb) => uses_time_series(fb),
         },
-        ParsedRuleBody::ScenarioRef(_) | ParsedRuleBody::SumOver(_) => false,
+        ParsedRuleBody::ScenarioRef(_)
+        | ParsedRuleBody::ExtrapolateLastValue(_)
+        | ParsedRuleBody::SumOver(_) => false,
         ParsedRuleBody::Benchmark(b) => uses_time_series(&b.key_expr),
         ParsedRuleBody::Lookup(b) => b.key_exprs.iter().any(|k| uses_time_series(k)),
         ParsedRuleBody::Bucket(b) => uses_time_series(&b.value),
@@ -1182,7 +1194,7 @@ fn uses_actual_ref(body: &ParsedRuleBody) -> bool {
         // dim's `actuals_element` to be configured — it targets a
         // user-named scenario element directly. So it doesn't
         // participate in the MC2037 check.
-        ParsedRuleBody::ScenarioRef(_) => false,
+        ParsedRuleBody::ScenarioRef(_) | ParsedRuleBody::ExtrapolateLastValue(_) => false,
         ParsedRuleBody::Const(_)
         | ParsedRuleBody::Ref(_)
         | ParsedRuleBody::PeriodIndex(_)
@@ -1368,7 +1380,7 @@ fn find_cross_coord_nesting(body: &ParsedRuleBody) -> Option<String> {
         ParsedRuleBody::ActualRef(_) => None,
         // Phase 3J item 6: scenario_ref takes a bare measure name and a
         // string literal — no nestable expression slots.
-        ParsedRuleBody::ScenarioRef(_) => None,
+        ParsedRuleBody::ScenarioRef(_) | ParsedRuleBody::ExtrapolateLastValue(_) => None,
         ParsedRuleBody::Prev(_) | ParsedRuleBody::Cumulative(_) => None, // leaf measure ref
         ParsedRuleBody::Lag(b) => {
             if crate::formula::contains_cross_coord(&b.periods) {
@@ -1968,6 +1980,7 @@ fn uses_anchor_function(body: &ParsedRuleBody) -> bool {
         }
         ParsedRuleBody::ActualRef(_)
         | ParsedRuleBody::ScenarioRef(_)
+        | ParsedRuleBody::ExtrapolateLastValue(_)
         | ParsedRuleBody::Prev(_)
         | ParsedRuleBody::Cumulative(_)
         | ParsedRuleBody::SumOver(_) => false,
@@ -2302,6 +2315,7 @@ fn walk_is_element_and_over(
         | ParsedRuleBody::PeriodsToEnd(_)
         | ParsedRuleBody::ActualRef(_)
         | ParsedRuleBody::ScenarioRef(_)
+        | ParsedRuleBody::ExtrapolateLastValue(_)
         | ParsedRuleBody::Prev(_)
         | ParsedRuleBody::Cumulative(_)
         | ParsedRuleBody::SumOver(_) => {}
@@ -2501,7 +2515,7 @@ fn walk_predict_arity(
         | ParsedRuleBody::IsFuture(_)
         | ParsedRuleBody::PeriodsSinceAnchor(_)
         | ParsedRuleBody::PeriodsToEnd(_)
-        | ParsedRuleBody::ActualRef(_) | ParsedRuleBody::ScenarioRef(_)
+        | ParsedRuleBody::ActualRef(_) | ParsedRuleBody::ScenarioRef(_) | ParsedRuleBody::ExtrapolateLastValue(_)
         | ParsedRuleBody::Prev(_)
         | ParsedRuleBody::Cumulative(_)
         | ParsedRuleBody::SumOver(_)
@@ -2662,7 +2676,7 @@ fn expr_static_type(body: &ParsedRuleBody) -> ExprStaticType {
         // Phase 3J: scenario_ref returns the measure's domain — F64
         // for the only measure data_types Phase 3J supports for cross-
         // scenario reads.
-        ParsedRuleBody::ScenarioRef(_) => T::F64,
+        ParsedRuleBody::ScenarioRef(_) | ParsedRuleBody::ExtrapolateLastValue(_) => T::F64,
         // Numeric primitives + every arithmetic / comparison / logical /
         // function call returning F64.
         ParsedRuleBody::Const(_)
@@ -3108,6 +3122,7 @@ fn check_str_type_context_walk(
         | ParsedRuleBody::PeriodsToEnd(_)
         | ParsedRuleBody::ActualRef(_)
         | ParsedRuleBody::ScenarioRef(_)
+        | ParsedRuleBody::ExtrapolateLastValue(_)
         | ParsedRuleBody::Prev(_)
         | ParsedRuleBody::Cumulative(_)
         | ParsedRuleBody::SumOver(_)
@@ -3224,6 +3239,7 @@ fn walk_param_refs(
         | ParsedRuleBody::PeriodsToEnd(_)
         | ParsedRuleBody::ActualRef(_)
         | ParsedRuleBody::ScenarioRef(_)
+        | ParsedRuleBody::ExtrapolateLastValue(_)
         | ParsedRuleBody::Prev(_)
         | ParsedRuleBody::Cumulative(_)
         | ParsedRuleBody::SumOver(_)
@@ -3513,7 +3529,8 @@ fn walk_scenario_and_fallback(
         | ParsedRuleBody::WAvgOver(_)
         | ParsedRuleBody::StrLiteral(_)
         | ParsedRuleBody::CurrentElement(_)
-        | ParsedRuleBody::ParamRef(_) => {}
+        | ParsedRuleBody::ParamRef(_)
+        | ParsedRuleBody::ExtrapolateLastValue(_) => {}
         ParsedRuleBody::Add(b) => {
             for a in &b.add {
                 walk_scenario_and_fallback(a, rule_name, scenario_elems, errors);
@@ -3626,6 +3643,130 @@ fn walk_scenario_and_fallback(
             walk_scenario_and_fallback(&b.p, rule_name, scenario_elems, errors);
             walk_scenario_and_fallback(&b.mu, rule_name, scenario_elems, errors);
             walk_scenario_and_fallback(&b.sigma, rule_name, scenario_elems, errors);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3J item 7 + Amendment §11: extrapolate_last_value scope check
+//
+// MC2067: a rule using `extrapolate_last_value(measure)` must have
+//         `scope: FutureLeaves` OR `allow_past_extrapolation: true`.
+//         The override flag (renamed from the original
+//         `extrapolate_anywhere` per Amendment §11) is self-
+//         documenting — the user reading the YAML knows immediately
+//         what's being unlocked.
+// ---------------------------------------------------------------------------
+
+fn check_extrapolate_scope(validated_rules: &[ValidatedRule], errors: &mut Vec<ValidationError>) {
+    for r in validated_rules {
+        if !body_uses_extrapolate(&r.body) {
+            continue;
+        }
+        if r.scope == "FutureLeaves" {
+            continue;
+        }
+        if r.allow_past_extrapolation {
+            continue;
+        }
+        errors.push(ValidationError::Schema {
+            message: format!(
+                "rule {:?}: extrapolate_last_value used at scope {:?}; requires \
+                 scope: FutureLeaves OR allow_past_extrapolation: true (MC2067)",
+                r.name, r.scope
+            ),
+        });
+    }
+}
+
+fn body_uses_extrapolate(body: &ParsedRuleBody) -> bool {
+    match body {
+        ParsedRuleBody::ExtrapolateLastValue(_) => true,
+        ParsedRuleBody::Const(_)
+        | ParsedRuleBody::Ref(_)
+        | ParsedRuleBody::PeriodIndex(_)
+        | ParsedRuleBody::AnchorIndex(_)
+        | ParsedRuleBody::IsPast(_)
+        | ParsedRuleBody::IsCurrent(_)
+        | ParsedRuleBody::IsFuture(_)
+        | ParsedRuleBody::PeriodsSinceAnchor(_)
+        | ParsedRuleBody::PeriodsToEnd(_)
+        | ParsedRuleBody::ActualRef(_)
+        | ParsedRuleBody::ScenarioRef(_)
+        | ParsedRuleBody::Prev(_)
+        | ParsedRuleBody::Cumulative(_)
+        | ParsedRuleBody::SumOver(_)
+        | ParsedRuleBody::IsElement(_)
+        | ParsedRuleBody::AvgOver(_)
+        | ParsedRuleBody::MinOver(_)
+        | ParsedRuleBody::MaxOver(_)
+        | ParsedRuleBody::WAvgOver(_)
+        | ParsedRuleBody::StrLiteral(_)
+        | ParsedRuleBody::CurrentElement(_)
+        | ParsedRuleBody::ParamRef(_) => false,
+        ParsedRuleBody::Add(b) => b.add.iter().any(body_uses_extrapolate),
+        ParsedRuleBody::Sub(b) => b.sub.iter().any(body_uses_extrapolate),
+        ParsedRuleBody::Mul(b) => b.mul.iter().any(body_uses_extrapolate),
+        ParsedRuleBody::Div(b) => b.div.iter().any(body_uses_extrapolate),
+        ParsedRuleBody::IfNull(b) => b.if_null.iter().any(body_uses_extrapolate),
+        ParsedRuleBody::Gt(b)
+        | ParsedRuleBody::Lt(b)
+        | ParsedRuleBody::Gte(b)
+        | ParsedRuleBody::Lte(b)
+        | ParsedRuleBody::Eq(b)
+        | ParsedRuleBody::Neq(b)
+        | ParsedRuleBody::And(b)
+        | ParsedRuleBody::Or(b) => {
+            body_uses_extrapolate(&b.left) || body_uses_extrapolate(&b.right)
+        }
+        ParsedRuleBody::Not(b) | ParsedRuleBody::Abs(b) => body_uses_extrapolate(&b.operand),
+        ParsedRuleBody::If(b) => {
+            body_uses_extrapolate(&b.condition)
+                || body_uses_extrapolate(&b.then_branch)
+                || body_uses_extrapolate(&b.else_branch)
+        }
+        ParsedRuleBody::Min(b) | ParsedRuleBody::Max(b) | ParsedRuleBody::Coalesce(b) => {
+            b.args.iter().any(body_uses_extrapolate)
+        }
+        ParsedRuleBody::SafeDiv(b) => {
+            body_uses_extrapolate(&b.numerator)
+                || body_uses_extrapolate(&b.denominator)
+                || body_uses_extrapolate(&b.default)
+        }
+        ParsedRuleBody::Clamp(b) => {
+            body_uses_extrapolate(&b.value)
+                || body_uses_extrapolate(&b.lo)
+                || body_uses_extrapolate(&b.hi)
+        }
+        ParsedRuleBody::Lag(b) => body_uses_extrapolate(&b.periods),
+        ParsedRuleBody::RollingAvg(b) => body_uses_extrapolate(&b.window),
+        ParsedRuleBody::Benchmark(b) => body_uses_extrapolate(&b.key_expr),
+        ParsedRuleBody::Lookup(b) => b.key_exprs.iter().any(|k| body_uses_extrapolate(k)),
+        ParsedRuleBody::Bucket(b) => body_uses_extrapolate(&b.value),
+        ParsedRuleBody::Predict(b) => b.features.iter().any(|f| body_uses_extrapolate(f)),
+        ParsedRuleBody::Calibrate(b) => body_uses_extrapolate(&b.value),
+        ParsedRuleBody::Exp(b) => body_uses_extrapolate(&b.operand),
+        ParsedRuleBody::NormCdf(b) => {
+            body_uses_extrapolate(&b.x)
+                || body_uses_extrapolate(&b.mu)
+                || body_uses_extrapolate(&b.sigma)
+        }
+        ParsedRuleBody::Pow(b) => {
+            body_uses_extrapolate(&b.base) || body_uses_extrapolate(&b.exponent)
+        }
+        ParsedRuleBody::Sqrt(b)
+        | ParsedRuleBody::Ln(b)
+        | ParsedRuleBody::Log10(b)
+        | ParsedRuleBody::Round(b)
+        | ParsedRuleBody::Floor(b)
+        | ParsedRuleBody::Ceil(b) => body_uses_extrapolate(&b.operand),
+        ParsedRuleBody::Mod(b) => {
+            body_uses_extrapolate(&b.dividend) || body_uses_extrapolate(&b.divisor)
+        }
+        ParsedRuleBody::NormInv(b) => {
+            body_uses_extrapolate(&b.p)
+                || body_uses_extrapolate(&b.mu)
+                || body_uses_extrapolate(&b.sigma)
         }
     }
 }

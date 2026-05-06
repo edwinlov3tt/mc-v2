@@ -392,6 +392,10 @@ fn collect_self_refs(expr: &mc_core::Expr) -> std::collections::HashSet<mc_core:
             mc_core::Expr::ScenarioRef(m, _scenario) => {
                 acc.insert(*m);
             }
+            // Phase 3J item 7: extrapolate_last_value's measure dep.
+            mc_core::Expr::ExtrapolateLastValue(m) => {
+                acc.insert(*m);
+            }
         }
     }
     out

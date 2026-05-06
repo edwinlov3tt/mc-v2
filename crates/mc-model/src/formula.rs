@@ -695,6 +695,17 @@ impl<'a> Parser<'a> {
                     self.expect_close_paren("cumulative")?;
                     Ok(ParsedRuleBody::Cumulative(ParsedMeasureRefBody { measure }))
                 }
+                // -- Phase 3J item 7: extrapolate_last_value(measure) --
+                "extrapolate_last_value" => {
+                    self.skip_ws();
+                    let measure =
+                        self.parse_bare_identifier("extrapolate_last_value", call_start)?;
+                    self.skip_ws();
+                    self.expect_close_paren("extrapolate_last_value")?;
+                    Ok(ParsedRuleBody::ExtrapolateLastValue(ParsedMeasureRefBody {
+                        measure,
+                    }))
+                }
                 "lag" => {
                     self.skip_ws();
                     let measure = self.parse_bare_identifier("lag", call_start)?;
@@ -1615,11 +1626,13 @@ fn prec(body: &ParsedRuleBody) -> u8 {
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_)
-        // Phase 3J: string literal + current_element + param are atomic primaries
+        // Phase 3J: string literal + current_element + param + scenario_ref
+        // + extrapolate_last_value are atomic primaries
         | ParsedRuleBody::StrLiteral(_)
         | ParsedRuleBody::CurrentElement(_)
         | ParsedRuleBody::ParamRef(_)
-        | ParsedRuleBody::ScenarioRef(_) => 8,
+        | ParsedRuleBody::ScenarioRef(_)
+        | ParsedRuleBody::ExtrapolateLastValue(_) => 8,
         // Multiplicative
         ParsedRuleBody::Mul(_) | ParsedRuleBody::Div(_) => 7,
         // Additive
@@ -1965,6 +1978,12 @@ fn write_node_bare(out: &mut String, body: &ParsedRuleBody) {
             out.push_str(&b.scenario);
             out.push_str("\")");
         }
+        // Phase 3J item 7: extrapolate_last_value(measure).
+        ParsedRuleBody::ExtrapolateLastValue(b) => {
+            out.push_str("extrapolate_last_value(");
+            out.push_str(&b.measure);
+            out.push(')');
+        }
     }
 }
 
@@ -2040,7 +2059,9 @@ pub fn contains_cross_coord(body: &ParsedRuleBody) -> bool {
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_)
         // Phase 3J item 6: scenario_ref is cross-coord (Scenario shift).
-        | ParsedRuleBody::ScenarioRef(_) => true,
+        | ParsedRuleBody::ScenarioRef(_)
+        // Phase 3J item 7: extrapolate_last_value walks Time backward.
+        | ParsedRuleBody::ExtrapolateLastValue(_) => true,
         ParsedRuleBody::Const(_)
         | ParsedRuleBody::Ref(_)
         | ParsedRuleBody::PeriodIndex(_)

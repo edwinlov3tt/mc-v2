@@ -225,6 +225,13 @@ pub struct ParsedRule {
     pub description: Option<String>,
     pub body: ParsedRuleBodyForm,
     pub declared_dependencies: Vec<String>,
+    /// Phase 3J item 7 + Amendment §11: opt-in flag allowing
+    /// `extrapolate_last_value(measure)` to be used at scopes other
+    /// than `FutureLeaves`. Without this flag, MC2067 fires.
+    /// Specific name (vs the proposed `extrapolate_anywhere`) is
+    /// self-documenting.
+    #[serde(default)]
+    pub allow_past_extrapolation: bool,
 }
 
 /// Phase 3D: the YAML-faithful authoring form for a rule body. `Formula`
@@ -414,6 +421,17 @@ pub enum ParsedRuleBody {
     /// Read `measure` from the named scenario at the current coord.
     /// Validator (MC2065) catches unknown scenario names.
     ScenarioRef(ParsedScenarioRefBody),
+
+    // -- Phase 3J item 7: extrapolate_last_value(measure) --
+    /// LOCF (last-observation-carry-forward). Scans backward through
+    /// the Time dim returning the most recent non-Null value of
+    /// `measure`. Per ADR-0016 Decision 9 + Amendment §11, the
+    /// validator (MC2067) requires the host rule to have `scope:
+    /// FutureLeaves` OR `allow_past_extrapolation: true`.
+    /// Amendment §5 reserves the future shape
+    /// `extrapolate_last_value(measure, max_periods)`; v1 ships only
+    /// the 1-arg form.
+    ExtrapolateLastValue(ParsedMeasureRefBody),
 
     // -- Phase 3I: cross-coord scans --
     /// `avg_over(measure, dim)` — mean across leaf elements of `dim`.
@@ -1060,6 +1078,8 @@ pub struct ValidatedRule {
     pub description: Option<String>,
     pub body: ParsedRuleBody,
     pub declared_dependencies: Vec<String>,
+    /// Phase 3J item 7 + Amendment §11.
+    pub allow_past_extrapolation: bool,
 }
 
 /// `ValidatedModel` is the contract Phase 4 (LLM authoring) and Phase 6
