@@ -251,12 +251,21 @@ pub fn compile(validated: ValidatedModel) -> Result<CompiledCube, EngineError> {
         refs.rules.insert(rule.name.clone(), rule_id);
         let target = lookup_measure_id(&refs, &validated, &rule.target_measure)?;
         let body = compile_expr(&rule.body, &refs, &validated)?;
+        // Phase 3J item 5: scope variants. Validator (mc-model) maps
+        // unknown names to MC1029 at parse time and (per Amendment §4)
+        // MC2069 if a non-AllLeaves variant is used without a
+        // configured time_anchor; here we trust the names.
         let scope = match rule.scope.as_str() {
             "AllLeaves" => Scope::AllLeaves,
+            "FutureLeaves" => Scope::FutureLeaves,
+            "PastLeaves" => Scope::PastLeaves,
+            "CurrentLeaves" => Scope::CurrentLeaves,
             _ => {
+                // Defense-in-depth: MC2068 (compile-stage) per Decision 5.
+                // Should never fire if validator is correct.
                 return Err(EngineError::Internal(
-                    "compile: validator missed an unknown rule scope",
-                ))
+                    "compile: validator missed an unknown rule scope (MC2068)",
+                ));
             }
         };
         let declared_dependencies: Vec<DependencyDecl> = rule

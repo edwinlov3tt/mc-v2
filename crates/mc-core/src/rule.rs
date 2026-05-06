@@ -25,11 +25,24 @@ use crate::error::EngineError;
 use crate::id::{CubeId, ElementId, RuleId};
 use crate::value::ScalarValue;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Scope {
     /// Rule applies to every leaf coordinate (in non-measure dims) where
-    /// the measure is `target_measure`. Phase 1 supports this only.
+    /// the measure is `target_measure`.
     AllLeaves,
+    /// Phase 3J item 5: rule applies only at leaf coords where
+    /// `is_future()` is true (the coord's Time element is later than
+    /// the configured `time_anchor`). Per ADR-0016 Decision 5 +
+    /// Amendment §4, this variant requires `time_anchor` configured on
+    /// the Time dim — validate fires MC2069 otherwise.
+    FutureLeaves,
+    /// Phase 3J item 5: leaves where `is_past()` is true (Time element
+    /// is earlier than `time_anchor`). Same time_anchor requirement.
+    PastLeaves,
+    /// Phase 3J item 5: leaves where `is_current()` is true (Time
+    /// element equals `time_anchor`). Same time_anchor requirement.
+    CurrentLeaves,
 }
 
 #[derive(Clone, Debug, PartialEq)]

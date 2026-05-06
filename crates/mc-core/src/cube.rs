@@ -425,11 +425,46 @@ impl Cube {
             ));
         }
         let rule_index = rule_indices[0];
-        let (rule_id, rule_body) = {
+        let (rule_id, rule_body, rule_scope) = {
             let r = self.rules.rule_at(rule_index).expect("indexed");
-            (r.id, r.body.clone())
+            (r.id, r.body.clone(), r.scope.clone())
         };
         let measure_dim_position = self.measure_dimension_position;
+        // Phase 3J item 5: if the rule's scope filters out this coord,
+        // skip eval and return Null with Default provenance. AllLeaves
+        // never filters anything; FutureLeaves / PastLeaves /
+        // CurrentLeaves filter against the configured time_anchor.
+        if !self.rule_scope_matches(&rule_scope, coord) {
+            let value = ScalarValue::Null;
+            let provenance = Provenance::Default {
+                reason: "rule scope excludes this coord",
+            };
+            let trace = if request_trace {
+                Some(Trace {
+                    root: TraceNode {
+                        coord: coord.clone(),
+                        value: value.clone(),
+                        operation: TraceOp::DefaultFallback {
+                            default: value.clone(),
+                            reason: "rule scope excludes this coord",
+                        },
+                        children: Vec::new(),
+                    },
+                    revision: self.revision,
+                    elapsed_us: 0,
+                })
+            } else {
+                None
+            };
+            return Ok(CellValue {
+                value,
+                dtype: measure_meta.dtype.clone(),
+                provenance,
+                uncertainty: None,
+                trace,
+                revision: self.revision,
+            });
+        }
 
         // Track every measure actually read via SelfRef, for the
         // declared-dependency superset check (per spec §3.10).
@@ -1412,6 +1447,51 @@ impl Cube {
         self.dimensions
             .iter()
             .position(|d| d.kind == DimensionKind::Standard)
+    }
+
+    /// Phase 3J item 5: decide whether a rule with the given `scope`
+    /// applies at the given `coord`. `Scope::AllLeaves` matches every
+    /// coord. The Future/Past/CurrentLeaves variants compare the
+    /// coord's Time element index against `reference_data.time_anchor_index`:
+    ///
+    /// - `FutureLeaves`: coord_time_index > anchor_index
+    /// - `PastLeaves`:   coord_time_index < anchor_index
+    /// - `CurrentLeaves`: coord_time_index == anchor_index
+    ///
+    /// If `time_anchor_index` is None, non-AllLeaves scopes match no
+    /// coord (returns false). Validate (mc-model) catches the missing
+    /// time_anchor at compile time with MC2069; this is a defense-in-
+    /// depth runtime check.
+    fn rule_scope_matches(&self, scope: &crate::rule::Scope, coord: &CellCoordinate) -> bool {
+        use crate::rule::Scope;
+        match scope {
+            Scope::AllLeaves => true,
+            Scope::FutureLeaves | Scope::PastLeaves | Scope::CurrentLeaves => {
+                let anchor = match self.reference_data.time_anchor_index {
+                    Some(a) => a,
+                    None => return false,
+                };
+                let time_pos = match self.find_time_dimension_position() {
+                    Some(p) => p,
+                    None => return false,
+                };
+                // Resolve the coord's element to its index in the Time
+                // dimension's element list.
+                let time_dim = &self.dimensions[time_pos];
+                let coord_time_id = coord.element_at(time_pos);
+                let coord_time_index =
+                    match time_dim.elements.iter().position(|e| e.id == coord_time_id) {
+                        Some(i) => i,
+                        None => return false,
+                    };
+                match scope {
+                    Scope::FutureLeaves => coord_time_index > anchor,
+                    Scope::PastLeaves => coord_time_index < anchor,
+                    Scope::CurrentLeaves => coord_time_index == anchor,
+                    Scope::AllLeaves => true,
+                }
+            }
+        }
     }
 
     // --- Write ---

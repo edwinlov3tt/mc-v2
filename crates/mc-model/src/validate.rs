@@ -125,6 +125,10 @@ pub fn validate(parsed: ParsedModel) -> Result<ValidatedModel, Vec<Error>> {
     // checked via the existing MC1022 / MC1023 paths after compile
     // synthesizes the equivalent is_element rule body.
     check_indicator_measures(&parsed, &mut val_errors);
+    // Phase 3J item 5: Scope variants. MC1029 rejects unknown scope
+    // names at parse-time; MC2069 (Amendment §4) rejects non-AllLeaves
+    // scopes when `time_anchor` is not configured on the Time dim.
+    check_scope_variants(&parsed, &mut val_errors);
 
     errors.extend(val_errors.into_iter().map(Error::Validation));
 
@@ -3367,6 +3371,46 @@ fn check_indicator_measures(parsed: &ParsedModel, errors: &mut Vec<ValidationErr
                     r.name, r.target_measure
                 ),
             });
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3J item 5: Scope variants validation (MC1029, MC2069)
+//
+// MC1029: unknown scope name in rule's `scope:` field.
+// MC2069 (Amendment §4): a non-AllLeaves scope variant requires the
+//        Time dim to have a `time_anchor:` configured.
+// MC2068 (compile-time defense): Validator should catch unknown
+//        scope names; if compile sees one it fires MC2068 (handled in
+//        compile.rs's `EngineError::Internal` arm).
+// ---------------------------------------------------------------------------
+
+fn check_scope_variants(parsed: &ParsedModel, errors: &mut Vec<ValidationError>) {
+    // Determine if a `time_anchor` is configured on any Time dim.
+    let time_anchor_configured = parsed
+        .dimensions
+        .iter()
+        .any(|d| d.kind == "Time" && d.time_anchor.is_some());
+    for r in &parsed.rules {
+        match r.scope.as_str() {
+            "AllLeaves" => {} // backward-compat; never requires time_anchor
+            "FutureLeaves" | "PastLeaves" | "CurrentLeaves" => {
+                if !time_anchor_configured {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "rule {:?}: scope {:?} requires `time_anchor` configured on the \
+                             Time dimension (MC2069)",
+                            r.name, r.scope
+                        ),
+                    });
+                }
+            }
+            other => {
+                errors.push(ValidationError::Schema {
+                    message: format!("rule {:?}: unknown scope name {:?} (MC1029)", r.name, other),
+                });
+            }
         }
     }
 }
