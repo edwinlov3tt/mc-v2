@@ -4,7 +4,7 @@
 >
 > Read this before inventing a phase name or starting work that isn't already on the list. If a new phase is needed and it isn't here, add it here first (and link the ADR explaining the decision).
 
-**Last updated:** 2026-05-06 (post-Phase 6A.1 review-driven fixes)
+**Last updated:** 2026-05-06 (post-Phase 6A.1 review-driven fixes; 731 / 0 / 5 tests; HEAD `44a7437`)
 **Maintained by:** project lead. New sub-phases require an ADR in [`../decisions/`](../decisions/).
 
 ---
@@ -47,13 +47,17 @@ Productization beyond the first usable product (multi-tenancy, customer-facing a
 | **3D** | Friendly formula syntax — `Revenue = Customers * AOV` strings compile to `ParsedRuleBody`'s structured tree (per ADR-0007; originally ADR-0004's Phase 3C — renamed to 3D per ADR-0006 roadmap impact) | **complete** (report at [`../reports/phase-3d-completion-report.md`](../reports/phase-3d-completion-report.md)) | `phase-3d-friendly-formula-syntax` (`d5ab355`) |
 | **3E–3G** | Formula language expansion (conditionals + time-series + reference-data blocks) | **complete** | `phase-3e-3f-3g-formula-expansion` |
 | **3F.1** | Runtime time anchor + metadata validation | **complete** (bundled with 3E–3G merge) | — |
-| **3H** | Fitted-model evaluation (predict / calibrate / exp / norm_cdf) | **complete** | `phase-3h-fitted-model-evaluation` |
-| **6A.1** | Review-driven fixes — CRIT-1 standardization name-keyed lookup, MAJ-1 time_format wiring, CRIT-2/3 envelope discipline, MIN-1/4/5/6 safety polish, MAJ-2 atomic schedule write | **complete** (report at [`../reports/phase-6a-1-completion-report.md`](../reports/phase-6a-1-completion-report.md)) | `phase-6a-1-review-fixes` |
+| **3H** | Fitted-model evaluation (predict / calibrate / exp / norm_cdf) | **complete** | `phase-3h-fitted-model-evaluation` (`99477ef`) |
 | **3I–3N** | Further model layer extensions (TBD) | not started | — |
 | **4A** | LLM-assisted authoring — Mosaic Claude Code plugin (skills + agents + commands + MCP server + marketing-mix domain schema) per ADR-0008 | **complete** (report at [`../reports/phase-4a-completion-report.md`](../reports/phase-4a-completion-report.md)) | `phase-4a-mosaic-plugin` (`36af56c`) |
 | **4B** | Python reference adapters under `mosaic-plugin/examples/adapters/` (`anthropic-python/` + `openai-python/` ~150 lines each) | **complete** (report at [`../reports/phase-4b-completion-report.md`](../reports/phase-4b-completion-report.md); both adapters cleared best-of-3 gate — Anthropic 3/3, OpenAI 3/3) | `phase-4b-python-adapters` (`b5b6229`) |
-| **5** | Data integration & actuals | not started | — |
-| **6** | UI & internal app proofs (incl. internal Media Partner model proof) | not started | — |
+| **5A** | Tessera Core Engine — `WriteBatch`, recipe format, 6 source drivers, orchestrator + 5 CLI verbs (per ADR-0010) | **complete** | `phase-5a-tessera-core` (`2f20d24`) |
+| **5B** | LLM-Assisted Recipe Authoring — plugin skills + `mosaic-importer` agent + `--mode propose-recipe` (best-of-3 gate Anthropic 3/3 + OpenAI 3/3) | **complete** (report at [`../reports/phase-5b-completion-report.md`](../reports/phase-5b-completion-report.md)) | `phase-5b-llm-recipe-authoring` (`2f20d24`) |
+| **5C** | Driver Expansion — 5 new Tessera drivers (MySQL, D1 REST, Snowflake/BigQuery via ODBC, HTTP-JSON), cron scheduling, incremental loads, ADR-0014 `time_format` enforcement | **complete** | `phase-5c-driver-expansion` (`0790bce`) |
+| **5D–5N** | Document/OCR ingestion + Grout secrets layer (TBD) | not started | — |
+| **6A** | Agent-Ready CLI — 7 verbs (`query`, `whatif`, `trace`, `sweep`, `diff`, `write`, `transform`) + 12 MCP tools + JSON envelope discipline + stable exit codes | **complete** | `phase-6a-agent-ready-cli` (`e696379`) |
+| **6A.1** | Review-driven fixes — CRIT-1 name-keyed standardization, MAJ-1 `time_format` wiring, CRIT-2/3 envelope discipline + I/O exit codes, MIN-1/4/5/6 safety polish, MAJ-2 atomic schedule write | **complete** (report at [`../reports/phase-6a-1-completion-report.md`](../reports/phase-6a-1-completion-report.md)) | `phase-6a-1-review-fixes` (`44a7437`) |
+| **6B** | UI / web app — drill-down planning grid; navigates the Phase 6A capability layer | not started | — |
 | **7** | Productization (customer-facing Media Partner App + multi-tenancy) | not started | — |
 
 **Status legend.**

@@ -19,40 +19,42 @@ The **scope decision** that produced both contracts is recorded in [`decisions/0
 
 ---
 
-## What ships today (Phase 1A → Phase 2C)
+## What ships today (Phase 1A → Phase 6A.1)
 
-- Rust 1.78 workspace, three crates: `mc-core`, `mc-fixtures`, `mc-cli`.
-- **216 / 216 tests passing** across §10.1–§10.8 + new fixture tests (was 210; +6 from Phase 2C scaled-Acme builders incl. the mandatory scale-1× equivalence test).
+- Rust 1.78 workspace, **7 crates**: `mc-core`, `mc-fixtures`, `mc-model`, `mc-cli`, `mc-recipe`, `mc-drivers`, `mc-tessera`.
+- **`mosaic-plugin/`** at workspace root — Claude Code plugin with 6 skills, 4 agents, 7 commands, 12 MCP tools, Python reference adapters (Anthropic + OpenAI).
+- **731 / 0 / 5 tests passing** (5 ignored require live external services; documented as acceptable).
 - 10 / 10 determinism gate runs identical.
 - `cargo fmt --check`, `cargo clippy -D warnings`, `cargo build --release`, `cargo test --workspace` all green.
-- `cargo bench --workspace` baselined across **three** tags: `phase-2a-cold-path-baseline` (`48d52e9`), `phase-2b-consolidation-fast-path` (`6ea58ab`), `phase-2c-workload-baseline` (`789db15`). Per-tag JSON saved under [`reports/bench-data/`](./reports/bench-data/).
-- `target/release/mc demo` matches brief §4.6.
-- Allowed runtime deps: `smallvec`, `ahash`, `thiserror`, `once_cell`. Nothing else.
-- `mc-core` dev deps: `mc-fixtures` + `criterion = "0.5"` (Phase 1B; workspace pin, default-features=false).
-- Kernel source touched only in Phase 2B (consolidation fast path: `cube.rs` + `dimension.rs`). Phase 2A and Phase 2C were source-locked.
-- No `unsafe`, no `async`, no threads, no `serde`. No `cargo update` since Phase 1B's three transitive pins.
+- `cargo bench --workspace` baselined across `phase-2a-cold-path-baseline`, `phase-2b-consolidation-fast-path`, `phase-2c-workload-baseline`. Per-tag JSON under [`reports/bench-data/`](./reports/bench-data/).
+- `target/release/mc demo` matches brief §4.6 byte-for-byte; YAML path (`mc demo --model ...`) is byte-identical.
+- `mc-core` runtime deps unchanged since Phase 1B: `smallvec`, `ahash`, `thiserror`, `once_cell`. New crates added their own (e.g. `serde_yaml` in `mc-model`).
+- `mc-core` locked since Phase 2D except for narrow amendments (Phase 6A.1 corrected `FittedModelData` shape for CRIT-1; rule.rs epsilon swap for MIN-6).
+- `mc-fixtures` locked byte-for-byte since Phase 1A.
+- One sanctioned `unsafe` site (Phase 5C signal-handler in `mc-tessera/src/schedule/daemon.rs`); documented in CLAUDE.md §3.1.
 
-Full audits: completion reports for [Phase 1A](./reports/phase-1-completion-report.md), [Phase 2A](./reports/phase-2a-completion-report.md), [Phase 2B](./reports/phase-2b-completion-report.md), [Phase 2C](./reports/phase-2c-completion-report.md). Performance baseline + per-phase verification at [`PERF.md`](./PERF.md). Master plan at [`roadmap/MASTER_PHASE_PLAN.md`](./roadmap/MASTER_PHASE_PLAN.md).
+**Mosaic is now usable.** A user can author a YAML model with formulas, validate/lint/test it, ingest real data via Tessera, query the cube via the CLI, and integrate with AI agents via MCP. `cargo install --path crates/mc-cli --locked` puts the `mc` binary on PATH.
+
+Full audits: per-phase completion reports under [`reports/`](./reports/). Performance baseline at [`PERF.md`](./PERF.md). Master plan at [`roadmap/MASTER_PHASE_PLAN.md`](./roadmap/MASTER_PHASE_PLAN.md).
 
 ---
 
 ## What is queued
 
-**Phase 2D — Bitset-Backed Dirty Tracker (§9.3) — proposed.** Handoff doc ready at [`handoffs/phase-2d-handoff.md`](./handoffs/phase-2d-handoff.md). Branch picked from PERF.md §6.14: **Branch A — §9.3** (Cartesian-product flat bitset). Phase 2C's headline finding is a super-linear cliff in `load_canonical_inputs` between 10× (4.33×/write) and 50× (19.7×/write); §6.14 attributes it to AHashSet rehash + cache-locality cost as the dirty set grows from 0 → **305,039 entries (measured at 50× steady state)** during bulk ingest. Replacing with a flat bitset keyed by linearized coord-index makes mark/check O(1), independent of set size. Cube-cardinality math (Cartesian product across all dim elements): Acme = 201,960 coords (~25 KB); 10× = 1,050,192 (~128 KB); 50× = 4,820,112 (~588 KB); 100× = 9,532,512 (~1.16 MB) — flat representation is comfortable at every Phase 2C calibration scale.
+**Phase 6B — Web UI / planning grid — not started.** The natural next phase. Phase 6A made the CLI a complete capability layer; 6B renders the same data visually with drill-down, edit, snapshot/rollback, and version comparison. No handoff doc yet.
 
-- **Acceptance gate:** PERF.md §6.12.7 `load_canonical_inputs/50x` drops from 230.84 s → ≤ 50 s.
-- **Source confined to:** `crates/mc-core/src/dirty.rs` + `cube.rs` + (optional) new `cube_shape.rs` + (optional) `coordinate.rs` linearize helper. The rare phase that touches the kernel.
-- **Validation:** kernel unit test `bitset_tracker_observationally_equivalent_to_ahashset` proves the new representation reproduces AHashSet's exact dirty-set membership across an arbitrary mark/clear sequence. The §10.1 `t_acme_dirty_set_size_within_bound_after_one_spend_write` MUST pass byte-for-byte.
-- **Rollback paths if scope explodes:** Roaring Bitmap (Option B; new dep + ADR) or hashed-CellCoordinate (Option C; smaller win). Either is a Phase 2D.1 amendment.
+**Phase 6A.2 — single-compile sweep + transform polish (P1 known debt).** Filed in [`reports/phase-6a-1-completion-report.md`](./reports/phase-6a-1-completion-report.md):
+- `mc model sweep` reads the YAML 2N times for N parameter points (P1 perf debt).
+- `mc tessera transform` uses curl subprocess for HTTP fetches — should switch to `ureq` (P1).
+- Write-log replay not yet wired into `load_model` — `mc model write` is silently ignored by subsequent reads (**P0**, four-source-state-model rule per process-notes Rule 9).
 
-**Read the full Phase 2D handoff:** [`handoffs/phase-2d-handoff.md`](./handoffs/phase-2d-handoff.md). Contains the Phase 2D prompt verbatim plus seven "context-the-prompt-doesn't-spell-out" sections (the exact code being optimized, why a flat bitset is the right shape, the §10.1 invariant proof requirement, iter() ordering semantics, shape vs snapshot lifetime, Phase 2C regression guard, Phase 2E forecast).
+**Phase 3I — Formula-parser unification + string literals.** Filed in [`research-notes/formula-language-expansion.md`](./research-notes/formula-language-expansion.md) §7I.8. Phase 6A's `--where` filter parser is currently a separate hand-rolled implementation. 3I unifies them.
 
-**After Phase 2D:** Phase 2E may not need to exist. If 2D succeeds and the §6.14 50× / 100× env-gated rows (opt-in via `MC_BENCH_CONSOL_SCALED=1`) don't surface another super-linear curve, **Phase 2 exits** and Phase 3A becomes proposed. Likely-not-needed §9.2 / §9.5 / §9.6 stay opportunistic.
+**Phase 6C — Distribution & install pipeline (TBD).** Anchor: `cargo-dist` cross-compile matrix → GitHub Releases + Homebrew tap + `curl | sh` installer + `mosaic update` self-update verb. Six placeholder crate names already reserved on crates.io (`mosaic-cli`, `mosaic-engine`, `mosaic-lnm`, `mosaic-core`, `mosaic-recipe`, `mosaic-tessera`).
 
-**Phase 2 housekeeping:**
-- Q1 (workload sketch ADR): **complete** — [ADR-0003](./decisions/0003-workload-sketch.md) Accepted — Provisional, sunset 2026-11-01.
-- Q2 (toolchain bump): deferred until Phase 3A's parser-dep choice forces it.
-- Q3 (criterion baseline tracking): closed; three baselines on disk per [`reports/bench-data/README.md`](./reports/bench-data/README.md).
+**Phase 7 — Productization.** Multi-tenancy, customer-facing app, auth, audit, SLAs. Not started. Phase 6 must complete first.
+
+**Phase 2 housekeeping** — all closed. Q1 ADR-0003 Accepted–Provisional (sunset 2026-11-01); Q2 toolchain bump deferred (no current driver); Q3 baselines under [`reports/bench-data/`](./reports/bench-data/).
 
 ---
 
@@ -64,7 +66,8 @@ Full audits: completion reports for [Phase 1A](./reports/phase-1-completion-repo
 | What's the master phase plan (Phase 1 → 7)? | [`roadmap/MASTER_PHASE_PLAN.md`](./roadmap/MASTER_PHASE_PLAN.md) |
 | What was the last phase's audit? | [`reports/phase-1-completion-report.md`](./reports/phase-1-completion-report.md), [`reports/phase-2a-completion-report.md`](./reports/phase-2a-completion-report.md), [`reports/phase-2b-completion-report.md`](./reports/phase-2b-completion-report.md), [`reports/phase-2c-completion-report.md`](./reports/phase-2c-completion-report.md) |
 | What did the benchmarks show? | [`PERF.md`](./PERF.md) — Phase 1B baseline §6, Phase 2A cold-path §6.7–§6.10, Phase 2B before/after §6.11, Phase 2C 10× / 50× / 100× rows §6.12 + combined-workflow §6.13 + scaling-shape summary §6.14 |
-| What was the previous handoff? | [`handoffs/phase-1b-handoff.md`](./handoffs/phase-1b-handoff.md), [`handoffs/phase-2a-handoff.md`](./handoffs/phase-2a-handoff.md), [`handoffs/phase-2b-handoff.md`](./handoffs/phase-2b-handoff.md), [`handoffs/phase-2c-handoff.md`](./handoffs/phase-2c-handoff.md) (all delivered). The active Phase 2D handoff is at [`handoffs/phase-2d-handoff.md`](./handoffs/phase-2d-handoff.md). |
+| What was the most recent handoff? | [`handoffs/phase-6a-agent-ready-cli-handoff.md`](./handoffs/phase-6a-agent-ready-cli-handoff.md) (Phase 6A delivered) and [`handoffs/phase-6a-1-fixes-handoff.md`](./handoffs/phase-6a-1-fixes-handoff.md) (Phase 6A.1 delivered). All earlier per-phase handoffs in [`handoffs/`](./handoffs/). |
+| What was the most recent code review? | [`reviews/phase-3-5-6-shipped-review.md`](./reviews/phase-3-5-6-shipped-review.md) — independent Sonnet review across phases 3E–G, 3H, 5C, 6A. The 11 actionable findings drove Phase 6A.1. |
 | What is the contract? | [`specs/engine-semantics.md`](./specs/engine-semantics.md) and [`specs/phase-1-rust-kernel-build-brief.md`](./specs/phase-1-rust-kernel-build-brief.md) |
 | Why was this scope chosen? | [`decisions/0001-phase-1-scope.md`](./decisions/0001-phase-1-scope.md) |
 | What rules govern how I work? | [`../CLAUDE.md`](../CLAUDE.md) |
