@@ -1011,12 +1011,22 @@ impl Cube {
                     None => Ok(ScalarValue::Null),
                 }
             }
-            CrossCoordRead::TableLookup { table, key } => {
+            CrossCoordRead::TableLookup { table, keys } => {
                 let tbl = match self.reference_data.lookup_tables.get(table) {
                     Some(t) => t,
                     None => return Ok(ScalarValue::Null),
                 };
-                let key_str = scalar_to_lookup_key(key);
+                // Phase 3I item 3: 1-key (legacy single-key lookup) and
+                // N-key (new multi-key lookup) share the same dispatch —
+                // join keys with the pipe separator. Element names in
+                // multi-key tables are validated to not contain `|` at
+                // load time (MC2051).
+                let key_str = if keys.len() == 1 {
+                    scalar_to_lookup_key(&keys[0])
+                } else {
+                    let parts: Vec<String> = keys.iter().map(scalar_to_lookup_key).collect();
+                    parts.join("|")
+                };
                 match tbl.get(&key_str) {
                     Some(v) => Ok(ScalarValue::F64(*v)),
                     None => Ok(ScalarValue::Null),
@@ -1090,6 +1100,64 @@ impl Cube {
                     None => Ok(ScalarValue::Null),
                 }
             }
+            // Phase 3I: narrow element-match indicator. Per item 1 W1, the
+            // element name was resolved at parse-time to ElementId so the
+            // hot path does only an integer compare.
+            CrossCoordRead::IsElement { dimension, element } => {
+                let dim_pos = match self.dimensions.iter().position(|d| d.id == *dimension) {
+                    Some(p) => p,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let current = target_coord.element_at(dim_pos);
+                Ok(ScalarValue::F64(if current == *element {
+                    1.0
+                } else {
+                    0.0
+                }))
+            }
+            // Phase 3I: cross-coord aggregations (avg/min/max over a dim).
+            // Mirrors DimensionScan's leaf-collection pattern; differs only
+            // in the reduction. Skip-Null per handoff item 5 W1.
+            CrossCoordRead::DimensionAvg { dimension, measure } => self.dimension_aggregate(
+                *dimension,
+                *measure,
+                target_coord,
+                measure_dim_position,
+                principal,
+                DimAggOp::Avg,
+            ),
+            CrossCoordRead::DimensionMin { dimension, measure } => self.dimension_aggregate(
+                *dimension,
+                *measure,
+                target_coord,
+                measure_dim_position,
+                principal,
+                DimAggOp::Min,
+            ),
+            CrossCoordRead::DimensionMax { dimension, measure } => self.dimension_aggregate(
+                *dimension,
+                *measure,
+                target_coord,
+                measure_dim_position,
+                principal,
+                DimAggOp::Max,
+            ),
+            // Phase 3I: weighted average across leaf elements of `dim`.
+            // Walks each leaf twice — once for value, once for weight —
+            // accumulating sum(value*weight) and sum(weight). Per handoff
+            // item 5 W4, all-zero weight → Null.
+            CrossCoordRead::DimensionWAvg {
+                dimension,
+                value_measure,
+                weight_measure,
+            } => self.dimension_wavg(
+                *dimension,
+                *value_measure,
+                *weight_measure,
+                target_coord,
+                measure_dim_position,
+                principal,
+            ),
             CrossCoordRead::PredictModel { model_id, features } => {
                 let model = match self.reference_data.fitted_models.get(model_id) {
                     Some(m) => m,
@@ -1195,6 +1263,125 @@ impl Cube {
 
                 Ok(ScalarValue::F64(result))
             }
+        }
+    }
+
+    /// Phase 3I: shared evaluator for `avg_over` / `min_over` / `max_over`.
+    /// Walks every leaf element of `dimension`, reads `measure` at each
+    /// (with all other coordinates held constant), then reduces per
+    /// `op`. Skip-Null per handoff item 5 W1: Nulls don't contribute,
+    /// and an empty (all-Null) accumulator returns Null.
+    fn dimension_aggregate(
+        &mut self,
+        dimension: crate::id::DimensionId,
+        measure: ElementId,
+        target_coord: &CellCoordinate,
+        measure_dim_position: usize,
+        principal: PrincipalId,
+        op: DimAggOp,
+    ) -> Result<ScalarValue, EngineError> {
+        let cube_id = self.id;
+        let dim_pos = match self.dimensions.iter().position(|d| d.id == dimension) {
+            Some(p) => p,
+            None => return Ok(ScalarValue::Null),
+        };
+        let dim = &self.dimensions[dim_pos];
+        let hierarchy = dim.default_hierarchy();
+        let leaf_ids: Vec<ElementId> = dim
+            .elements
+            .iter()
+            .filter(|e| hierarchy.is_leaf(e.id) || hierarchy.edges.is_empty())
+            .map(|e| e.id)
+            .collect();
+
+        let mut accum: Option<f64> = None;
+        let mut count: u64 = 0;
+        for leaf_id in leaf_ids {
+            let mut elements: SmallVec<[ElementId; 8]> =
+                target_coord.elements().iter().copied().collect();
+            elements[dim_pos] = leaf_id;
+            elements[measure_dim_position] = measure;
+            let c = CellCoordinate::from_parts(cube_id, elements.iter().copied());
+            let cv = self.read_inner(&c, principal, false)?;
+            if let ScalarValue::F64(v) = cv.value {
+                count += 1;
+                accum = Some(match (accum, op) {
+                    (None, _) => v,
+                    (Some(cur), DimAggOp::Avg) => cur + v,
+                    (Some(cur), DimAggOp::Min) => cur.min(v),
+                    (Some(cur), DimAggOp::Max) => cur.max(v),
+                });
+            }
+        }
+        match (accum, op, count) {
+            (None, _, _) => Ok(ScalarValue::Null),
+            (Some(s), DimAggOp::Avg, n) if n > 0 => Ok(ScalarValue::F64(s / n as f64)),
+            (Some(v), DimAggOp::Min | DimAggOp::Max, _) => Ok(ScalarValue::F64(v)),
+            _ => Ok(ScalarValue::Null),
+        }
+    }
+
+    /// Phase 3I: weighted average across leaf elements of `dimension`.
+    /// Per handoff item 5 W4, all-zero weight → Null. Null values or
+    /// Null weights skip that leaf (don't contribute).
+    fn dimension_wavg(
+        &mut self,
+        dimension: crate::id::DimensionId,
+        value_measure: ElementId,
+        weight_measure: ElementId,
+        target_coord: &CellCoordinate,
+        measure_dim_position: usize,
+        principal: PrincipalId,
+    ) -> Result<ScalarValue, EngineError> {
+        let cube_id = self.id;
+        let dim_pos = match self.dimensions.iter().position(|d| d.id == dimension) {
+            Some(p) => p,
+            None => return Ok(ScalarValue::Null),
+        };
+        let dim = &self.dimensions[dim_pos];
+        let hierarchy = dim.default_hierarchy();
+        let leaf_ids: Vec<ElementId> = dim
+            .elements
+            .iter()
+            .filter(|e| hierarchy.is_leaf(e.id) || hierarchy.edges.is_empty())
+            .map(|e| e.id)
+            .collect();
+
+        let mut weighted_sum = 0.0_f64;
+        let mut weight_total = 0.0_f64;
+        let mut any_pair = false;
+        for leaf_id in leaf_ids {
+            let mut value_elements: SmallVec<[ElementId; 8]> =
+                target_coord.elements().iter().copied().collect();
+            value_elements[dim_pos] = leaf_id;
+            value_elements[measure_dim_position] = value_measure;
+            let value_coord = CellCoordinate::from_parts(cube_id, value_elements.iter().copied());
+            let value_cv = self.read_inner(&value_coord, principal, false)?;
+            let value = match value_cv.value {
+                ScalarValue::F64(v) => v,
+                _ => continue,
+            };
+
+            let mut weight_elements: SmallVec<[ElementId; 8]> =
+                target_coord.elements().iter().copied().collect();
+            weight_elements[dim_pos] = leaf_id;
+            weight_elements[measure_dim_position] = weight_measure;
+            let weight_coord = CellCoordinate::from_parts(cube_id, weight_elements.iter().copied());
+            let weight_cv = self.read_inner(&weight_coord, principal, false)?;
+            let weight = match weight_cv.value {
+                ScalarValue::F64(v) => v,
+                _ => continue,
+            };
+
+            weighted_sum += value * weight;
+            weight_total += weight;
+            any_pair = true;
+        }
+
+        if !any_pair || weight_total.abs() < 1e-300 {
+            Ok(ScalarValue::Null)
+        } else {
+            Ok(ScalarValue::F64(weighted_sum / weight_total))
         }
     }
 
@@ -2216,6 +2403,15 @@ pub struct ThresholdBand {
 // CubeBuilder
 // ===========================================================================
 
+/// Phase 3I: which reduction the dimension-aggregate helper performs.
+/// Internal — kernel surface stays locked at the public API level.
+#[derive(Clone, Copy, Debug)]
+enum DimAggOp {
+    Avg,
+    Min,
+    Max,
+}
+
 #[derive(Debug)]
 pub struct CubeBuilder {
     id: CubeId,
@@ -2455,8 +2651,12 @@ fn validate_expr_well_typed(expr: &Expr, measure_dim: &Dimension) -> Result<(), 
         | Expr::PeriodsSinceAnchor
         | Expr::PeriodsToEnd
         | Expr::DimElement(_) => Ok(()),
-        Expr::Benchmark(_, key) | Expr::Lookup(_, key) => {
-            validate_expr_well_typed(key, measure_dim)
+        Expr::Benchmark(_, key) => validate_expr_well_typed(key, measure_dim),
+        Expr::Lookup(_, keys) => {
+            for k in keys {
+                validate_expr_well_typed(k, measure_dim)?;
+            }
+            Ok(())
         }
         Expr::SumOver(_, m) => {
             let _ = measure_dim
@@ -2476,6 +2676,42 @@ fn validate_expr_well_typed(expr: &Expr, measure_dim: &Dimension) -> Result<(), 
             validate_expr_well_typed(x, measure_dim)?;
             validate_expr_well_typed(mu, measure_dim)?;
             validate_expr_well_typed(sigma, measure_dim)?;
+            Ok(())
+        }
+        // Phase 3I: math primitives
+        Expr::Pow(a, b) | Expr::Mod(a, b) => {
+            validate_expr_well_typed(a, measure_dim)?;
+            validate_expr_well_typed(b, measure_dim)?;
+            Ok(())
+        }
+        Expr::Sqrt(v)
+        | Expr::Ln(v)
+        | Expr::Log10(v)
+        | Expr::Round(v)
+        | Expr::Floor(v)
+        | Expr::Ceil(v) => validate_expr_well_typed(v, measure_dim),
+        Expr::NormInv(p, mu, sigma) => {
+            validate_expr_well_typed(p, measure_dim)?;
+            validate_expr_well_typed(mu, measure_dim)?;
+            validate_expr_well_typed(sigma, measure_dim)?;
+            Ok(())
+        }
+        // Phase 3I: is_element — element resolution happened at parse.
+        Expr::IsElement(_, _) => Ok(()),
+        // Phase 3I: cross-coord dimension scans (avg/min/max/wavg).
+        Expr::AvgOver(_, m) | Expr::MinOver(_, m) | Expr::MaxOver(_, m) => {
+            let _ = measure_dim
+                .element(*m)
+                .ok_or(EngineError::ElementNotFound(*m, measure_dim.id))?;
+            Ok(())
+        }
+        Expr::WAvgOver(_, value, weight) => {
+            let _ = measure_dim
+                .element(*value)
+                .ok_or(EngineError::ElementNotFound(*value, measure_dim.id))?;
+            let _ = measure_dim
+                .element(*weight)
+                .ok_or(EngineError::ElementNotFound(*weight, measure_dim.id))?;
             Ok(())
         }
     }

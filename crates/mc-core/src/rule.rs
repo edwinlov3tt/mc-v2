@@ -100,7 +100,10 @@ pub enum Expr {
 
     // -- Phase 3G: Reference-data --
     Benchmark(String, Box<Expr>),
-    Lookup(String, Box<Expr>),
+    /// `lookup(name, key1, key2, ...)` — Phase 3I item 3 extended this to
+    /// hold a Vec of key expressions. Single-key callers pass a 1-element
+    /// vec; multi-key callers pass N elements joined with `|` at eval.
+    Lookup(String, Vec<Box<Expr>>),
     Bucket(Box<Expr>, String),
     SumOver(crate::id::DimensionId, ElementId),
     /// Resolves to the name of the current coordinate's element in the
@@ -116,6 +119,46 @@ pub enum Expr {
     Exp(Box<Expr>),
     /// `norm_cdf(x, mu, sigma)` — normal distribution CDF
     NormCdf(Box<Expr>, Box<Expr>, Box<Expr>),
+
+    // -- Phase 3I: Math primitives --
+    /// `pow(base, exponent)`
+    Pow(Box<Expr>, Box<Expr>),
+    /// `sqrt(x)`
+    Sqrt(Box<Expr>),
+    /// `ln(x)`
+    Ln(Box<Expr>),
+    /// `log10(x)`
+    Log10(Box<Expr>),
+    /// `round(x)` — banker's rounding (half-to-even).
+    Round(Box<Expr>),
+    /// `floor(x)`
+    Floor(Box<Expr>),
+    /// `ceil(x)`
+    Ceil(Box<Expr>),
+    /// `mod(a, b)` — Euclidean remainder. Null when b ≈ 0.
+    Mod(Box<Expr>, Box<Expr>),
+    /// `norm_inv(p, mu, sigma)` — inverse normal CDF (Beasley-Springer-Moro).
+    NormInv(Box<Expr>, Box<Expr>, Box<Expr>),
+
+    // -- Phase 3I: is_element narrow numeric form --
+    /// `is_element(DimensionId, ElementId)` — returns 1.0 if the current
+    /// coordinate's element in `DimensionId` equals `ElementId`, else 0.0.
+    IsElement(crate::id::DimensionId, ElementId),
+
+    // -- Phase 3I: cross-coord scans (avg/min/max/wavg over a dimension) --
+    /// `avg_over(measure, dim)` — mean across leaf elements of `dim`,
+    /// skipping Nulls. Empty/all-null → Null.
+    AvgOver(crate::id::DimensionId, ElementId),
+    /// `min_over(measure, dim)` — minimum across leaf elements of `dim`,
+    /// skipping Nulls. All-null → Null.
+    MinOver(crate::id::DimensionId, ElementId),
+    /// `max_over(measure, dim)` — maximum across leaf elements of `dim`,
+    /// skipping Nulls. All-null → Null.
+    MaxOver(crate::id::DimensionId, ElementId),
+    /// `wavg_over(measure, dim, weight_measure)` — weighted average across
+    /// leaf elements of `dim`. Returns `sum(value*weight)/sum(weight)`,
+    /// or Null if all weights are zero / all values are null.
+    WAvgOver(crate::id::DimensionId, ElementId, ElementId),
 }
 
 #[derive(Debug)]
@@ -312,7 +355,12 @@ fn collect_self_refs(expr: &Expr) -> AHashSet<ElementId> {
                 out.insert(*m);
                 walk(window, out);
             }
-            Expr::Benchmark(_, key) | Expr::Lookup(_, key) => walk(key, out),
+            Expr::Benchmark(_, key) => walk(key, out),
+            Expr::Lookup(_, keys) => {
+                for k in keys {
+                    walk(k, out);
+                }
+            }
             Expr::Bucket(v, _) => walk(v, out),
             Expr::SumOver(_, m) => {
                 out.insert(*m);
@@ -330,6 +378,31 @@ fn collect_self_refs(expr: &Expr) -> AHashSet<ElementId> {
                 walk(x, out);
                 walk(mu, out);
                 walk(sigma, out);
+            }
+            // Phase 3I: math primitives
+            Expr::Pow(a, b) | Expr::Mod(a, b) => {
+                walk(a, out);
+                walk(b, out);
+            }
+            Expr::Sqrt(a)
+            | Expr::Ln(a)
+            | Expr::Log10(a)
+            | Expr::Round(a)
+            | Expr::Floor(a)
+            | Expr::Ceil(a) => walk(a, out),
+            Expr::NormInv(p, mu, sigma) => {
+                walk(p, out);
+                walk(mu, out);
+                walk(sigma, out);
+            }
+            // Phase 3I: is_element / avg_over family
+            Expr::IsElement(_, _) => {}
+            Expr::AvgOver(_, m) | Expr::MinOver(_, m) | Expr::MaxOver(_, m) => {
+                out.insert(*m);
+            }
+            Expr::WAvgOver(_, value, weight) => {
+                out.insert(*value);
+                out.insert(*weight);
             }
         }
     }
@@ -355,7 +428,12 @@ pub fn expr_depth(expr: &Expr) -> u32 {
         | Expr::PeriodsSinceAnchor
         | Expr::PeriodsToEnd
         | Expr::SumOver(_, _)
-        | Expr::DimElement(_) => 1,
+        | Expr::DimElement(_)
+        | Expr::IsElement(_, _)
+        | Expr::AvgOver(_, _)
+        | Expr::MinOver(_, _)
+        | Expr::MaxOver(_, _)
+        | Expr::WAvgOver(_, _, _) => 1,
         Expr::Add(a, b)
         | Expr::Sub(a, b)
         | Expr::Mul(a, b)
@@ -377,11 +455,21 @@ pub fn expr_depth(expr: &Expr) -> u32 {
             1 + args.iter().map(|a| expr_depth(a)).max().unwrap_or(0)
         }
         Expr::Lag(_, periods) | Expr::RollingAvg(_, periods) => 1 + expr_depth(periods),
-        Expr::Benchmark(_, key) | Expr::Lookup(_, key) => 1 + expr_depth(key),
+        Expr::Benchmark(_, key) => 1 + expr_depth(key),
+        Expr::Lookup(_, keys) => 1 + keys.iter().map(|k| expr_depth(k)).max().unwrap_or(0),
         // Phase 3H
         Expr::Predict(_, features) => 1 + features.iter().map(|f| expr_depth(f)).max().unwrap_or(0),
         Expr::Calibrate(v, _) | Expr::Exp(v) => 1 + expr_depth(v),
         Expr::NormCdf(x, mu, sigma) => 1 + expr_depth(x).max(expr_depth(mu)).max(expr_depth(sigma)),
+        // Phase 3I
+        Expr::Pow(a, b) | Expr::Mod(a, b) => 1 + expr_depth(a).max(expr_depth(b)),
+        Expr::Sqrt(a)
+        | Expr::Ln(a)
+        | Expr::Log10(a)
+        | Expr::Round(a)
+        | Expr::Floor(a)
+        | Expr::Ceil(a) => 1 + expr_depth(a),
+        Expr::NormInv(p, mu, sigma) => 1 + expr_depth(p).max(expr_depth(mu)).max(expr_depth(sigma)),
     }
 }
 
@@ -699,11 +787,14 @@ where
                 key,
             })
         }
-        Expr::Lookup(table, key_expr) => {
-            let key = eval_expr(key_expr, lookup_self, lookup_cross)?;
+        Expr::Lookup(table, key_exprs) => {
+            let mut keys = Vec::with_capacity(key_exprs.len());
+            for ke in key_exprs {
+                keys.push(eval_expr(ke, lookup_self, lookup_cross)?);
+            }
             lookup_cross(&CrossCoordRead::TableLookup {
                 table: table.clone(),
-                key,
+                keys,
             })
         }
         Expr::Bucket(value_expr, threshold_name) => {
@@ -767,6 +858,192 @@ where
                 _ => Ok(ScalarValue::Null),
             }
         }
+        // -- Phase 3I: math primitives --
+        Expr::Pow(base_expr, exp_expr) => {
+            let bv = eval_expr(base_expr, lookup_self, lookup_cross)?;
+            let ev = eval_expr(exp_expr, lookup_self, lookup_cross)?;
+            Ok(eval_pow(bv, ev))
+        }
+        Expr::Sqrt(a) => {
+            let v = eval_expr(a, lookup_self, lookup_cross)?;
+            Ok(eval_sqrt(v))
+        }
+        Expr::Ln(a) => {
+            let v = eval_expr(a, lookup_self, lookup_cross)?;
+            Ok(eval_ln(v))
+        }
+        Expr::Log10(a) => {
+            let v = eval_expr(a, lookup_self, lookup_cross)?;
+            Ok(eval_log10(v))
+        }
+        Expr::Round(a) => {
+            let v = eval_expr(a, lookup_self, lookup_cross)?;
+            Ok(eval_unary_finite(v, |x| x.round()))
+        }
+        Expr::Floor(a) => {
+            let v = eval_expr(a, lookup_self, lookup_cross)?;
+            Ok(eval_unary_finite(v, |x| x.floor()))
+        }
+        Expr::Ceil(a) => {
+            let v = eval_expr(a, lookup_self, lookup_cross)?;
+            Ok(eval_unary_finite(v, |x| x.ceil()))
+        }
+        Expr::Mod(a, b) => {
+            let av = eval_expr(a, lookup_self, lookup_cross)?;
+            let bv = eval_expr(b, lookup_self, lookup_cross)?;
+            Ok(eval_mod(av, bv))
+        }
+        Expr::NormInv(p_expr, mu_expr, sigma_expr) => {
+            let pv = eval_expr(p_expr, lookup_self, lookup_cross)?;
+            let muv = eval_expr(mu_expr, lookup_self, lookup_cross)?;
+            let sv = eval_expr(sigma_expr, lookup_self, lookup_cross)?;
+            Ok(eval_norm_inv(pv, muv, sv))
+        }
+        // -- Phase 3I: is_element --
+        Expr::IsElement(dim, elem) => lookup_cross(&CrossCoordRead::IsElement {
+            dimension: *dim,
+            element: *elem,
+        }),
+        // -- Phase 3I: cross-coord scans --
+        Expr::AvgOver(dim, measure) => lookup_cross(&CrossCoordRead::DimensionAvg {
+            dimension: *dim,
+            measure: *measure,
+        }),
+        Expr::MinOver(dim, measure) => lookup_cross(&CrossCoordRead::DimensionMin {
+            dimension: *dim,
+            measure: *measure,
+        }),
+        Expr::MaxOver(dim, measure) => lookup_cross(&CrossCoordRead::DimensionMax {
+            dimension: *dim,
+            measure: *measure,
+        }),
+        Expr::WAvgOver(dim, value_measure, weight_measure) => {
+            lookup_cross(&CrossCoordRead::DimensionWAvg {
+                dimension: *dim,
+                value_measure: *value_measure,
+                weight_measure: *weight_measure,
+            })
+        }
+    }
+}
+
+/// Phase 3I math primitive: `pow(base, exp)` with Null edge cases per
+/// handoff item 2 (negative base + non-integer exp → Null).
+fn eval_pow(base: ScalarValue, exp: ScalarValue) -> ScalarValue {
+    match (to_f64_opt(&base), to_f64_opt(&exp)) {
+        (Some(b), Some(e)) => {
+            if b < 0.0 && e.fract() != 0.0 {
+                return ScalarValue::Null;
+            }
+            finite_or_null(b.powf(e))
+        }
+        _ => ScalarValue::Null,
+    }
+}
+
+/// Phase 3I math primitive: `sqrt(x)` with Null on negative input.
+fn eval_sqrt(v: ScalarValue) -> ScalarValue {
+    match to_f64_opt(&v) {
+        Some(x) if x >= 0.0 => finite_or_null(x.sqrt()),
+        _ => ScalarValue::Null,
+    }
+}
+
+/// Phase 3I math primitive: `ln(x)` with Null when x <= 0.
+fn eval_ln(v: ScalarValue) -> ScalarValue {
+    match to_f64_opt(&v) {
+        Some(x) if x > 0.0 => finite_or_null(x.ln()),
+        _ => ScalarValue::Null,
+    }
+}
+
+/// Phase 3I math primitive: `log10(x)` with Null when x <= 0.
+fn eval_log10(v: ScalarValue) -> ScalarValue {
+    match to_f64_opt(&v) {
+        Some(x) if x > 0.0 => finite_or_null(x.log10()),
+        _ => ScalarValue::Null,
+    }
+}
+
+/// Phase 3I math primitive shared body: round/floor/ceil with Null
+/// propagation and finite-or-null guard.
+fn eval_unary_finite(v: ScalarValue, f: impl Fn(f64) -> f64) -> ScalarValue {
+    match to_f64_opt(&v) {
+        Some(x) => finite_or_null(f(x)),
+        None => ScalarValue::Null,
+    }
+}
+
+/// Phase 3I math primitive: `mod(a, b)` via Euclidean remainder.
+/// Null when b is near zero.
+fn eval_mod(a: ScalarValue, b: ScalarValue) -> ScalarValue {
+    match (to_f64_opt(&a), to_f64_opt(&b)) {
+        (Some(x), Some(y)) if y.abs() >= 1e-300 => finite_or_null(x.rem_euclid(y)),
+        _ => ScalarValue::Null,
+    }
+}
+
+/// Phase 3I math primitive: `norm_inv(p, mu, sigma)` — inverse normal CDF.
+///
+/// Implementation: Beasley–Springer–Moro algorithm (Moro 1995). Pure
+/// hand-roll with no external deps. Accuracy ~1e-9 in the central
+/// region, falls back to Moro's tail series for |p − 0.5| > 0.42.
+/// Reference: Moro, B. "The Full Monte." Risk, Feb 1995, pp. 57–58.
+///
+/// Returns Null at boundaries (p ≤ 0, p ≥ 1) and when sigma ≤ 0.
+fn eval_norm_inv(p: ScalarValue, mu: ScalarValue, sigma: ScalarValue) -> ScalarValue {
+    match (to_f64_opt(&p), to_f64_opt(&mu), to_f64_opt(&sigma)) {
+        (Some(pv), Some(muv), Some(sv)) if pv > 0.0 && pv < 1.0 && sv > 0.0 => {
+            finite_or_null(muv + sv * norm_inv_unit(pv))
+        }
+        _ => ScalarValue::Null,
+    }
+}
+
+/// Beasley–Springer–Moro inverse standard-normal CDF.
+fn norm_inv_unit(p: f64) -> f64 {
+    // Beasley-Springer (central region) coefficients
+    const A: [f64; 4] = [
+        2.50662823884,
+        -18.61500062529,
+        41.39119773534,
+        -25.44106049637,
+    ];
+    const B: [f64; 4] = [
+        -8.47351093090,
+        23.08336743743,
+        -21.06224101826,
+        3.13082909833,
+    ];
+    // Moro tail-series coefficients
+    const C: [f64; 9] = [
+        0.3374754822726147,
+        0.9761690190917186,
+        0.1607979714918209,
+        0.0276438810333863,
+        0.0038405729373609,
+        0.0003951896511919,
+        0.0000321767881768,
+        0.0000002888167364,
+        0.0000003960315187,
+    ];
+    let y = p - 0.5;
+    if y.abs() < 0.42 {
+        let r = y * y;
+        let num = ((A[3] * r + A[2]) * r + A[1]) * r + A[0];
+        let den = (((B[3] * r + B[2]) * r + B[1]) * r + B[0]) * r + 1.0;
+        y * num / den
+    } else {
+        let r0 = if y > 0.0 { 1.0 - p } else { p };
+        let r = (-r0.ln()).ln();
+        let mut x = C[0]
+            + r * (C[1]
+                + r * (C[2]
+                    + r * (C[3] + r * (C[4] + r * (C[5] + r * (C[6] + r * (C[7] + r * C[8])))))));
+        if y < 0.0 {
+            x = -x;
+        }
+        x
     }
 }
 
@@ -802,8 +1079,15 @@ pub enum CrossCoordRead {
     PeriodIndex,
     /// Lookup a benchmark value by name and key.
     BenchmarkLookup { name: String, key: ScalarValue },
-    /// Lookup a table value by name and key.
-    TableLookup { table: String, key: ScalarValue },
+    /// Lookup a table value by name and key(s). Phase 3I item 3 added the
+    /// multi-key variant: a 1-element keys vec is the original single-key
+    /// `lookup(name, key)`; N-element vecs are the new multi-key
+    /// `lookup(name, k1, k2, ...)` which the eval site joins with `|`
+    /// before dispatching against the table.
+    TableLookup {
+        table: String,
+        keys: Vec<ScalarValue>,
+    },
     /// Lookup bucket band index by threshold name and value.
     BucketLookup {
         threshold: String,
@@ -837,6 +1121,39 @@ pub enum CrossCoordRead {
     PeriodsToEnd,
     /// Resolve the current coordinate's element name in the given dimension.
     CurrentElementName { dimension: crate::id::DimensionId },
+    // -- Phase 3I: narrow element-match indicator --
+    /// Returns 1.0 if the current coord's element in `dimension` is
+    /// `element`, else 0.0. Element resolution is parse-time so the
+    /// kernel doesn't see strings.
+    IsElement {
+        dimension: crate::id::DimensionId,
+        element: ElementId,
+    },
+    // -- Phase 3I: cross-coord scans --
+    /// Mean of `measure` across all leaf elements of `dimension`,
+    /// skipping Nulls.
+    DimensionAvg {
+        dimension: crate::id::DimensionId,
+        measure: ElementId,
+    },
+    /// Min of `measure` across leaf elements of `dimension`, skipping Nulls.
+    DimensionMin {
+        dimension: crate::id::DimensionId,
+        measure: ElementId,
+    },
+    /// Max of `measure` across leaf elements of `dimension`, skipping Nulls.
+    DimensionMax {
+        dimension: crate::id::DimensionId,
+        measure: ElementId,
+    },
+    /// Weighted average of `value_measure` across leaf elements of
+    /// `dimension`, weights from `weight_measure`. Null when all weights
+    /// are zero.
+    DimensionWAvg {
+        dimension: crate::id::DimensionId,
+        value_measure: ElementId,
+        weight_measure: ElementId,
+    },
 }
 
 fn eval_comparison<F, G>(
@@ -1090,11 +1407,14 @@ where
                 key,
             }))
         }
-        Expr::Lookup(table, key_expr) => {
-            let key = eval_expr_unified_inner(key_expr, handler)?;
+        Expr::Lookup(table, key_exprs) => {
+            let mut keys = Vec::with_capacity(key_exprs.len());
+            for ke in key_exprs {
+                keys.push(eval_expr_unified_inner(ke, handler)?);
+            }
             handler(EvalLookup::Cross(&CrossCoordRead::TableLookup {
                 table: table.clone(),
-                key,
+                keys,
             }))
         }
         Expr::Bucket(value_expr, threshold_name) => {
@@ -1152,6 +1472,71 @@ where
                 }
                 _ => Ok(ScalarValue::Null),
             }
+        }
+        // -- Phase 3I: math primitives --
+        Expr::Pow(base_expr, exp_expr) => {
+            let bv = eval_expr_unified_inner(base_expr, handler)?;
+            let ev = eval_expr_unified_inner(exp_expr, handler)?;
+            Ok(eval_pow(bv, ev))
+        }
+        Expr::Sqrt(a) => {
+            let v = eval_expr_unified_inner(a, handler)?;
+            Ok(eval_sqrt(v))
+        }
+        Expr::Ln(a) => {
+            let v = eval_expr_unified_inner(a, handler)?;
+            Ok(eval_ln(v))
+        }
+        Expr::Log10(a) => {
+            let v = eval_expr_unified_inner(a, handler)?;
+            Ok(eval_log10(v))
+        }
+        Expr::Round(a) => {
+            let v = eval_expr_unified_inner(a, handler)?;
+            Ok(eval_unary_finite(v, |x| x.round()))
+        }
+        Expr::Floor(a) => {
+            let v = eval_expr_unified_inner(a, handler)?;
+            Ok(eval_unary_finite(v, |x| x.floor()))
+        }
+        Expr::Ceil(a) => {
+            let v = eval_expr_unified_inner(a, handler)?;
+            Ok(eval_unary_finite(v, |x| x.ceil()))
+        }
+        Expr::Mod(a, b) => {
+            let av = eval_expr_unified_inner(a, handler)?;
+            let bv = eval_expr_unified_inner(b, handler)?;
+            Ok(eval_mod(av, bv))
+        }
+        Expr::NormInv(p_expr, mu_expr, sigma_expr) => {
+            let pv = eval_expr_unified_inner(p_expr, handler)?;
+            let muv = eval_expr_unified_inner(mu_expr, handler)?;
+            let sv = eval_expr_unified_inner(sigma_expr, handler)?;
+            Ok(eval_norm_inv(pv, muv, sv))
+        }
+        // -- Phase 3I: is_element + cross-coord scans --
+        Expr::IsElement(dim, elem) => handler(EvalLookup::Cross(&CrossCoordRead::IsElement {
+            dimension: *dim,
+            element: *elem,
+        })),
+        Expr::AvgOver(dim, measure) => handler(EvalLookup::Cross(&CrossCoordRead::DimensionAvg {
+            dimension: *dim,
+            measure: *measure,
+        })),
+        Expr::MinOver(dim, measure) => handler(EvalLookup::Cross(&CrossCoordRead::DimensionMin {
+            dimension: *dim,
+            measure: *measure,
+        })),
+        Expr::MaxOver(dim, measure) => handler(EvalLookup::Cross(&CrossCoordRead::DimensionMax {
+            dimension: *dim,
+            measure: *measure,
+        })),
+        Expr::WAvgOver(dim, value_measure, weight_measure) => {
+            handler(EvalLookup::Cross(&CrossCoordRead::DimensionWAvg {
+                dimension: *dim,
+                value_measure: *value_measure,
+                weight_measure: *weight_measure,
+            }))
         }
     }
 }
@@ -1980,7 +2365,7 @@ mod tests {
     fn eval_lookup_delegates() {
         let body = Expr::Lookup(
             "tax_rate".into(),
-            Box::new(Expr::Const(ScalarValue::F64(1.0))),
+            vec![Box::new(Expr::Const(ScalarValue::F64(1.0)))],
         );
         let mut cross = |read: &CrossCoordRead| -> Result<ScalarValue, EngineError> {
             match read {

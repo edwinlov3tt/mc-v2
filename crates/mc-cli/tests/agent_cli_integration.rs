@@ -95,6 +95,143 @@ fn test_query_with_where_filter() {
     );
 }
 
+// Phase 3I item 8: filter-formula parser unification.
+
+#[test]
+fn test_filter_unified_parser_handles_hyphens() {
+    // Phase 3I item 7 (auto-closed by item 8): hyphens in element-value
+    // identifiers must tokenize. Acme has no hyphenated elements; we just
+    // verify the parser accepts a hyphen-bearing identifier without
+    // emitting a tokenizer error. Using `Time == Q1-2026` against Acme
+    // (which has Q1_2026 underscore-form) returns zero matches but must
+    // exit cleanly (status 0) rather than choke at tokenize time.
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--where",
+        "Time == Q1-2026",
+        "--format",
+        "json",
+        "--limit",
+        "1",
+    ]);
+    assert!(
+        output.status.success(),
+        "hyphen in identifier value must tokenize cleanly. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_filter_unified_parser_handles_is_element() {
+    // is_element(Market, "Tampa") routes through parse_expression.
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--where",
+        r#"is_element(Market, "Tampa")"#,
+        "--format",
+        "json",
+        "--limit",
+        "5",
+    ]);
+    assert!(
+        output.status.success(),
+        "is_element filter must work. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = parse_json(&output.stdout);
+    let results = json.get("results").and_then(|r| r.as_array());
+    assert!(results.is_some(), "output must have 'results' array");
+    assert!(
+        !results.unwrap().is_empty(),
+        "is_element(Market, \"Tampa\") should match at least one row"
+    );
+}
+
+#[test]
+fn test_filter_rejects_cross_coord_operators_with_mc1025() {
+    // prev() in a filter is rejected with MC1025.
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--where",
+        "prev(Revenue) > 100",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        !output.status.success(),
+        "cross-coord op in filter must fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("MC1025") || stderr.contains("prev"),
+        "stderr should mention MC1025 or prev: {stderr}"
+    );
+}
+
+#[test]
+fn test_filter_backward_compat_market_eq_string_literal() {
+    // Existing test syntax `Market == "Tampa"` (top-level string
+    // literal) must continue to work via the legacy filter path —
+    // parse_expression rejects top-level strings with MC1024, but the
+    // unified Filter::parse falls back to the bespoke tokenizer so
+    // this stays backward compatible.
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--where",
+        r#"Market == "Tampa""#,
+        "--format",
+        "json",
+        "--limit",
+        "5",
+    ]);
+    assert!(
+        output.status.success(),
+        "Market == \"Tampa\" must still work. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = parse_json(&output.stdout);
+    let results = json.get("results").and_then(|r| r.as_array());
+    assert!(
+        results.is_some() && !results.unwrap().is_empty(),
+        "Market == \"Tampa\" should match Tampa rows"
+    );
+}
+
+#[test]
+fn test_filter_with_math_primitives() {
+    // sqrt(Spend) > 50 — math primitive in a filter goes through
+    // parse_expression and is rejected as cross-coord-free.
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--where",
+        "sqrt(Spend) > 50",
+        "--format",
+        "json",
+        "--limit",
+        "5",
+    ]);
+    assert!(
+        output.status.success(),
+        "sqrt() in filter must work. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn test_query_with_aggregate() {
     let path = acme_yaml();

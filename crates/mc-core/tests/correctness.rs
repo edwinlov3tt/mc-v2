@@ -327,7 +327,12 @@ fn collect_self_refs(expr: &mc_core::Expr) -> std::collections::HashSet<mc_core:
                 acc.insert(*m);
                 walk(p, acc);
             }
-            mc_core::Expr::Benchmark(_, k) | mc_core::Expr::Lookup(_, k) => walk(k, acc),
+            mc_core::Expr::Benchmark(_, k) => walk(k, acc),
+            mc_core::Expr::Lookup(_, ks) => {
+                for k in ks {
+                    walk(k, acc);
+                }
+            }
             mc_core::Expr::SumOver(_, m) => {
                 acc.insert(*m);
             }
@@ -343,6 +348,32 @@ fn collect_self_refs(expr: &mc_core::Expr) -> std::collections::HashSet<mc_core:
                 walk(x, acc);
                 walk(mu, acc);
                 walk(sigma, acc);
+            }
+            // Phase 3I
+            mc_core::Expr::Pow(a, b) | mc_core::Expr::Mod(a, b) => {
+                walk(a, acc);
+                walk(b, acc);
+            }
+            mc_core::Expr::Sqrt(a)
+            | mc_core::Expr::Ln(a)
+            | mc_core::Expr::Log10(a)
+            | mc_core::Expr::Round(a)
+            | mc_core::Expr::Floor(a)
+            | mc_core::Expr::Ceil(a) => walk(a, acc),
+            mc_core::Expr::NormInv(p, mu, sigma) => {
+                walk(p, acc);
+                walk(mu, acc);
+                walk(sigma, acc);
+            }
+            mc_core::Expr::IsElement(_, _) => {}
+            mc_core::Expr::AvgOver(_, m)
+            | mc_core::Expr::MinOver(_, m)
+            | mc_core::Expr::MaxOver(_, m) => {
+                acc.insert(*m);
+            }
+            mc_core::Expr::WAvgOver(_, value, weight) => {
+                acc.insert(*value);
+                acc.insert(*weight);
             }
         }
     }

@@ -384,17 +384,33 @@ pub fn push_json_envelope_header(out: &mut String) {
 // Filter parsing and evaluation
 // ---------------------------------------------------------------------------
 
-/// A parsed filter expression. We implement a simple recursive-descent
-/// parser here because the formula parser doesn't support string literals
-/// in general expressions (only inside function args).
-/// Phase 6A.3 item 3: lifted to `pub(crate)` so `sweep.rs` can reuse the
-/// query filter parser for `--metric-where`. No external surface change.
+/// A parsed filter expression.
+///
+/// **Phase 3I item 8 unification (2026-05-06):** the filter parser
+/// still owns its own tokenizer (it accepts top-level string literals
+/// that the formula parser rejects with MC1024) AND now delegates to
+/// `mc_model::formula::parse_expression` whenever a function-call atom
+/// appears (e.g., `is_element(Market, "Houston")`,
+/// `sqrt(Spend) > 50`). The unified path rejects any cross-coord
+/// operator with MC1025. Hyphen-bearing element names like `Q1-2026`
+/// also tokenize correctly (closes Phase 3I item 7).
+///
+/// Phase 6A.3 item 3: lifted to `pub(crate)` so `sweep.rs` can reuse
+/// the query filter parser for `--metric-where`. No external surface
+/// change.
 #[derive(Debug)]
 pub(crate) enum Filter {
     And(Box<Filter>, Box<Filter>),
     Or(Box<Filter>, Box<Filter>),
     Not(Box<Filter>),
     Compare(FilterAtom, CmpOp, FilterValue),
+    /// Phase 3I item 8: a parsed-expression atom — used as a standalone
+    /// truthy predicate. Built when a `--where` clause holds a complete
+    /// expression like `is_element(Market, "Houston")` or
+    /// `sqrt(Spend) > 50` that the formula parser produced. Eval reads
+    /// any measure refs through the cube and treats non-zero / non-Null
+    /// as a match.
+    Expr(mc_model::ParsedRuleBody),
 }
 
 #[derive(Debug, Clone)]
@@ -428,6 +444,26 @@ impl Filter {
         refs: &ModelRefs,
         cube: &mc_core::Cube,
     ) -> Result<Filter, String> {
+        // Phase 3I item 8: if the input contains a function-call shape
+        // anywhere (open paren after an alpha identifier), try the
+        // unified formula parser first. The formula parser handles
+        // `is_element(...)`, math primitives, arithmetic comparisons,
+        // and conditionals natively. If the parse succeeds, walk the
+        // AST to reject cross-coord operators (MC1025) and return a
+        // `Filter::Expr`. If the parse fails (typically because of a
+        // top-level string literal like `Market == "Tampa"` — MC1024 —
+        // which the legacy filter tokenizer accepts), fall through to
+        // the legacy path so backward compat is preserved.
+        if looks_like_expression_input(input) {
+            if let Ok(parsed) = mc_model::parse_expression(input) {
+                if let Some(msg) = find_cross_coord_in_filter(&parsed) {
+                    return Err(format!(
+                        "MC1025: {msg} (filter expressions evaluate against a single coordinate)"
+                    ));
+                }
+                return Ok(Filter::Expr(parsed));
+            }
+        }
         let tokens = tokenize_filter(input)?;
         let mut pos = 0;
         let result = parse_or(&tokens, &mut pos, refs, cube)?;
@@ -438,6 +474,101 @@ impl Filter {
             ));
         }
         Ok(result)
+    }
+}
+
+/// Phase 3I item 8: cheap detection of "this input is shaped like a
+/// formula expression with a function call". Triggers on `(` directly
+/// following an alphanumeric character (e.g., `is_element(`, `sqrt(`).
+/// Naked parens like `(Spend > 0)` aren't considered function-call
+/// shapes — the legacy filter parser handles them fine.
+fn looks_like_expression_input(input: &str) -> bool {
+    let bytes = input.as_bytes();
+    for i in 1..bytes.len() {
+        if bytes[i] == b'(' {
+            let prev = bytes[i - 1];
+            if prev.is_ascii_alphanumeric() || prev == b'_' {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Phase 3I item 8 W3: walk a parsed expression and surface a
+/// human-readable description of the first cross-coord operator that
+/// would make the expression unsuitable for filter evaluation.
+/// Returns None if the expression is filter-safe.
+fn find_cross_coord_in_filter(body: &mc_model::ParsedRuleBody) -> Option<String> {
+    use mc_model::ParsedRuleBody as B;
+    match body {
+        B::ActualRef(_) => Some("actual_ref() not allowed in filter".into()),
+        B::Prev(_) => Some("prev() not allowed in filter".into()),
+        B::Lag(_) => Some("lag() not allowed in filter".into()),
+        B::Cumulative(_) => Some("cumulative() not allowed in filter".into()),
+        B::RollingAvg(_) => Some("rolling_avg() not allowed in filter".into()),
+        B::SumOver(_) => Some("sum_over() not allowed in filter".into()),
+        B::AvgOver(_) => Some("avg_over() not allowed in filter".into()),
+        B::MinOver(_) => Some("min_over() not allowed in filter".into()),
+        B::MaxOver(_) => Some("max_over() not allowed in filter".into()),
+        B::WAvgOver(_) => Some("wavg_over() not allowed in filter".into()),
+        B::Predict(_) => Some("predict() not allowed in filter".into()),
+        B::Calibrate(_) => Some("calibrate() not allowed in filter".into()),
+        B::Lookup(_) => Some("lookup() not allowed in filter".into()),
+        B::Bucket(_) => Some("bucket() not allowed in filter".into()),
+        B::Benchmark(_) => Some("benchmark() not allowed in filter".into()),
+        B::PeriodIndex(_)
+        | B::AnchorIndex(_)
+        | B::IsPast(_)
+        | B::IsCurrent(_)
+        | B::IsFuture(_)
+        | B::PeriodsSinceAnchor(_)
+        | B::PeriodsToEnd(_) => Some("anchor / period_index() not allowed in filter".into()),
+        // Local nodes — recurse into children.
+        B::Const(_) | B::Ref(_) | B::IsElement(_) => None,
+        B::Add(b) => b.add.iter().find_map(find_cross_coord_in_filter),
+        B::Sub(b) => b.sub.iter().find_map(find_cross_coord_in_filter),
+        B::Mul(b) => b.mul.iter().find_map(find_cross_coord_in_filter),
+        B::Div(b) => b.div.iter().find_map(find_cross_coord_in_filter),
+        B::IfNull(b) => b.if_null.iter().find_map(find_cross_coord_in_filter),
+        B::Gt(b)
+        | B::Lt(b)
+        | B::Gte(b)
+        | B::Lte(b)
+        | B::Eq(b)
+        | B::Neq(b)
+        | B::And(b)
+        | B::Or(b) => {
+            find_cross_coord_in_filter(&b.left).or_else(|| find_cross_coord_in_filter(&b.right))
+        }
+        B::Not(b) | B::Abs(b) => find_cross_coord_in_filter(&b.operand),
+        B::If(b) => find_cross_coord_in_filter(&b.condition)
+            .or_else(|| find_cross_coord_in_filter(&b.then_branch))
+            .or_else(|| find_cross_coord_in_filter(&b.else_branch)),
+        B::Min(b) | B::Max(b) | B::Coalesce(b) => {
+            b.args.iter().find_map(find_cross_coord_in_filter)
+        }
+        B::SafeDiv(b) => find_cross_coord_in_filter(&b.numerator)
+            .or_else(|| find_cross_coord_in_filter(&b.denominator))
+            .or_else(|| find_cross_coord_in_filter(&b.default)),
+        B::Clamp(b) => find_cross_coord_in_filter(&b.value)
+            .or_else(|| find_cross_coord_in_filter(&b.lo))
+            .or_else(|| find_cross_coord_in_filter(&b.hi)),
+        B::Exp(b) => find_cross_coord_in_filter(&b.operand),
+        B::NormCdf(b) => find_cross_coord_in_filter(&b.x)
+            .or_else(|| find_cross_coord_in_filter(&b.mu))
+            .or_else(|| find_cross_coord_in_filter(&b.sigma)),
+        B::Pow(b) => {
+            find_cross_coord_in_filter(&b.base).or_else(|| find_cross_coord_in_filter(&b.exponent))
+        }
+        B::Sqrt(b) | B::Ln(b) | B::Log10(b) | B::Round(b) | B::Floor(b) | B::Ceil(b) => {
+            find_cross_coord_in_filter(&b.operand)
+        }
+        B::Mod(b) => find_cross_coord_in_filter(&b.dividend)
+            .or_else(|| find_cross_coord_in_filter(&b.divisor)),
+        B::NormInv(b) => find_cross_coord_in_filter(&b.p)
+            .or_else(|| find_cross_coord_in_filter(&b.mu))
+            .or_else(|| find_cross_coord_in_filter(&b.sigma)),
     }
 }
 
@@ -539,8 +670,23 @@ fn tokenize_filter(input: &str) -> Result<Vec<Token>, String> {
             }
             c if c.is_ascii_alphabetic() || c == b'_' => {
                 let start = i;
-                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-                    i += 1;
+                // Phase 3I item 7: identifier values may contain hyphens
+                // when each `-` is followed by an alphanumeric byte.
+                // `Time == Q1-2026` parses as Time, ==, Q1-2026.
+                // `Spend - CPC` (with spaces) still parses as Spend, -, CPC.
+                // `Spend-CPC` (no spaces) becomes single identifier
+                // Spend-CPC — but no shipped fixture uses this pattern;
+                // formula bodies always whitespace-separate subtraction.
+                while i < bytes.len() {
+                    let b = bytes[i];
+                    let is_ident_byte = b.is_ascii_alphanumeric() || b == b'_';
+                    let is_inner_hyphen =
+                        b == b'-' && bytes.get(i + 1).is_some_and(|c| c.is_ascii_alphanumeric());
+                    if is_ident_byte || is_inner_hyphen {
+                        i += 1;
+                    } else {
+                        break;
+                    }
                 }
                 let word = &input[start..i];
                 match word {
@@ -720,6 +866,377 @@ pub(crate) fn eval_filter(
             let rhs = resolve_value(value, coord, cube, principal, refs);
             compare_values(&lhs, *op, &rhs)
         }
+        // Phase 3I item 8: evaluate a parsed-expression atom directly.
+        // Numeric truthy (>= 1e-9 abs) → match; anything else (zero,
+        // Null, non-numeric) → no match. The walker handles arithmetic,
+        // comparison, conditionals, math primitives, and is_element by
+        // reading measure values via the same `read_measure_at` path
+        // that backs FilterAtom::Measure.
+        Filter::Expr(expr) => {
+            let v = eval_filter_expr(expr, coord, cube, principal, refs);
+            match v {
+                ScalarValue::F64(x) => x.abs() >= 1e-9,
+                _ => false,
+            }
+        }
+    }
+}
+
+/// Phase 3I item 8: evaluate a `ParsedRuleBody` against a single
+/// coordinate for filter purposes. Mirrors `mc_core::eval_expr_unified`
+/// but works against `ParsedRuleBody` (string-based names) instead of
+/// the kernel's `Expr` (ID-based) so we don't need the
+/// `ValidatedModel`. Cross-coord operators are rejected at parse-time
+/// (MC1025) so they never reach this dispatch.
+fn eval_filter_expr(
+    body: &mc_model::ParsedRuleBody,
+    coord: &CellCoordinate,
+    cube: &mut mc_core::Cube,
+    principal: PrincipalId,
+    refs: &ModelRefs,
+) -> ScalarValue {
+    use mc_model::{ParsedRuleBody as B, ParsedScalar};
+    let recurse = |b: &mc_model::ParsedRuleBody, cube: &mut mc_core::Cube| {
+        eval_filter_expr(b, coord, cube, principal, refs)
+    };
+    match body {
+        B::Const(c) => match &c.value {
+            ParsedScalar::Float(v) => ScalarValue::F64(*v),
+            ParsedScalar::Int(v) => ScalarValue::F64(*v as f64),
+            ParsedScalar::Bool(v) => ScalarValue::F64(if *v { 1.0 } else { 0.0 }),
+            ParsedScalar::Null => ScalarValue::Null,
+        },
+        B::Ref(r) => {
+            // Filter context: a bare identifier can be a measure name
+            // (read at this coord) OR a dimension name (resolves to the
+            // current element's name as ScalarValue::Str — useful for
+            // is_element-equivalent uses, but in practice nothing in
+            // the formula AST consumes a Str at top level).
+            if cube.dimensions().iter().any(|d| d.name == r.measure) {
+                let dim_idx = cube.dimensions().iter().position(|d| d.name == r.measure);
+                if let Some(idx) = dim_idx {
+                    let elem_id = coord.elements()[idx];
+                    let dim = &cube.dimensions()[idx];
+                    if let Some(elem) = dim.element(elem_id) {
+                        return ScalarValue::Str(elem.name.clone());
+                    }
+                }
+                ScalarValue::Null
+            } else {
+                read_measure_at(cube, refs, principal, coord, &r.measure)
+            }
+        }
+        B::IsElement(b) => {
+            let dim_idx = cube.dimensions().iter().position(|d| d.name == b.dimension);
+            match dim_idx {
+                None => ScalarValue::Null,
+                Some(idx) => {
+                    let elem_id = coord.elements()[idx];
+                    let dim = &cube.dimensions()[idx];
+                    match dim.element(elem_id) {
+                        Some(e) if e.name == b.element => ScalarValue::F64(1.0),
+                        Some(_) => ScalarValue::F64(0.0),
+                        None => ScalarValue::Null,
+                    }
+                }
+            }
+        }
+        B::Add(b) => binop_float(&b.add, cube, |a, b| a + b, recurse),
+        B::Sub(b) => binop_float(&b.sub, cube, |a, b| a - b, recurse),
+        B::Mul(b) => binop_float(&b.mul, cube, |a, b| a * b, recurse),
+        B::Div(b) => binop_float(
+            &b.div,
+            cube,
+            |a, b| if b.abs() < 1e-300 { f64::NAN } else { a / b },
+            recurse,
+        ),
+        B::IfNull(b) => {
+            if b.if_null.len() != 2 {
+                return ScalarValue::Null;
+            }
+            let p = recurse(&b.if_null[0], cube);
+            if matches!(p, ScalarValue::Null) {
+                recurse(&b.if_null[1], cube)
+            } else {
+                p
+            }
+        }
+        B::Gt(b) => cmp(&b.left, &b.right, cube, recurse, |l, r| l > r),
+        B::Lt(b) => cmp(&b.left, &b.right, cube, recurse, |l, r| l < r),
+        B::Gte(b) => cmp(&b.left, &b.right, cube, recurse, |l, r| l >= r),
+        B::Lte(b) => cmp(&b.left, &b.right, cube, recurse, |l, r| l <= r),
+        B::Eq(b) => {
+            // Phase 3I item 8: equality bridges Str ↔ Str so that
+            // `is_element(Market, "Houston") == 1` and similar
+            // expressions work against dim refs that resolve to Str.
+            let lhs = recurse(&b.left, cube);
+            let rhs = recurse(&b.right, cube);
+            match (&lhs, &rhs) {
+                (ScalarValue::Str(a), ScalarValue::Str(c)) => {
+                    ScalarValue::F64(if a == c { 1.0 } else { 0.0 })
+                }
+                _ => match (to_f64(&lhs), to_f64(&rhs)) {
+                    (Some(a), Some(c)) => {
+                        ScalarValue::F64(if (a - c).abs() < 1e-9 { 1.0 } else { 0.0 })
+                    }
+                    _ => ScalarValue::Null,
+                },
+            }
+        }
+        B::Neq(b) => {
+            let lhs = recurse(&b.left, cube);
+            let rhs = recurse(&b.right, cube);
+            match (&lhs, &rhs) {
+                (ScalarValue::Str(a), ScalarValue::Str(c)) => {
+                    ScalarValue::F64(if a != c { 1.0 } else { 0.0 })
+                }
+                _ => match (to_f64(&lhs), to_f64(&rhs)) {
+                    (Some(a), Some(c)) => {
+                        ScalarValue::F64(if (a - c).abs() >= 1e-9 { 1.0 } else { 0.0 })
+                    }
+                    _ => ScalarValue::Null,
+                },
+            }
+        }
+        B::And(b) => {
+            let lhs = recurse(&b.left, cube);
+            let rhs = recurse(&b.right, cube);
+            match (to_f64(&lhs), to_f64(&rhs)) {
+                (Some(a), Some(c)) => ScalarValue::F64(if a.abs() >= 1e-9 && c.abs() >= 1e-9 {
+                    1.0
+                } else {
+                    0.0
+                }),
+                _ => ScalarValue::Null,
+            }
+        }
+        B::Or(b) => {
+            let lhs = recurse(&b.left, cube);
+            let rhs = recurse(&b.right, cube);
+            match (to_f64(&lhs), to_f64(&rhs)) {
+                (Some(a), Some(c)) => ScalarValue::F64(if a.abs() >= 1e-9 || c.abs() >= 1e-9 {
+                    1.0
+                } else {
+                    0.0
+                }),
+                _ => ScalarValue::Null,
+            }
+        }
+        B::Not(b) => {
+            let v = recurse(&b.operand, cube);
+            match to_f64(&v) {
+                Some(x) => ScalarValue::F64(if x.abs() < 1e-9 { 1.0 } else { 0.0 }),
+                None => ScalarValue::Null,
+            }
+        }
+        B::If(b) => {
+            let c = recurse(&b.condition, cube);
+            match to_f64(&c) {
+                None => recurse(&b.else_branch, cube),
+                Some(x) if x.abs() < 1e-9 => recurse(&b.else_branch, cube),
+                Some(_) => recurse(&b.then_branch, cube),
+            }
+        }
+        B::Min(b) => {
+            let mut acc: Option<f64> = None;
+            for a in &b.args {
+                if let Some(v) = to_f64(&recurse(a, cube)) {
+                    acc = Some(match acc {
+                        Some(c) => c.min(v),
+                        None => v,
+                    });
+                }
+            }
+            acc.map_or(ScalarValue::Null, ScalarValue::F64)
+        }
+        B::Max(b) => {
+            let mut acc: Option<f64> = None;
+            for a in &b.args {
+                if let Some(v) = to_f64(&recurse(a, cube)) {
+                    acc = Some(match acc {
+                        Some(c) => c.max(v),
+                        None => v,
+                    });
+                }
+            }
+            acc.map_or(ScalarValue::Null, ScalarValue::F64)
+        }
+        B::Abs(b) => match to_f64(&recurse(&b.operand, cube)) {
+            Some(v) => ScalarValue::F64(v.abs()),
+            None => ScalarValue::Null,
+        },
+        B::SafeDiv(b) => {
+            let n = recurse(&b.numerator, cube);
+            let d = recurse(&b.denominator, cube);
+            match (to_f64(&n), to_f64(&d)) {
+                (Some(_), Some(dv)) if dv.abs() < 1e-300 => recurse(&b.default, cube),
+                (Some(nv), Some(dv)) => ScalarValue::F64(nv / dv),
+                _ => recurse(&b.default, cube),
+            }
+        }
+        B::Clamp(b) => {
+            match (
+                to_f64(&recurse(&b.value, cube)),
+                to_f64(&recurse(&b.lo, cube)),
+                to_f64(&recurse(&b.hi, cube)),
+            ) {
+                (Some(x), Some(l), Some(h)) => ScalarValue::F64(x.max(l).min(h)),
+                _ => ScalarValue::Null,
+            }
+        }
+        B::Coalesce(b) => {
+            for a in &b.args {
+                let v = recurse(a, cube);
+                if !matches!(v, ScalarValue::Null) {
+                    return v;
+                }
+            }
+            ScalarValue::Null
+        }
+        B::Pow(b) => {
+            let base = recurse(&b.base, cube);
+            let exp = recurse(&b.exponent, cube);
+            match (to_f64(&base), to_f64(&exp)) {
+                (Some(bv), Some(ev)) if !(bv < 0.0 && ev.fract() != 0.0) => {
+                    let r = bv.powf(ev);
+                    if r.is_finite() {
+                        ScalarValue::F64(r)
+                    } else {
+                        ScalarValue::Null
+                    }
+                }
+                _ => ScalarValue::Null,
+            }
+        }
+        B::Sqrt(b) => unary_finite(recurse(&b.operand, cube), |x| {
+            if x >= 0.0 {
+                x.sqrt()
+            } else {
+                f64::NAN
+            }
+        }),
+        B::Ln(b) => unary_finite(recurse(&b.operand, cube), |x| {
+            if x > 0.0 {
+                x.ln()
+            } else {
+                f64::NAN
+            }
+        }),
+        B::Log10(b) => unary_finite(recurse(&b.operand, cube), |x| {
+            if x > 0.0 {
+                x.log10()
+            } else {
+                f64::NAN
+            }
+        }),
+        B::Round(b) => unary_finite(recurse(&b.operand, cube), |x| x.round()),
+        B::Floor(b) => unary_finite(recurse(&b.operand, cube), |x| x.floor()),
+        B::Ceil(b) => unary_finite(recurse(&b.operand, cube), |x| x.ceil()),
+        B::Mod(b) => match (
+            to_f64(&recurse(&b.dividend, cube)),
+            to_f64(&recurse(&b.divisor, cube)),
+        ) {
+            (Some(a), Some(c)) if c.abs() >= 1e-300 => ScalarValue::F64(a.rem_euclid(c)),
+            _ => ScalarValue::Null,
+        },
+        B::NormCdf(_) | B::NormInv(_) | B::Exp(_) => {
+            // These are math primitives but are rare in filter contexts;
+            // delegate to Null rather than reimplement here.
+            ScalarValue::Null
+        }
+        // Cross-coord operators were rejected at parse-time; treat
+        // defensively as Null if we ever see them here.
+        B::ActualRef(_)
+        | B::Prev(_)
+        | B::Lag(_)
+        | B::Cumulative(_)
+        | B::RollingAvg(_)
+        | B::SumOver(_)
+        | B::AvgOver(_)
+        | B::MinOver(_)
+        | B::MaxOver(_)
+        | B::WAvgOver(_)
+        | B::Predict(_)
+        | B::Calibrate(_)
+        | B::Lookup(_)
+        | B::Bucket(_)
+        | B::Benchmark(_)
+        | B::PeriodIndex(_)
+        | B::AnchorIndex(_)
+        | B::IsPast(_)
+        | B::IsCurrent(_)
+        | B::IsFuture(_)
+        | B::PeriodsSinceAnchor(_)
+        | B::PeriodsToEnd(_) => ScalarValue::Null,
+    }
+}
+
+fn to_f64(v: &ScalarValue) -> Option<f64> {
+    match v {
+        ScalarValue::F64(x) => Some(*x),
+        ScalarValue::I64(x) => Some(*x as f64),
+        ScalarValue::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+        _ => None,
+    }
+}
+
+fn binop_float<F>(
+    args: &[mc_model::ParsedRuleBody],
+    cube: &mut mc_core::Cube,
+    op: F,
+    mut recurse: impl FnMut(&mc_model::ParsedRuleBody, &mut mc_core::Cube) -> ScalarValue,
+) -> ScalarValue
+where
+    F: Fn(f64, f64) -> f64,
+{
+    if args.len() != 2 {
+        return ScalarValue::Null;
+    }
+    match (
+        to_f64(&recurse(&args[0], cube)),
+        to_f64(&recurse(&args[1], cube)),
+    ) {
+        (Some(a), Some(b)) => {
+            let r = op(a, b);
+            if r.is_finite() {
+                ScalarValue::F64(r)
+            } else {
+                ScalarValue::Null
+            }
+        }
+        _ => ScalarValue::Null,
+    }
+}
+
+fn cmp<F>(
+    left: &mc_model::ParsedRuleBody,
+    right: &mc_model::ParsedRuleBody,
+    cube: &mut mc_core::Cube,
+    mut recurse: impl FnMut(&mc_model::ParsedRuleBody, &mut mc_core::Cube) -> ScalarValue,
+    op: F,
+) -> ScalarValue
+where
+    F: Fn(f64, f64) -> bool,
+{
+    let lhs = recurse(left, cube);
+    let rhs = recurse(right, cube);
+    match (to_f64(&lhs), to_f64(&rhs)) {
+        (Some(a), Some(b)) => ScalarValue::F64(if op(a, b) { 1.0 } else { 0.0 }),
+        _ => ScalarValue::Null,
+    }
+}
+
+fn unary_finite(v: ScalarValue, f: impl FnOnce(f64) -> f64) -> ScalarValue {
+    match to_f64(&v) {
+        Some(x) => {
+            let r = f(x);
+            if r.is_finite() {
+                ScalarValue::F64(r)
+            } else {
+                ScalarValue::Null
+            }
+        }
+        None => ScalarValue::Null,
     }
 }
 

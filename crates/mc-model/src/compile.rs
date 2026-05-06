@@ -630,8 +630,13 @@ fn compile_expr(
             Ok(Expr::Benchmark(b.name.clone(), Box::new(key)))
         }
         ParsedRuleBody::Lookup(b) => {
-            let key = compile_expr(&b.key_expr, refs, validated)?;
-            Ok(Expr::Lookup(b.table.clone(), Box::new(key)))
+            // Phase 3I item 3: variadic key list. Single-key (1-element)
+            // and multi-key (N-element) share this path.
+            let mut compiled_keys = Vec::with_capacity(b.key_exprs.len());
+            for k in &b.key_exprs {
+                compiled_keys.push(Box::new(compile_expr(k, refs, validated)?));
+            }
+            Ok(Expr::Lookup(b.table.clone(), compiled_keys))
         }
         ParsedRuleBody::Bucket(b) => {
             let v = compile_expr(&b.value, refs, validated)?;
@@ -671,6 +676,120 @@ fn compile_expr(
             let mu = compile_expr(&b.mu, refs, validated)?;
             let sigma = compile_expr(&b.sigma, refs, validated)?;
             Ok(Expr::NormCdf(Box::new(x), Box::new(mu), Box::new(sigma)))
+        }
+        // Phase 3I: math primitives
+        ParsedRuleBody::Pow(b) => {
+            let base = compile_expr(&b.base, refs, validated)?;
+            let exp = compile_expr(&b.exponent, refs, validated)?;
+            Ok(Expr::Pow(Box::new(base), Box::new(exp)))
+        }
+        ParsedRuleBody::Sqrt(b) => Ok(Expr::Sqrt(Box::new(compile_expr(
+            &b.operand, refs, validated,
+        )?))),
+        ParsedRuleBody::Ln(b) => Ok(Expr::Ln(Box::new(compile_expr(
+            &b.operand, refs, validated,
+        )?))),
+        ParsedRuleBody::Log10(b) => Ok(Expr::Log10(Box::new(compile_expr(
+            &b.operand, refs, validated,
+        )?))),
+        ParsedRuleBody::Round(b) => Ok(Expr::Round(Box::new(compile_expr(
+            &b.operand, refs, validated,
+        )?))),
+        ParsedRuleBody::Floor(b) => Ok(Expr::Floor(Box::new(compile_expr(
+            &b.operand, refs, validated,
+        )?))),
+        ParsedRuleBody::Ceil(b) => Ok(Expr::Ceil(Box::new(compile_expr(
+            &b.operand, refs, validated,
+        )?))),
+        ParsedRuleBody::Mod(b) => {
+            let dividend = compile_expr(&b.dividend, refs, validated)?;
+            let divisor = compile_expr(&b.divisor, refs, validated)?;
+            Ok(Expr::Mod(Box::new(dividend), Box::new(divisor)))
+        }
+        ParsedRuleBody::NormInv(b) => {
+            let p = compile_expr(&b.p, refs, validated)?;
+            let mu = compile_expr(&b.mu, refs, validated)?;
+            let sigma = compile_expr(&b.sigma, refs, validated)?;
+            Ok(Expr::NormInv(Box::new(p), Box::new(mu), Box::new(sigma)))
+        }
+        // Phase 3I item 1: is_element. Element resolution is parse-time per
+        // handoff W1 — fail to compile if the dim or element is unknown.
+        ParsedRuleBody::IsElement(b) => {
+            let dim_id =
+                refs.dimensions
+                    .get(&b.dimension)
+                    .copied()
+                    .ok_or(EngineError::Internal(
+                        "compile: is_element references unknown dimension",
+                    ))?;
+            let dim_index =
+                *validated
+                    .dim_index_by_name
+                    .get(&b.dimension)
+                    .ok_or(EngineError::Internal(
+                        "compile: is_element dim index missing",
+                    ))?;
+            let element_idx = *validated.element_index_by_name[dim_index]
+                .get(&b.element)
+                .ok_or(EngineError::Internal(
+                    "compile: is_element references unknown element",
+                ))?;
+            let elem_id = refs
+                .elements
+                .get(&(b.dimension.clone(), b.element.clone()))
+                .copied()
+                .ok_or(EngineError::Internal(
+                    "compile: is_element element id missing in refs",
+                ))?;
+            // dim_index/element_idx unused beyond the validation sanity check.
+            let _ = element_idx;
+            Ok(Expr::IsElement(dim_id, elem_id))
+        }
+        // Phase 3I item 5: avg_over/min_over/max_over share ParsedSumOverBody.
+        ParsedRuleBody::AvgOver(b) => {
+            let dim_id =
+                refs.dimensions
+                    .get(&b.dimension)
+                    .copied()
+                    .ok_or(EngineError::Internal(
+                        "compile: avg_over references unknown dimension",
+                    ))?;
+            let measure = lookup_measure_id(refs, validated, &b.measure)?;
+            Ok(Expr::AvgOver(dim_id, measure))
+        }
+        ParsedRuleBody::MinOver(b) => {
+            let dim_id =
+                refs.dimensions
+                    .get(&b.dimension)
+                    .copied()
+                    .ok_or(EngineError::Internal(
+                        "compile: min_over references unknown dimension",
+                    ))?;
+            let measure = lookup_measure_id(refs, validated, &b.measure)?;
+            Ok(Expr::MinOver(dim_id, measure))
+        }
+        ParsedRuleBody::MaxOver(b) => {
+            let dim_id =
+                refs.dimensions
+                    .get(&b.dimension)
+                    .copied()
+                    .ok_or(EngineError::Internal(
+                        "compile: max_over references unknown dimension",
+                    ))?;
+            let measure = lookup_measure_id(refs, validated, &b.measure)?;
+            Ok(Expr::MaxOver(dim_id, measure))
+        }
+        ParsedRuleBody::WAvgOver(b) => {
+            let dim_id =
+                refs.dimensions
+                    .get(&b.dimension)
+                    .copied()
+                    .ok_or(EngineError::Internal(
+                        "compile: wavg_over references unknown dimension",
+                    ))?;
+            let value_measure = lookup_measure_id(refs, validated, &b.value_measure)?;
+            let weight_measure = lookup_measure_id(refs, validated, &b.weight_measure)?;
+            Ok(Expr::WAvgOver(dim_id, value_measure, weight_measure))
         }
     }
 }
