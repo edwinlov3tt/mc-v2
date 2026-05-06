@@ -1,0 +1,1236 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mosaic Planning Grid Prototype</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --panel-2: #fcfcfd;
+      --line: #e7eaee;
+      --line-strong: #d4d9df;
+      --grid-line: rgba(31, 35, 40, .07);
+      --subtle-line: rgba(31, 35, 40, .055);
+      --text: #1f2328;
+      --muted: #69717d;
+      --muted-2: #9aa3ad;
+      --blue: #3f6fd1;
+      --blue-soft: #edf4ff;
+      --green: #2f8a55;
+      --green-soft: #edf8f1;
+      --red: #b4532a;
+      --red-soft: #fff3ed;
+      --gold: #966b21;
+      --gold-soft: #fff8db;
+      --violet: #7357c8;
+      --violet-soft: #f3f0ff;
+      --shadow: 0 1px 2px rgba(20, 28, 37, .05), 0 8px 24px rgba(20, 28, 37, .06);
+      --row-h: 36px;
+      --row-head-w: 270px;
+      --col-w: 98px;
+      --font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      letter-spacing: 0;
+      overflow: hidden;
+    }
+
+    button, select, input {
+      font: inherit;
+      color: inherit;
+    }
+
+    button {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      min-height: 32px;
+      padding: 0 11px;
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    button:hover { border-color: var(--line-strong); background: #f6f8fa; }
+    button.icon { width: 32px; padding: 0; }
+    button.primary { background: var(--blue); color: #fff; border-color: var(--blue); }
+    button.active { background: var(--blue-soft); border-color: #bdd0f4; color: #244f9f; }
+    button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+    button.ghost:hover { background: #f1f3f5; color: var(--text); }
+
+    select, input {
+      height: 32px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 0 32px 0 11px;
+      outline: none;
+    }
+
+    select:focus, input:focus { border-color: #a9bfee; box-shadow: 0 0 0 3px rgba(63, 111, 209, .12); }
+
+    .icon-svg {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      flex: 0 0 auto;
+    }
+
+    .app {
+      height: 100vh;
+      display: grid;
+      grid-template-rows: 44px 44px 1fr 36px;
+      min-width: 960px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 6px 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfd;
+      min-width: 0;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 650;
+      min-width: 154px;
+    }
+
+    .mark {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 2px;
+      padding: 4px;
+      background: #1f2937;
+    }
+
+    .mark i { display: block; background: #e6edf5; border-radius: 2px; }
+    .mark i:nth-child(2) { background: #86efac; }
+    .mark i:nth-child(3) { background: #93c5fd; }
+    .mark i:nth-child(4) { background: #fdba74; }
+
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+    }
+
+    .label {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .spacer { flex: 1; }
+
+    #cubeSelect { width: 210px; }
+    #versionSelect { width: 126px; }
+    #scenarioSelect { width: 142px; }
+
+    .avatar {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      font-size: 11px;
+      font-weight: 700;
+      color: white;
+    }
+
+    .avatar.red { background: #e11d48; }
+    .avatar.green { background: #16a34a; }
+
+    .slicebar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 16px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      overflow: hidden;
+    }
+
+    .segmented {
+      display: inline-flex;
+      height: 32px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--panel);
+    }
+
+    .segmented button {
+      height: 30px;
+      min-height: 30px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      padding: 0 10px;
+    }
+
+    .segmented button.active { background: var(--blue-soft); color: var(--blue); }
+
+    .filter-pill {
+      height: 32px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-2);
+      padding: 0 10px;
+      white-space: nowrap;
+    }
+
+    .filter-pill b { font-weight: 600; }
+    .filter-pill span { color: var(--muted); }
+
+    .workspace {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 240px minmax(0, 1fr) 368px;
+      overflow: hidden;
+    }
+
+    .sidebar, .inspector {
+      min-height: 0;
+      background: var(--panel);
+      border-right: 1px solid var(--line);
+      overflow: auto;
+      overflow-x: hidden;
+    }
+
+    .inspector {
+      border-right: 0;
+      border-left: 1px solid var(--line);
+    }
+
+    .side-section {
+      padding: 16px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .side-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--muted);
+      font-weight: 700;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .03em;
+      margin-bottom: 10px;
+    }
+
+    .cube-list, .dim-list, .rule-list, .trace-list, .version-list {
+      display: grid;
+      gap: 4px;
+    }
+
+    .list-row {
+      min-height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      border-radius: 8px;
+      padding: 5px 8px;
+    }
+
+    .list-row:hover { background: #f6f8fa; }
+    .list-row.active { background: var(--blue-soft); color: #244f9f; }
+    .list-row.active .count {
+      color: #244f9f;
+      background: rgba(63, 111, 209, .08);
+      padding: 2px 6px;
+      border-radius: 999px;
+    }
+    .list-main { min-width: 0; display: flex; align-items: center; gap: 7px; }
+    .list-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .count { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--muted-2);
+      flex: 0 0 auto;
+    }
+    .dot.blue { background: var(--blue); }
+    .dot.green { background: var(--green); }
+    .dot.gold { background: var(--gold); }
+    .dot.violet { background: var(--violet); }
+
+    .grid-shell {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 42px 42px minmax(0, 1fr);
+      background: var(--panel);
+      box-shadow: inset 1px 0 0 var(--subtle-line), inset -1px 0 0 var(--subtle-line);
+    }
+
+    .grid-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 5px 12px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+      min-width: 0;
+    }
+
+    .crumb {
+      min-width: 0;
+      color: var(--muted);
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      margin-left: 4px;
+    }
+
+    .sheet-wrap {
+      position: relative;
+      overflow: auto;
+      min-width: 0;
+      min-height: 0;
+      background:
+        linear-gradient(#fff, #fff) padding-box,
+        repeating-linear-gradient(90deg, transparent 0, transparent 94px, rgba(31,35,40,.018) 95px) border-box;
+    }
+
+    table.sheet {
+      border-collapse: separate;
+      border-spacing: 0;
+      min-width: calc(var(--row-head-w) + (12 * var(--col-w)));
+      width: max-content;
+      background: var(--panel);
+    }
+
+    .sheet th,
+    .sheet td {
+      height: var(--row-h);
+      border-right: 1px solid var(--grid-line);
+      border-bottom: 1px solid var(--grid-line);
+      padding: 0 12px;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .sheet th {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      background: #fcfcfd;
+      font-size: 12px;
+      font-weight: 700;
+      color: #111827;
+      text-align: right;
+      box-shadow: inset 0 -1px var(--line-strong);
+    }
+
+    .sheet th.row-head {
+      left: 0;
+      z-index: 8;
+      min-width: var(--row-head-w);
+      width: var(--row-head-w);
+      text-align: left;
+      box-shadow: inset -1px 0 var(--line-strong), inset 0 -1px var(--line-strong), 3px 0 12px rgba(30, 41, 59, .035);
+    }
+
+    .sheet td.row-label {
+      position: sticky;
+      left: 0;
+      z-index: 4;
+      background: #fff;
+      min-width: var(--row-head-w);
+      width: var(--row-head-w);
+      text-align: left;
+      color: #374151;
+      box-shadow: inset -1px 0 var(--line-strong), 3px 0 12px rgba(30, 41, 59, .035);
+    }
+
+    .sheet tr.group td,
+    .sheet tr.group td.row-label {
+      background: #f8fafc;
+      font-weight: 650;
+    }
+
+    .sheet tr.active td,
+    .sheet tr.active td.row-label {
+      background: #edf4ff;
+    }
+
+    .sheet tbody tr:hover td,
+    .sheet tbody tr:hover td.row-label {
+      background: #f8fbff;
+    }
+
+    .sheet tbody tr.active:hover td,
+    .sheet tbody tr.active:hover td.row-label {
+      background: #edf4ff;
+    }
+
+    .sheet tbody tr:hover td.edited:not(.selected) {
+      background: #fff8db;
+    }
+
+    .sheet tbody tr:hover td.selected {
+      background: #eaf2ff;
+      color: #244f9f;
+    }
+
+    .sheet td {
+      text-align: right;
+      color: #46515d;
+      min-width: var(--col-w);
+      position: relative;
+    }
+
+    .sheet td.rule { color: var(--blue); }
+    .sheet td.input.editable { color: #1f2937; }
+    .sheet td.null { color: var(--muted-2); }
+    .sheet td.edited { background: #fff8db; }
+    .sheet td.selected {
+      outline: 2px solid var(--blue);
+      outline-offset: -2px;
+      background: #eaf2ff;
+      color: #244f9f;
+    }
+
+    .row-name {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      gap: 6px;
+      height: 100%;
+    }
+
+    .indent-0 { padding-left: 0; }
+    .indent-1 { padding-left: 18px; }
+    .indent-2 { padding-left: 36px; }
+    .indent-3 { padding-left: 54px; }
+
+    .toggle {
+      width: 16px;
+      height: 16px;
+      display: inline-grid;
+      place-items: center;
+      color: var(--muted);
+      border-radius: 4px;
+      flex: 0 0 auto;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .toggle:hover { background: #f1f3f5; }
+    .toggle.placeholder { cursor: default; opacity: 0; }
+
+    .row-text {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .row-icon {
+      color: var(--muted-2);
+      margin-left: auto;
+      display: inline-flex;
+      gap: 3px;
+      align-items: center;
+    }
+
+    .row-icon .icon-svg { width: 14px; height: 14px; }
+
+    .connector {
+      width: 12px;
+      height: 18px;
+      border-left: 1px solid #d5dbe2;
+      border-bottom: 1px solid #d5dbe2;
+      margin-left: -12px;
+      flex: 0 0 auto;
+    }
+
+    .formula-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+
+    .fx {
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+      background: #f1f3f5;
+      display: grid;
+      place-items: center;
+      font-family: var(--mono);
+      font-weight: 700;
+      color: var(--muted);
+      flex: 0 0 auto;
+    }
+
+    .formula-text {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-family: var(--mono);
+      font-size: 12px;
+      color: #334155;
+    }
+
+    .panel-tabs {
+      display: flex;
+      height: 42px;
+      border-bottom: 1px solid var(--line);
+      background: #fcfcfd;
+    }
+
+    .panel-tabs button {
+      flex: 1;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      height: 42px;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    .panel-tabs button.active {
+      color: var(--blue);
+      box-shadow: inset 0 -2px var(--blue);
+      background: #fff;
+    }
+
+    .inspector-body {
+      padding: 14px;
+      display: grid;
+      gap: 12px;
+      align-content: start;
+    }
+
+    .metric-strip {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: var(--panel-2);
+      min-width: 0;
+    }
+    .metric .k { color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+    .metric .v { font-weight: 700; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+
+    .card-head {
+      min-height: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 9px 11px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-2);
+      font-weight: 650;
+    }
+
+    .card-body { padding: 11px; }
+
+    .coord {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+    .coord span {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 3px 7px;
+      background: #f7f9fb;
+      font-size: 11px;
+      color: #3f4a56;
+    }
+
+    .code {
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.5;
+      color: #1f2937;
+      background: #f7f9fb;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px;
+      overflow: auto;
+    }
+
+    .rule-list .list-row {
+      border: 1px solid transparent;
+      align-items: flex-start;
+      padding: 7px;
+    }
+    .rule-list .list-row.active {
+      border-color: #c9d8f6;
+      background: var(--blue-soft);
+    }
+    .rule-meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
+
+    .trace-node {
+      display: grid;
+      grid-template-columns: 18px 1fr auto;
+      align-items: center;
+      gap: 6px;
+      min-height: 30px;
+      border-radius: 6px;
+      padding: 3px 5px;
+    }
+    .trace-node:hover { background: #f6f8fa; }
+    .trace-node .name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .trace-node .val { font-variant-numeric: tabular-nums; color: #334155; }
+    .trace-node.depth-1 { padding-left: 18px; }
+    .trace-node.depth-2 { padding-left: 34px; }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 20px;
+      border-radius: 999px;
+      padding: 0 7px;
+      font-size: 11px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+    .badge.blue { color: #244f9f; background: var(--blue-soft); }
+    .badge.green { color: var(--green); background: var(--green-soft); }
+    .badge.gold { color: var(--gold); background: var(--gold-soft); }
+    .badge.red { color: var(--red); background: var(--red-soft); }
+    .badge.violet { color: var(--violet); background: var(--violet-soft); }
+
+    .statusbar {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 0 14px;
+      border-top: 1px solid var(--line);
+      background: #fbfcfd;
+      color: var(--muted);
+      font-size: 12px;
+      min-width: 0;
+    }
+
+    .sheet-tabs {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      height: 100%;
+      margin-left: auto;
+    }
+    .sheet-tab {
+      height: 30px;
+      min-height: 30px;
+      border-radius: 8px 8px 0 0;
+      border-bottom-color: transparent;
+      background: transparent;
+    }
+    .sheet-tab.active { background: var(--panel); color: var(--blue); border-color: var(--line); }
+
+    @media (max-width: 1180px) {
+      .workspace { grid-template-columns: 0 1fr 330px; }
+      .sidebar { display: none; }
+      .brand { min-width: auto; }
+      .brand span { display: none; }
+      .filter-pill.optional { display: none; }
+    }
+
+    @media (max-width: 900px) {
+      body { overflow: auto; }
+      .app { min-width: 0; height: auto; min-height: 100vh; grid-template-rows: auto auto minmax(600px, 1fr) auto; }
+      .topbar, .slicebar { flex-wrap: wrap; }
+      .workspace { grid-template-columns: 1fr; }
+      .inspector { border-left: 0; border-top: 1px solid var(--line); max-height: 520px; }
+      .grid-shell { min-height: 620px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+        <span>Mosaic</span>
+      </div>
+      <div class="control-group">
+        <span class="label">Cube</span>
+        <select id="cubeSelect"></select>
+      </div>
+      <div class="control-group">
+        <span class="label">Version</span>
+        <select id="versionSelect">
+          <option>Working</option>
+          <option>Submitted</option>
+          <option>Approved</option>
+        </select>
+      </div>
+      <div class="control-group">
+        <span class="label">Scenario</span>
+        <select id="scenarioSelect">
+          <option>Baseline</option>
+          <option>Aggressive</option>
+          <option>Conservative</option>
+        </select>
+      </div>
+      <div class="segmented" aria-label="View mode">
+        <button class="active" title="Grid view" data-view="grid"><svg class="icon-svg"><use href="#i-grid"/></svg></button>
+        <button title="Chart view" data-view="chart"><svg class="icon-svg"><use href="#i-chart"/></svg></button>
+        <button title="Import view" data-view="import"><svg class="icon-svg"><use href="#i-import"/></svg></button>
+      </div>
+      <div class="spacer"></div>
+      <button class="icon" id="snapshotBtn" title="Snapshot"><svg class="icon-svg"><use href="#i-camera"/></svg></button>
+      <button class="icon" id="traceBtn" title="Trace"><svg class="icon-svg"><use href="#i-route"/></svg></button>
+      <button class="icon" id="searchBtn" title="Search"><svg class="icon-svg"><use href="#i-search"/></svg></button>
+      <div class="avatar red" title="Submitted">S</div>
+      <div class="avatar green" title="Approved">A</div>
+      <button class="primary" id="calcBtn"><svg class="icon-svg"><use href="#i-bolt"/></svg>Calculate</button>
+      <button class="icon" title="More"><svg class="icon-svg"><use href="#i-more"/></svg></button>
+    </header>
+
+    <nav class="slicebar">
+      <div class="filter-pill"><span>Sheet</span><b id="sheetName">Income Statement</b></div>
+      <div class="filter-pill"><span>Time</span><b>Q1'20-Q4'22</b></div>
+      <div class="filter-pill"><span>Market</span><b id="marketSlice">USA</b></div>
+      <div class="filter-pill optional"><span>Channel</span><b id="channelSlice">All Channels</b></div>
+      <div class="filter-pill optional"><span>Measure</span><b id="measureSlice">Revenue, COGS, Profit</b></div>
+      <button class="icon" title="Add slice"><svg class="icon-svg"><use href="#i-plus"/></svg></button>
+      <div class="spacer"></div>
+      <button id="collapseBtn"><svg class="icon-svg"><use href="#i-collapse"/></svg>Collapse</button>
+      <button id="expandBtn"><svg class="icon-svg"><use href="#i-expand"/></svg>Expand</button>
+    </nav>
+
+    <main class="workspace">
+      <aside class="sidebar">
+        <section class="side-section">
+          <div class="side-title">Cubes <button class="ghost icon" title="New cube"><svg class="icon-svg"><use href="#i-plus"/></svg></button></div>
+          <div class="cube-list" id="cubeList"></div>
+        </section>
+        <section class="side-section">
+          <div class="side-title">Dimensions <button class="ghost icon" title="Manage dimensions"><svg class="icon-svg"><use href="#i-sliders"/></svg></button></div>
+          <div class="dim-list" id="dimList"></div>
+        </section>
+        <section class="side-section">
+          <div class="side-title">Imports <button class="ghost icon" title="Import"><svg class="icon-svg"><use href="#i-import"/></svg></button></div>
+          <div class="list-row"><div class="list-main"><span class="dot green"></span><span>acme.inputs.csv</span></div><span class="count">2,520</span></div>
+          <div class="list-row"><div class="list-main"><span class="dot gold"></span><span>ad_spend_actuals</span></div><span class="count">18k</span></div>
+          <div class="list-row"><div class="list-main"><span class="dot blue"></span><span>pipeline_snapshot</span></div><span class="count">7k</span></div>
+        </section>
+      </aside>
+
+      <section class="grid-shell">
+        <div class="formula-bar">
+          <div class="fx">fx</div>
+          <div class="formula-text" id="formulaText">Revenue = Customers * AOV</div>
+        </div>
+        <div class="grid-toolbar">
+          <button class="icon active" title="Freeze headers"><svg class="icon-svg"><use href="#i-freeze"/></svg></button>
+          <button class="icon" title="Roll up"><svg class="icon-svg"><use href="#i-rollup"/></svg></button>
+          <button class="icon" title="Drill down"><svg class="icon-svg"><use href="#i-drill"/></svg></button>
+          <button class="icon" title="Comments"><svg class="icon-svg"><use href="#i-comment"/></svg></button>
+          <button class="icon" title="Export"><svg class="icon-svg"><use href="#i-download"/></svg></button>
+          <div class="crumb" id="crumb">Acme Marketing Finance / Baseline / Working / USA / All Channels</div>
+          <div class="spacer"></div>
+          <button id="whatIfBtn"><svg class="icon-svg"><use href="#i-pencil"/></svg>What-if</button>
+          <button id="writeBtn"><svg class="icon-svg"><use href="#i-check"/></svg>Write</button>
+        </div>
+        <div class="sheet-wrap" id="sheetWrap">
+          <table class="sheet" id="sheet"></table>
+        </div>
+      </section>
+
+      <aside class="inspector">
+        <div class="panel-tabs">
+          <button class="active" data-tab="rules">Rules</button>
+          <button data-tab="trace">Trace</button>
+          <button data-tab="versions">Versions</button>
+        </div>
+        <div class="inspector-body" id="inspector"></div>
+      </aside>
+    </main>
+
+    <footer class="statusbar">
+      <span id="statusCell">Cell: Revenue / Q1'20</span>
+      <span id="statusValue">Value: 56</span>
+      <span>Revision 148</span>
+      <span id="statusDirty">Dirty 24</span>
+      <span>Snapshot plan-q4</span>
+      <div class="sheet-tabs">
+        <button class="sheet-tab active">Income Statement</button>
+        <button class="sheet-tab">Funnel</button>
+        <button class="sheet-tab">Assumptions</button>
+        <button class="sheet-tab">Actuals</button>
+      </div>
+    </footer>
+  </div>
+
+  <svg width="0" height="0" style="position:absolute">
+    <symbol id="i-grid" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M4 10h16M4 16h16M10 4v16M16 4v16"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 19V5"/><path d="M4 19h16"/><path d="M8 16V9M12 16V6M16 16v-4M20 16V8"/></symbol>
+    <symbol id="i-import" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m8 11 4 4 4-4"/><path d="M5 19h14"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8h4l2-3h4l2 3h4v11H4z"/><circle cx="12" cy="13" r="3"/></symbol>
+    <symbol id="i-route" viewBox="0 0 24 24"><path d="M6 5h4a4 4 0 0 1 0 8H8a4 4 0 0 0 0 8h10"/><circle cx="6" cy="5" r="2"/><circle cx="18" cy="21" r="2"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="m13 2-8 12h7l-1 8 8-12h-7z"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-collapse" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/><path d="M5 5h14M5 19h14"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 24 24"><path d="m8 14 4-4 4 4"/><path d="M5 5h14M5 19h14"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 6h8M16 6h4M4 12h4M12 12h8M4 18h10M18 18h2"/><circle cx="14" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="16" cy="18" r="2"/></symbol>
+    <symbol id="i-freeze" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M9 4v16M4 9h16"/></symbol>
+    <symbol id="i-rollup" viewBox="0 0 24 24"><path d="M6 17h12"/><path d="m9 14 3-3 3 3"/><path d="M12 11v8"/></symbol>
+    <symbol id="i-drill" viewBox="0 0 24 24"><path d="M6 7h12"/><path d="m9 10 3 3 3-3"/><path d="M12 13V5"/></symbol>
+    <symbol id="i-comment" viewBox="0 0 24 24"><path d="M5 5h14v10H9l-4 4z"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11"/><path d="m8 11 4 4 4-4"/><path d="M5 20h14"/></symbol>
+    <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4 20h4l11-11-4-4L4 16z"/><path d="m13 7 4 4"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+  </svg>
+
+  <script>
+    const periods = ["Q1 '20", "Q2 '20", "Q3 '20", "Q4 '20", "Q1 '21", "Q2 '21", "Q3 '21", "Q4 '21", "Q1 '22", "Q2 '22", "Q3 '22", "Q4 '22"];
+
+    const byQuarter = (fn, ...series) => series[0].map((_, i) => fn(...series.map(s => s[i]), i));
+    const round0 = values => values.map(v => Math.round(v));
+
+    const acmeInput = {
+      spend: [118000, 124000, 137500, 156000, 168000, 176500, 192000, 215000, 226000, 238000, 252000, 280000],
+      cpc: [2.42, 2.36, 2.31, 2.48, 2.40, 2.34, 2.28, 2.45, 2.38, 2.32, 2.26, 2.41],
+      cvr: [0.041, 0.043, 0.044, 0.046, 0.047, 0.048, 0.050, 0.052, 0.053, 0.054, 0.056, 0.058],
+      closeRate: [0.19, 0.20, 0.20, 0.21, 0.21, 0.22, 0.22, 0.23, 0.23, 0.24, 0.24, 0.25],
+      aov: [520, 535, 548, 565, 582, 598, 612, 630, 648, 665, 682, 705],
+      cogsRate: [0.34, 0.335, 0.332, 0.330, 0.326, 0.323, 0.318, 0.315, 0.312, 0.308, 0.305, 0.302]
+    };
+
+    const acmeClicks = round0(byQuarter((spend, cpc) => spend / cpc, acmeInput.spend, acmeInput.cpc));
+    const acmeLeads = round0(byQuarter((clicks, cvr) => clicks * cvr, acmeClicks, acmeInput.cvr));
+    const acmeCustomers = round0(byQuarter((leads, closeRate) => leads * closeRate, acmeLeads, acmeInput.closeRate));
+    const acmeRevenue = round0(byQuarter((customers, aov) => customers * aov, acmeCustomers, acmeInput.aov));
+    const acmeCogs = round0(byQuarter((revenue, cogsRate) => revenue * cogsRate, acmeRevenue, acmeInput.cogsRate));
+    const acmeGrossProfit = round0(byQuarter((revenue, cogs) => revenue - cogs, acmeRevenue, acmeCogs));
+
+    const cubes = {
+      acme: {
+        name: "Acme Marketing Finance",
+        sheet: "Income Statement",
+        dims: [
+          ["Scenario", 3, "blue"],
+          ["Version", 3, "green"],
+          ["Time", 17, "gold"],
+          ["Channel", 8, "violet"],
+          ["Market", 715, "blue"],
+          ["Measure", 11, "green"]
+        ],
+        rows: [
+          { id: "revenue", label: "Total Revenue", level: 0, kind: "group", expanded: true, values: acmeRevenue, rule: "Revenue = Customers * AOV" },
+          { id: "funnel", label: "Customer Funnel", level: 1, kind: "group", expanded: true, parent: "revenue", values: acmeCustomers, rule: "Customers = Leads * Close_Rate" },
+          { id: "clicks", label: "Clicks", level: 2, kind: "rule", parent: "funnel", values: acmeClicks, rule: "Clicks = Spend / CPC" },
+          { id: "leads", label: "Leads", level: 2, kind: "rule", parent: "funnel", values: acmeLeads, rule: "Leads = Clicks * CVR" },
+          { id: "customers", label: "Customers", level: 2, kind: "rule", parent: "funnel", values: acmeCustomers, rule: "Customers = Leads * Close_Rate" },
+          { id: "cogs", label: "Cost of Goods", level: 0, kind: "group", expanded: true, values: acmeCogs, rule: "COGS = Revenue * COGS_Rate" },
+          { id: "cogs_rate", label: "COGS Rate", level: 1, kind: "input", parent: "cogs", values: acmeInput.cogsRate, rule: "" },
+          { id: "profit", label: "Gross Profit", level: 0, kind: "rule", values: acmeGrossProfit, rule: "Gross_Profit = Revenue - COGS" },
+          { id: "spend", label: "Media Spend", level: 0, kind: "input", values: acmeInput.spend, rule: "" },
+          { id: "cpc", label: "Avg CPC", level: 0, kind: "input", values: acmeInput.cpc, rule: "" },
+          { id: "cvr", label: "Visit-to-lead CVR", level: 0, kind: "input", values: acmeInput.cvr, rule: "" },
+          { id: "close_rate", label: "Lead Close Rate", level: 0, kind: "input", values: acmeInput.closeRate, rule: "" },
+          { id: "aov", label: "Average Order Value", level: 0, kind: "input", values: acmeInput.aov, rule: "" }
+        ],
+        rules: [
+          ["Clicks", "Spend / CPC", "Derived leaf"],
+          ["Leads", "Clicks * CVR", "Derived leaf"],
+          ["Customers", "Leads * Close_Rate", "Derived leaf"],
+          ["Revenue", "Customers * AOV", "Derived leaf + consolidated"],
+          ["Gross Profit", "Revenue - COGS", "Derived leaf + consolidated"]
+        ]
+      },
+      fpa: {
+        name: "FP&A Budget",
+        sheet: "P&L",
+        dims: [["Scenario", 4, "blue"], ["Version", 5, "green"], ["Time", 24, "gold"], ["Department", 42, "violet"], ["Region", 12, "blue"], ["Account", 96, "green"]],
+        rows: [
+          { id: "netrev", label: "Net Revenue", level: 0, kind: "group", expanded: true, values: [920, 984, 1010, 1108, 1140, 1162, 1191, 1244, 1288, 1312, 1360, 1428], rule: "Net_Revenue = Bookings - Contra_Revenue" },
+          { id: "bookings", label: "Bookings", level: 1, kind: "input", parent: "netrev", values: [980, 1032, 1060, 1164, 1200, 1220, 1250, 1302, 1352, 1374, 1428, 1500], rule: "" },
+          { id: "contra", label: "Contra Revenue", level: 1, kind: "input", parent: "netrev", values: [60, 48, 50, 56, 60, 58, 59, 58, 64, 62, 68, 72], rule: "" },
+          { id: "opex", label: "Operating Expense", level: 0, kind: "group", expanded: true, values: [542, 555, 570, 608, 611, 640, 650, 672, 691, 704, 728, 756], rule: "Opex = Payroll + Marketing + G&A" },
+          { id: "payroll", label: "Payroll", level: 1, kind: "input", parent: "opex", values: [360, 368, 378, 390, 404, 418, 426, 434, 442, 456, 470, 486], rule: "" },
+          { id: "marketing", label: "Marketing", level: 1, kind: "input", parent: "opex", values: [92, 96, 98, 122, 110, 120, 124, 138, 142, 136, 144, 150], rule: "" },
+          { id: "gna", label: "G&A", level: 1, kind: "input", parent: "opex", values: [90, 91, 94, 96, 97, 102, 100, 100, 107, 112, 114, 120], rule: "" },
+          { id: "ebitda", label: "EBITDA", level: 0, kind: "rule", values: [378, 429, 440, 500, 529, 522, 541, 572, 597, 608, 632, 672], rule: "EBITDA = Net_Revenue - Operating_Expense" }
+        ],
+        rules: [["Net Revenue", "Bookings - Contra_Revenue", "Account rollup"], ["Operating Expense", "Payroll + Marketing + G&A", "Account rollup"], ["EBITDA", "Net_Revenue - Operating_Expense", "Derived"]]
+      },
+      nba: {
+        name: "NBA Totals Cartridge",
+        sheet: "Edge Board",
+        dims: [["Scenario", 3, "blue"], ["Version", 3, "green"], ["Game Date", 82, "gold"], ["Team", 30, "violet"], ["Market", 5, "blue"], ["Measure", 18, "green"]],
+        rows: [
+          { id: "total", label: "Projected Total", level: 0, kind: "rule", values: [224.5, 228.1, 219.4, 231.0, 226.2, 222.8, 235.7, 229.9, 221.0, 230.3, 232.7, 225.6], rule: "predict(total_model, pace, off_rating, def_rating)" },
+          { id: "market", label: "Market Total", level: 0, kind: "input", values: [226.5, 227.0, 221.5, 229.5, 225.5, 224.0, 234.5, 231.5, 220.5, 231.0, 231.5, 226.5], rule: "" },
+          { id: "edge", label: "Edge", level: 0, kind: "rule", values: [-2.0, 1.1, -2.1, 1.5, 0.7, -1.2, 1.2, -1.6, 0.5, -0.7, 1.2, -0.9], rule: "Edge = Projected_Total - Market_Total" },
+          { id: "kelly", label: "Kelly Stake", level: 0, kind: "rule", values: [0, 0.35, 0, 0.42, 0.18, 0, 0.31, 0, 0.11, 0, 0.33, 0], rule: "max(0, edge_to_kelly(Edge, Price))" }
+        ],
+        rules: [["Projected Total", "predict(total_model, pace, off_rating, def_rating)", "Fitted model"], ["Edge", "Projected_Total - Market_Total", "Derived"], ["Kelly Stake", "max(0, edge_to_kelly(Edge, Price))", "Sizing"]]
+      }
+    };
+
+    let state = {
+      cube: "acme",
+      selected: { row: "revenue", col: 0 },
+      inspectorTab: "rules"
+    };
+
+    const collapsed = new Set();
+    const edited = new Set(["spend:2", "cpc:7", "cogs_rate:10"]);
+
+    const fmt = (v) => {
+      if (v === null || v === undefined) return "-";
+      if (Math.abs(v) < 10 && v !== 0 && !Number.isInteger(v)) return v.toFixed(2);
+      return new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(v).replaceAll(",", " ");
+    };
+
+    function isRateRow(row) {
+      return row && ["cvr", "close_rate", "cogs_rate"].includes(row.id);
+    }
+
+    function formatValue(row, value) {
+      if (value === null || value === undefined) return "-";
+      if (isRateRow(row)) return `${(value * 100).toFixed(1)}%`;
+      return fmt(value);
+    }
+
+    function valueFor(id) {
+      const row = cube().rows.find(r => r.id === id);
+      return row ? row.values[state.selected.col] : null;
+    }
+
+    function formattedFor(id) {
+      const row = cube().rows.find(r => r.id === id);
+      return row ? formatValue(row, row.values[state.selected.col]) : "-";
+    }
+
+    function cube() { return cubes[state.cube]; }
+
+    function visibleRows() {
+      const rows = cube().rows;
+      return rows.filter(row => {
+        if (!row.parent) return true;
+        let parent = rows.find(r => r.id === row.parent);
+        while (parent) {
+          if (collapsed.has(parent.id)) return false;
+          parent = parent.parent ? rows.find(r => r.id === parent.parent) : null;
+        }
+        return true;
+      });
+    }
+
+    function renderControls() {
+      const cubeSelect = document.getElementById("cubeSelect");
+      cubeSelect.innerHTML = Object.entries(cubes).map(([id, c]) => `<option value="${id}">${c.name}</option>`).join("");
+      cubeSelect.value = state.cube;
+      document.getElementById("sheetName").textContent = cube().sheet;
+      document.getElementById("marketSlice").textContent = state.cube === "nba" ? "All Teams" : "USA";
+      document.getElementById("channelSlice").textContent = state.cube === "fpa" ? "All Departments" : state.cube === "nba" ? "All Markets" : "All Channels";
+      document.getElementById("measureSlice").textContent = state.cube === "nba" ? "Totals, Edge, Stake" : state.cube === "fpa" ? "Revenue, Opex, EBITDA" : "Revenue, COGS, Profit";
+      document.getElementById("crumb").textContent = `${cube().name} / ${document.getElementById("scenarioSelect").value} / ${document.getElementById("versionSelect").value} / ${document.getElementById("marketSlice").textContent}`;
+      renderCubeList();
+      renderDims();
+    }
+
+    function renderCubeList() {
+      document.getElementById("cubeList").innerHTML = Object.entries(cubes).map(([id, c]) => `
+        <div class="list-row ${id === state.cube ? "active" : ""}" data-cube="${id}">
+          <div class="list-main"><span class="dot ${id === "acme" ? "blue" : id === "fpa" ? "green" : "gold"}"></span><span>${c.name}</span></div>
+          <span class="count">${c.rows.length}</span>
+        </div>`).join("");
+    }
+
+    function renderDims() {
+      document.getElementById("dimList").innerHTML = cube().dims.map(([name, count, color]) => `
+        <div class="list-row">
+          <div class="list-main"><span class="dot ${color}"></span><span>${name}</span></div>
+          <span class="count">${count}</span>
+        </div>`).join("");
+    }
+
+    function renderSheet() {
+      const rows = visibleRows();
+      const selectedKey = `${state.selected.row}:${state.selected.col}`;
+      const html = [
+        `<thead><tr><th class="row-head">Row name</th>${periods.map(p => `<th>${p}</th>`).join("")}</tr></thead>`,
+        `<tbody>${rows.map(row => {
+          const hasChildren = cube().rows.some(r => r.parent === row.id);
+          const isCollapsed = collapsed.has(row.id);
+          return `<tr class="${row.kind === "group" ? "group" : ""} ${row.id === state.selected.row ? "active" : ""}" data-row="${row.id}">
+            <td class="row-label">
+              <div class="row-name indent-${row.level}">
+                ${row.level ? `<span class="connector"></span>` : ""}
+                <span class="toggle ${hasChildren ? "" : "placeholder"}" data-toggle="${row.id}">${hasChildren ? (isCollapsed ? ">" : "v") : "-"}</span>
+                <span class="row-text">${row.label}</span>
+                <span class="row-icon">${row.kind === "rule" ? icon("route") : row.kind === "input" ? icon("pencil") : icon("rollup")}${icon("more")}</span>
+              </div>
+            </td>
+            ${periods.map((p, col) => {
+              const key = `${row.id}:${col}`;
+              const cls = [
+                row.kind === "rule" || row.kind === "group" ? "rule" : "input editable",
+                key === selectedKey ? "selected" : "",
+                edited.has(key) ? "edited" : "",
+                row.values[col] == null ? "null" : ""
+              ].join(" ");
+              return `<td class="${cls}" data-cell="${row.id}:${col}" contenteditable="${row.kind === "input"}">${formatValue(row, row.values[col])}</td>`;
+            }).join("")}
+          </tr>`;
+        }).join("")}</tbody>`
+      ].join("");
+      document.getElementById("sheet").innerHTML = html;
+      renderStatus();
+    }
+
+    function icon(name) {
+      const map = { route: "i-route", pencil: "i-pencil", rollup: "i-rollup", more: "i-more" };
+      return `<svg class="icon-svg" aria-hidden="true"><use href="#${map[name]}"/></svg>`;
+    }
+
+    function selectedRow() {
+      return cube().rows.find(r => r.id === state.selected.row) || cube().rows[0];
+    }
+
+    function renderStatus() {
+      const row = selectedRow();
+      const period = periods[state.selected.col];
+      document.getElementById("statusCell").textContent = `Cell: ${row.label} / ${period}`;
+      document.getElementById("statusValue").textContent = `Value: ${formatValue(row, row.values[state.selected.col])}`;
+      document.getElementById("statusDirty").textContent = `Dirty ${18 + edited.size}`;
+      document.getElementById("formulaText").textContent = row.rule || `${row.label} input`;
+    }
+
+    function renderInspector() {
+      document.querySelectorAll(".panel-tabs button").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === state.inspectorTab));
+      const row = selectedRow();
+      const period = periods[state.selected.col];
+      const value = formatValue(row, row.values[state.selected.col]);
+      let body = "";
+      if (state.inspectorTab === "rules") {
+        body = `
+          <div class="metric-strip">
+            <div class="metric"><div class="k">Value</div><div class="v">${value}</div></div>
+            <div class="metric"><div class="k">Source</div><div class="v">${row.kind === "input" ? "Input" : "Rule"}</div></div>
+            <div class="metric"><div class="k">State</div><div class="v">${edited.has(`${row.id}:${state.selected.col}`) ? "Edited" : "Clean"}</div></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><span>Coordinate</span><span class="badge blue">${period}</span></div>
+            <div class="card-body"><div class="coord">
+              <span>Scenario=Baseline</span><span>Version=Working</span><span>Market=USA</span><span>Channel=All</span><span>Measure=${row.label}</span>
+            </div></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><span>Formula</span><span class="badge ${row.kind === "input" ? "green" : "violet"}">${row.kind}</span></div>
+            <div class="card-body"><div class="code">${row.rule || "Input cell"}</div></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><span>Rules</span><button class="ghost icon" title="Add rule"><svg class="icon-svg"><use href="#i-plus"/></svg></button></div>
+            <div class="card-body rule-list">
+              ${cube().rules.map((r, i) => `<div class="list-row ${row.label.includes(r[0]) ? "active" : ""}">
+                <div><strong>${r[0]}</strong><div class="rule-meta">${r[1]}</div></div><span class="badge ${i % 2 ? "blue" : "green"}">${r[2]}</span>
+              </div>`).join("")}
+            </div>
+          </div>`;
+      } else if (state.inspectorTab === "trace") {
+        body = `
+          <div class="card">
+            <div class="card-head"><span>${row.label}</span><span class="badge blue">${value}</span></div>
+            <div class="card-body trace-list">
+              ${traceRows(row).map(n => `<div class="trace-node depth-${n.depth}">
+                <span>${n.depth ? "\\" : "o"}</span><span class="name">${n.name}</span><span class="val">${n.value}</span>
+              </div>`).join("")}
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><span>Provenance</span><span class="badge gold">rev 148</span></div>
+            <div class="card-body">
+              <div class="coord"><span>write_id=wr_10291</span><span>import=acme.inputs.csv</span><span>snapshot=plan-q4</span></div>
+            </div>
+          </div>`;
+      } else {
+        body = `
+          <div class="card">
+            <div class="card-head"><span>Versions</span><button class="ghost icon" title="New version"><svg class="icon-svg"><use href="#i-plus"/></svg></button></div>
+            <div class="card-body version-list">
+              <div class="list-row active"><div class="list-main"><span class="dot blue"></span><span>Working</span></div><span class="badge blue">current</span></div>
+              <div class="list-row"><div class="list-main"><span class="dot gold"></span><span>Submitted</span></div><span class="count">rev 132</span></div>
+              <div class="list-row"><div class="list-main"><span class="dot green"></span><span>Approved</span></div><span class="count">rev 98</span></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><span>Diff</span><span class="badge red">+4.6%</span></div>
+            <div class="card-body"><div class="code">Working ${row.label} is ${value}<br>Approved baseline is ${formatValue(row, row.values[state.selected.col] * .956)}</div></div>
+          </div>`;
+      }
+      document.getElementById("inspector").innerHTML = body;
+    }
+
+    function traceRows(row) {
+      if (row.kind === "input") return [
+        { depth: 0, name: row.label, value: formatValue(row, row.values[state.selected.col]) },
+        { depth: 1, name: "Input provenance", value: state.cube === "acme" ? "Plan upload" : "CSV" }
+      ];
+      if (state.cube === "nba") return [
+        { depth: 0, name: row.label, value: formatValue(row, row.values[state.selected.col]) },
+        { depth: 1, name: "Projected Total", value: "224.5" },
+        { depth: 1, name: "Market Total", value: "226.5" },
+        { depth: 2, name: "Price", value: "-110" }
+      ];
+      if (row.id === "clicks") return [
+        { depth: 0, name: "Clicks", value: formattedFor("clicks") },
+        { depth: 1, name: "Media Spend", value: formattedFor("spend") },
+        { depth: 1, name: "Avg CPC", value: formattedFor("cpc") }
+      ];
+      if (row.id === "leads") return [
+        { depth: 0, name: "Leads", value: formattedFor("leads") },
+        { depth: 1, name: "Clicks", value: formattedFor("clicks") },
+        { depth: 1, name: "Visit-to-lead CVR", value: formattedFor("cvr") }
+      ];
+      if (row.id === "customers" || row.id === "funnel") return [
+        { depth: 0, name: "Customers", value: formattedFor("customers") },
+        { depth: 1, name: "Leads", value: formattedFor("leads") },
+        { depth: 1, name: "Lead Close Rate", value: formattedFor("close_rate") }
+      ];
+      if (row.id === "cogs") return [
+        { depth: 0, name: "Cost of Goods", value: formattedFor("cogs") },
+        { depth: 1, name: "Total Revenue", value: formattedFor("revenue") },
+        { depth: 1, name: "COGS Rate", value: formattedFor("cogs_rate") }
+      ];
+      if (row.id === "profit") return [
+        { depth: 0, name: "Gross Profit", value: formattedFor("profit") },
+        { depth: 1, name: "Total Revenue", value: formattedFor("revenue") },
+        { depth: 1, name: "Cost of Goods", value: formattedFor("cogs") }
+      ];
+      return [
+        { depth: 0, name: row.label, value: formatValue(row, row.values[state.selected.col]) },
+        { depth: 1, name: "Customers", value: formattedFor("customers") },
+        { depth: 1, name: "Average Order Value", value: formattedFor("aov") }
+      ];
+    }
+
+    function renderAll() {
+      renderControls();
+      renderSheet();
+      renderInspector();
+    }
+
+    document.addEventListener("click", (e) => {
+      const cubeRow = e.target.closest("[data-cube]");
+      if (cubeRow) {
+        state.cube = cubeRow.dataset.cube;
+        state.selected = { row: cube().rows[0].id, col: 0 };
+        collapsed.clear();
+        renderAll();
+        return;
+      }
+      const toggle = e.target.closest("[data-toggle]");
+      if (toggle && !toggle.classList.contains("placeholder")) {
+        const id = toggle.dataset.toggle;
+        collapsed.has(id) ? collapsed.delete(id) : collapsed.add(id);
+        renderSheet();
+        renderInspector();
+        return;
+      }
+      const cell = e.target.closest("[data-cell]");
+      if (cell) {
+        const [row, col] = cell.dataset.cell.split(":");
+        state.selected = { row, col: Number(col) };
+        renderSheet();
+        renderInspector();
+        return;
+      }
+      const tab = e.target.closest(".panel-tabs button");
+      if (tab) {
+        state.inspectorTab = tab.dataset.tab;
+        renderInspector();
+      }
+    });
+
+    document.getElementById("cubeSelect").addEventListener("change", e => {
+      state.cube = e.target.value;
+      state.selected = { row: cube().rows[0].id, col: 0 };
+      collapsed.clear();
+      renderAll();
+    });
+    document.getElementById("scenarioSelect").addEventListener("change", renderControls);
+    document.getElementById("versionSelect").addEventListener("change", renderControls);
+    document.getElementById("collapseBtn").addEventListener("click", () => {
+      cube().rows.filter(r => cube().rows.some(c => c.parent === r.id)).forEach(r => collapsed.add(r.id));
+      renderSheet();
+    });
+    document.getElementById("expandBtn").addEventListener("click", () => {
+      collapsed.clear();
+      renderSheet();
+    });
+    document.getElementById("calcBtn").addEventListener("click", () => {
+      edited.clear();
+      renderSheet();
+      renderInspector();
+    });
+    document.getElementById("whatIfBtn").addEventListener("click", () => {
+      const key = `${state.selected.row}:${state.selected.col}`;
+      edited.add(key);
+      renderSheet();
+      renderInspector();
+    });
+    document.getElementById("writeBtn").addEventListener("click", () => {
+      const key = `${state.selected.row}:${state.selected.col}`;
+      edited.add(key);
+      renderSheet();
+      renderInspector();
+    });
+
+    renderAll();
+  </script>
+</body>
+</html>
