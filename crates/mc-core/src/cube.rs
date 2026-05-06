@@ -1110,22 +1110,34 @@ impl Cube {
                     return Ok(ScalarValue::Null);
                 }
 
-                // Apply standardization if configured
+                // Apply standardization if configured. Per Phase 6A.1 CRIT-1:
+                // look up (mean, std) by feature name, not by position. The
+                // previous positional zip silently produced wrong predictions
+                // when standardization.params was declared in a different
+                // order than coefficients.
                 if let Some(ref std_params) = model.standardization {
-                    for (val, (mean, std)) in feature_values.iter_mut().zip(std_params.iter()) {
-                        if *std > 0.0 {
-                            *val = (*val - mean) / std;
+                    let std_by_name: ahash::AHashMap<&str, (f64, f64)> = std_params
+                        .iter()
+                        .map(|(name, mean, std)| (name.as_str(), (*mean, *std)))
+                        .collect();
+                    for ((feature_name, _weight), val) in
+                        model.coefficients.iter().zip(feature_values.iter_mut())
+                    {
+                        if let Some((mean, std)) = std_by_name.get(feature_name.as_str()) {
+                            if *std > 0.0 {
+                                *val = (*val - *mean) / *std;
+                            }
                         }
                     }
                 }
 
-                // Linear combination: intercept + sum(coef_i * feature_i)
+                // Linear combination: intercept + sum(weight_i * feature_i)
                 let linear_result = model.intercept
                     + model
                         .coefficients
                         .iter()
                         .zip(feature_values.iter())
-                        .map(|(coef, val)| coef * val)
+                        .map(|((_name, weight), val)| weight * val)
                         .sum::<f64>();
 
                 // Apply link function
@@ -2155,19 +2167,28 @@ pub struct ReferenceData {
 }
 
 /// Pre-fitted model data for `predict()` evaluation (Phase 3H).
+///
+/// Phase 6A.1 amendment (CRIT-1): coefficients and standardization params
+/// carry their feature names so eval looks up means/stds by name rather
+/// than by position. The previous positional shape silently produced
+/// wrong predictions when `standardization.params` was declared in a
+/// different order than `coefficients`.
 #[derive(Clone, Debug)]
 pub struct FittedModelData {
     /// `"linear"` or `"logistic"`.
     pub method: String,
     /// Model intercept (bias term).
     pub intercept: f64,
-    /// Coefficient weights, one per feature in declaration order.
-    pub coefficients: Vec<f64>,
+    /// Coefficient (feature_name, weight) pairs in declaration order.
+    /// Eval iterates this in order against the supplied `feature_values`.
+    pub coefficients: Vec<(String, f64)>,
     /// Optional residual standard deviation (for prediction intervals).
     pub residual_std: Option<f64>,
-    /// Optional per-feature standardization params (mean, std) for z-score normalization.
-    /// If present, features are standardized before applying coefficients.
-    pub standardization: Option<Vec<(f64, f64)>>,
+    /// Optional per-feature standardization params (feature_name, mean, std)
+    /// for z-score normalization. Eval looks up `(mean, std)` by feature
+    /// name from the coefficient list, so declaration order here is
+    /// irrelevant to correctness.
+    pub standardization: Option<Vec<(String, f64, f64)>>,
 }
 
 /// Calibration map data for `calibrate()` evaluation (Phase 3H).

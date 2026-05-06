@@ -3,7 +3,9 @@
 //! Returns a hierarchical tree showing how a derived value was computed,
 //! all the way down to input values. The "explainability" feature.
 
-use crate::query::{load_model, parse_coord_string, push_json_str, OutputFormat};
+use crate::query::{
+    load_model, parse_coord_string, push_json_envelope_header, push_json_str, OutputFormat,
+};
 use mc_core::{ScalarValue, TraceNode, TraceOp};
 use std::fmt::Write;
 
@@ -79,9 +81,9 @@ pub fn run(cmd: TraceCommand) -> i32 {
 pub fn run_captured(cmd: TraceCommand) -> (i32, String) {
     let loaded = match load_model(&cmd.path) {
         Ok(l) => l,
-        Err(msg) => {
-            eprintln!("error: {msg}");
-            return (1, String::new());
+        Err(e) => {
+            eprintln!("error: {e}");
+            return (e.exit_code(), String::new());
         }
     };
     let mut cube = loaded.cube;
@@ -241,8 +243,10 @@ fn build_trace_tree(
 
 fn format_trace_json(tree: &TraceTree) -> String {
     let mut out = String::new();
-    write_trace_json_node(&mut out, tree, 0);
-    out.push('\n');
+    push_json_envelope_header(&mut out);
+    out.push_str("\"trace\": ");
+    write_trace_json_node(&mut out, tree, 1);
+    out.push_str("\n}\n");
     out
 }
 

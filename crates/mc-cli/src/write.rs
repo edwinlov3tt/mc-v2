@@ -3,7 +3,10 @@
 //! Persists the write to an append-only log at `<model_dir>/.tessera/writes.jsonl`.
 //! On next model load, the write log is replayed on top of canonical_inputs.
 
-use crate::query::{format_scalar, load_model, parse_coord_string, push_json_str, OutputFormat};
+use crate::query::{
+    format_scalar, load_model, parse_coord_string, push_json_envelope_header, push_json_str,
+    OutputFormat,
+};
 use mc_core::{ScalarValue, WriteIntent, WritebackRequest};
 use std::fmt::Write;
 
@@ -84,9 +87,9 @@ pub fn run(cmd: WriteCommand) -> i32 {
 pub fn run_captured(cmd: WriteCommand) -> (i32, String) {
     let loaded = match load_model(&cmd.path) {
         Ok(l) => l,
-        Err(msg) => {
-            eprintln!("error: {msg}");
-            return (1, String::new());
+        Err(e) => {
+            eprintln!("error: {e}");
+            return (e.exit_code(), String::new());
         }
     };
     let mut cube = loaded.cube;
@@ -136,7 +139,8 @@ pub fn run_captured(cmd: WriteCommand) -> (i32, String) {
         let output_str = match cmd.format {
             OutputFormat::Json => {
                 let mut out = String::new();
-                out.push_str("{\n  \"dry_run\": true,\n  \"coord\": ");
+                push_json_envelope_header(&mut out);
+                out.push_str("\"dry_run\": true,\n  \"coord\": ");
                 push_json_str(&mut out, &cmd.coord);
                 out.push_str(",\n  \"current_value\": ");
                 push_scalar_val(&mut out, &before);
@@ -193,7 +197,8 @@ pub fn run_captured(cmd: WriteCommand) -> (i32, String) {
             let output_str = match cmd.format {
                 OutputFormat::Json => {
                     let mut out = String::new();
-                    out.push_str("{\n  \"coord\": ");
+                    push_json_envelope_header(&mut out);
+                    out.push_str("\"coord\": ");
                     push_json_str(&mut out, &cmd.coord);
                     out.push_str(",\n  \"before\": ");
                     push_scalar_val(&mut out, &before);

@@ -3296,3 +3296,228 @@ fn test_mul_by_zero() {
     );
     assert_f64_eq(val, 0.0, "100 * 0 → 0");
 }
+
+// ============================================================================
+// Phase 6A.1 — CRIT-1 regression: predict() standardization is name-keyed
+// (https://docs/handoffs/phase-6a-1-fixes-handoff.md §"Block 1.1")
+// ============================================================================
+
+#[test]
+fn test_predict_with_out_of_order_standardization_params() {
+    // Two-feature model where standardization.params is intentionally listed
+    // in the OPPOSITE order from coefficients. With the previous positional
+    // pairing, Spend's value would be standardized using CPC's (mean, std)
+    // and vice versa — silently producing a very wrong prediction. With the
+    // name-keyed lookup, mean/std pair correctly with their feature.
+    //
+    // Coefficients:  Spend (w=1.0), CPC (w=1.0)
+    // Standardization (declared CPC FIRST, Spend SECOND):
+    //   CPC:   mean=2.0,    std=0.5
+    //   Spend: mean=1000.0, std=200.0
+    // Inputs:        Spend=1200.0, CPC=3.0
+    // intercept=0
+    //
+    // By-name (correct):
+    //   Spend' = (1200 - 1000) / 200 = 1.0
+    //   CPC'   = (3   -    2) / 0.5 = 2.0
+    //   result = 0 + 1.0 * 1.0 + 1.0 * 2.0 = 3.0
+    //
+    // By-position (the bug):
+    //   Spend' = (1200 -    2) / 0.5 = 2396.0
+    //   CPC'   = (3   - 1000) / 200 = -4.985
+    //   result = 0 + 1.0 * 2396.0 + 1.0 * (-4.985) = 2391.015
+    //
+    // 3.0 vs 2391.015 — distinct enough that the assertion would have failed
+    // against the old positional code at any sensible epsilon.
+    let yaml = r#"
+model_format_version: 1
+metadata:
+  name: "PredictOutOfOrderStdTest"
+  description: "regression test for CRIT-1"
+  author: "test"
+  created: "2026-05-05"
+dimensions:
+  - name: "Scenario"
+    kind: "Scenario"
+    elements:
+      - { name: "Base", scenario_meta: "Default" }
+  - name: "Version"
+    kind: "Version"
+    elements:
+      - { name: "Working", version_state: "Draft" }
+  - name: "Time"
+    kind: "Time"
+    elements:
+      - { name: "P1" }
+  - name: "Channel"
+    kind: "Standard"
+    elements:
+      - { name: "Web" }
+  - name: "Market"
+    kind: "Standard"
+    elements:
+      - { name: "US" }
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+measures:
+  - { name: "Spend",  role: "Input",   data_type: "F64", aggregation: "Sum" }
+  - { name: "CPC",    role: "Input",   data_type: "F64", aggregation: "Sum" }
+  - { name: "Result", role: "Derived", data_type: "F64", aggregation: "Sum" }
+fitted_models:
+  - name: "ooo_model"
+    method: "linear"
+    intercept: 0.0
+    coefficients:
+      - { feature: "Spend", weight: 1.0 }
+      - { feature: "CPC",   weight: 1.0 }
+    standardization:
+      method: "zscore"
+      params:
+        - { feature: "CPC",   mean: 2.0,    std: 0.5 }
+        - { feature: "Spend", mean: 1000.0, std: 200.0 }
+rules:
+  - name: "rule_result"
+    target_measure: "Result"
+    scope: "AllLeaves"
+    body: "predict(\"ooo_model\", Spend, CPC)"
+    declared_dependencies: ["Spend", "CPC"]
+"#;
+    let compiled = build_test_cube(yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+
+    write_f64(
+        &mut cube,
+        &compiled.refs,
+        p,
+        &[
+            ("Scenario", "Base"),
+            ("Version", "Working"),
+            ("Time", "P1"),
+            ("Channel", "Web"),
+            ("Market", "US"),
+            ("Measure", "Spend"),
+        ],
+        1200.0,
+    );
+    write_f64(
+        &mut cube,
+        &compiled.refs,
+        p,
+        &[
+            ("Scenario", "Base"),
+            ("Version", "Working"),
+            ("Time", "P1"),
+            ("Channel", "Web"),
+            ("Market", "US"),
+            ("Measure", "CPC"),
+        ],
+        3.0,
+    );
+
+    let val = read_f64(
+        &mut cube,
+        &compiled.refs,
+        p,
+        &[
+            ("Scenario", "Base"),
+            ("Version", "Working"),
+            ("Time", "P1"),
+            ("Channel", "Web"),
+            ("Market", "US"),
+            ("Measure", "Result"),
+        ],
+    );
+    assert_f64_eq(val, 3.0, "predict() pairs (mean, std) with feature by name");
+}
+
+// ============================================================================
+// Phase 6A.1 — MIN-6 regression: not()/if() use 1e-9 epsilon, not float ==
+// (https://docs/handoffs/phase-6a-1-fixes-handoff.md §"Block 3.2")
+// ============================================================================
+
+#[test]
+fn test_not_handles_arithmetic_zero() {
+    // not(Spend - Spend) where Spend is a positive value.
+    // Spend - Spend = exactly 0.0 in IEEE 754 (same bits cancel perfectly),
+    // so this exercises the exact-zero path of the epsilon fix. The near-zero
+    // path (values like 5e-10 that are conceptually zero but != 0.0) is
+    // covered by the unit tests in mc-core::rule (eval_unified_not_near_zero_is_true).
+    let yaml = r#"
+model_format_version: 1
+metadata:
+  name: "NotEpsilonTest"
+  description: "Phase 6A.1 MIN-6 regression"
+  author: "test"
+  created: "2026-05-05"
+dimensions:
+  - name: "Scenario"
+    kind: "Scenario"
+    elements:
+      - { name: "Base", scenario_meta: "Default" }
+  - name: "Version"
+    kind: "Version"
+    elements:
+      - { name: "Working", version_state: "Draft" }
+  - name: "Time"
+    kind: "Time"
+    elements:
+      - { name: "P1" }
+  - name: "Channel"
+    kind: "Standard"
+    elements:
+      - { name: "Web" }
+  - name: "Market"
+    kind: "Standard"
+    elements:
+      - { name: "US" }
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+measures:
+  - { name: "Spend", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "Result", role: "Derived", data_type: "F64", aggregation: "Sum" }
+rules:
+  - name: "rule_result"
+    target_measure: "Result"
+    scope: "AllLeaves"
+    body: "not(Spend - Spend)"
+    declared_dependencies: ["Spend"]
+"#;
+    let compiled = build_test_cube(yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+
+    write_f64(
+        &mut cube,
+        &compiled.refs,
+        p,
+        &[
+            ("Scenario", "Base"),
+            ("Version", "Working"),
+            ("Time", "P1"),
+            ("Channel", "Web"),
+            ("Market", "US"),
+            ("Measure", "Spend"),
+        ],
+        12345.6789,
+    );
+
+    let val = read_f64(
+        &mut cube,
+        &compiled.refs,
+        p,
+        &[
+            ("Scenario", "Base"),
+            ("Version", "Working"),
+            ("Time", "P1"),
+            ("Channel", "Web"),
+            ("Market", "US"),
+            ("Measure", "Result"),
+        ],
+    );
+    // not(0) is true (1.0). The fix ensures that "near-zero from float
+    // arithmetic" still triggers the falsy branch of `not`.
+    assert_f64_eq(val, 1.0, "not(Spend - Spend) → true (1.0)");
+}

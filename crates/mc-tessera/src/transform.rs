@@ -189,6 +189,9 @@ fn transform_batch_inner(
                 dim_name,
                 dim_id: _,
                 dim_position,
+                is_time_dim,
+                time_format,
+                map_to_period,
             } = &entry.target
             {
                 let raw = column_value_as_string(&batch.columns[entry.source_index], row);
@@ -209,6 +212,24 @@ fn transform_batch_inner(
                             },
                             row_raw(batch, row),
                         );
+                        continue 'rows;
+                    }
+                };
+                // Phase 6A.1 MAJ-1: apply time_format strptime parse +
+                // map_to_period canonicalization for non-ISO Time
+                // columns before name lookup.
+                let raw = match maybe_canonicalize_time(
+                    raw,
+                    *is_time_dim,
+                    time_format,
+                    map_to_period,
+                    dim_name,
+                    &entry.source,
+                    row_index,
+                ) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        record_failure(&mut out, row_index, e, row_raw(batch, row));
                         continue 'rows;
                     }
                 };
@@ -556,6 +577,9 @@ fn transform_batch_long_inner(
                 dim_name,
                 dim_id: _,
                 dim_position,
+                is_time_dim,
+                time_format,
+                map_to_period,
             } = &entry.target
             {
                 let raw = column_value_as_string(&batch.columns[entry.source_index], row);
@@ -576,6 +600,23 @@ fn transform_batch_long_inner(
                             },
                             row_raw(batch, row),
                         );
+                        continue 'rows;
+                    }
+                };
+                // Phase 6A.1 MAJ-1: apply time_format on non-ISO Time
+                // columns before name lookup.
+                let raw = match maybe_canonicalize_time(
+                    raw,
+                    *is_time_dim,
+                    time_format,
+                    map_to_period,
+                    dim_name,
+                    &entry.source,
+                    row_index,
+                ) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        record_failure(&mut out, row_index, e, row_raw(batch, row));
                         continue 'rows;
                     }
                 };
@@ -765,6 +806,59 @@ fn record_failure(
         error: err,
         raw,
     });
+}
+
+/// If the column targets a Time-kind dim AND has a `time_format`, parse
+/// the raw value with the format and canonicalize via `map_to_period`.
+/// Otherwise return the raw value unchanged.
+///
+/// Phase 6A.1 MAJ-1: closes the gap where `time_format` was declared
+/// and validated (MC5030) but never actually consumed at row-transform
+/// time.
+fn maybe_canonicalize_time(
+    raw: String,
+    is_time_dim: bool,
+    time_format: &Option<String>,
+    map_to_period: &Option<String>,
+    dim_name: &str,
+    column: &str,
+    row_index: usize,
+) -> Result<String, TesseraErrorOwned> {
+    if !is_time_dim {
+        return Ok(raw);
+    }
+    let Some(fmt) = time_format.as_deref() else {
+        return Ok(raw);
+    };
+    let parts = match crate::time_format::parse_strptime(&raw, fmt) {
+        Ok(p) => p,
+        Err(e) => {
+            return Err(TesseraErrorOwned {
+                code: "MC5034",
+                message: format!(
+                    "row {row_index}: time_format parse failed in dimension {dim_name:?}: {} (input {raw:?}, format {fmt:?})",
+                    e.message
+                ),
+                dimension: Some(dim_name.to_string()),
+                column: Some(column.to_string()),
+            });
+        }
+    };
+    // Default bucketing is `"day"` (most general): if no map_to_period
+    // was declared, emit YYYY-MM-DD. Recipes that need year/quarter/
+    // month/week granularity declare it explicitly per the schema.
+    let period = map_to_period.as_deref().unwrap_or("day");
+    match crate::time_format::canonicalize_period(&parts, period) {
+        Some(s) => Ok(s),
+        None => Err(TesseraErrorOwned {
+            code: "MC5034",
+            message: format!(
+                "row {row_index}: time_format parsed but {period:?} canonicalization failed in dimension {dim_name:?} (input {raw:?}, format {fmt:?})"
+            ),
+            dimension: Some(dim_name.to_string()),
+            column: Some(column.to_string()),
+        }),
+    }
 }
 
 /// Extract column[row] as an `f64`, returning `Ok(None)` for SQL NULL

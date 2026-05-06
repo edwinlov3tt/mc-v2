@@ -4,7 +4,9 @@
 //! point, and reports the optimal value. Named selectors, in-memory struct
 //! override, baseline comparison by default.
 
-use crate::query::{format_f64, load_model, push_json_str, OutputFormat};
+use crate::query::{
+    format_f64, load_model, push_json_envelope_header, push_json_str, OutputFormat,
+};
 use mc_core::{ScalarValue, WriteIntent, WritebackRequest};
 use std::fmt::Write;
 
@@ -155,16 +157,17 @@ pub fn run_captured(cmd: SweepCommand) -> (i32, String) {
     // Parse metric expression: mean(Measure), sum(Measure), etc.
     let metric_fn = cmd.metric.trim();
 
-    // For each sweep point, load model fresh, apply override, evaluate metric
+    // For each sweep point, load model fresh, apply override, evaluate metric.
+    // (The true baseline is computed separately below; the first-point reading
+    // here is no longer wired into the output.)
     let mut results: Vec<SweepPoint> = Vec::new();
-    let mut baseline: Option<f64> = None;
 
-    for (i, &point_value) in points.iter().enumerate() {
+    for &point_value in points.iter() {
         let loaded = match load_model(&cmd.path) {
             Ok(l) => l,
-            Err(msg) => {
-                eprintln!("error: {msg}");
-                return (1, String::new());
+            Err(e) => {
+                eprintln!("error: {e}");
+                return (e.exit_code(), String::new());
             }
         };
         let mut cube = loaded.cube;
@@ -242,11 +245,6 @@ pub fn run_captured(cmd: SweepCommand) -> (i32, String) {
         // Evaluate metric
         let metric_value = eval_metric(&mut cube, refs, principal, metric_fn);
 
-        if i == 0 {
-            // Use first point as baseline (or load without override for true baseline)
-            baseline = Some(metric_value);
-        }
-
         results.push(SweepPoint {
             parameter_value: point_value,
             metric_value,
@@ -257,9 +255,9 @@ pub fn run_captured(cmd: SweepCommand) -> (i32, String) {
     let baseline_result = {
         let loaded = match load_model(&cmd.path) {
             Ok(l) => l,
-            Err(msg) => {
-                eprintln!("error: {msg}");
-                return (1, String::new());
+            Err(e) => {
+                eprintln!("error: {e}");
+                return (e.exit_code(), String::new());
             }
         };
         let mut cube = loaded.cube;
@@ -314,7 +312,8 @@ fn override_coefficient(
 ) -> bool {
     if let Some(model_data) = cube.reference_data.fitted_models.get_mut(model_name) {
         if coeff_index < model_data.coefficients.len() {
-            model_data.coefficients[coeff_index] = value;
+            // Phase 6A.1 CRIT-1 reshape: keep the feature name, replace the weight.
+            model_data.coefficients[coeff_index].1 = value;
             return true;
         }
     }
@@ -445,7 +444,8 @@ fn format_sweep_output(
     match format {
         OutputFormat::Json => {
             let mut out = String::new();
-            out.push_str("{\n  \"metric\": ");
+            push_json_envelope_header(&mut out);
+            out.push_str("\"metric\": ");
             push_json_str(&mut out, &cmd.metric);
             out.push_str(",\n  \"goal\": ");
             push_json_str(&mut out, &cmd.goal);

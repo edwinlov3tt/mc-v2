@@ -122,9 +122,9 @@ pub fn run(cmd: QueryCommand) -> i32 {
 pub fn run_captured(cmd: QueryCommand) -> (i32, String) {
     let compiled = match load_model(&cmd.path) {
         Ok(c) => c,
-        Err(msg) => {
-            eprintln!("error: {msg}");
-            return (1, String::new());
+        Err(e) => {
+            eprintln!("error: {e}");
+            return (e.exit_code(), String::new());
         }
     };
     let mut cube = compiled.cube;
@@ -237,32 +237,76 @@ pub fn run_captured(cmd: QueryCommand) -> (i32, String) {
 // Model loading (reused across all Phase 6A verbs)
 // ---------------------------------------------------------------------------
 
-pub fn load_model(path: &str) -> Result<LoadedModel, String> {
-    let yaml =
-        std::fs::read_to_string(path).map_err(|e| format!("could not read model file: {e}"))?;
-    let parsed =
-        mc_model::parse(&yaml, Some(path.to_string())).map_err(|e| format!("parse error: {e}"))?;
+/// Reason a [`load_model`] call failed. Phase 6A.1 CRIT-3: we
+/// distinguish I/O failures (file not found, permission denied — exit
+/// code 3) from model failures (parse / validate / compile — exit code
+/// 1). The Phase 6A handoff §"Agent-Readiness Invariants" rule 2 fixes
+/// these codes; without the distinction agents can't route the right
+/// retry behavior.
+#[derive(Debug)]
+pub enum LoadModelError {
+    /// File system / I/O error reading the model file.
+    Io(String),
+    /// Parse, validate, resolve_inputs, or compile error.
+    Model(String),
+}
+
+impl LoadModelError {
+    /// Map this error to the canonical CLI exit code (3 for I/O, 1 for
+    /// model). Used by every Phase 6A verb's dispatch.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            LoadModelError::Io(_) => 3,
+            LoadModelError::Model(_) => 1,
+        }
+    }
+
+    /// Human-readable error message (used after `eprintln!("error: ...")`).
+    pub fn message(&self) -> &str {
+        match self {
+            LoadModelError::Io(m) | LoadModelError::Model(m) => m,
+        }
+    }
+}
+
+impl std::fmt::Display for LoadModelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+pub fn load_model(path: &str) -> Result<LoadedModel, LoadModelError> {
+    let yaml = std::fs::read_to_string(path)
+        .map_err(|e| LoadModelError::Io(format!("could not read model file {path:?}: {e}")))?;
+    let parsed = mc_model::parse(&yaml, Some(path.to_string()))
+        .map_err(|e| LoadModelError::Model(format!("parse error: {e}")))?;
     let validated = mc_model::validate(parsed).map_err(|errs| {
-        errs.iter()
-            .map(|e| e.to_string())
-            .collect::<Vec<_>>()
-            .join("; ")
+        LoadModelError::Model(
+            errs.iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
     })?;
     let model_dir = std::path::Path::new(path).parent();
     let inputs = mc_model::resolve_inputs(&validated, model_dir).map_err(|errs| {
-        errs.iter()
-            .map(|e| e.to_string())
-            .collect::<Vec<_>>()
-            .join("; ")
+        LoadModelError::Model(
+            errs.iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
     })?;
-    let compiled =
-        mc_model::compile(validated.clone()).map_err(|e| format!("compile error: {e}"))?;
+    let compiled = mc_model::compile(validated.clone())
+        .map_err(|e| LoadModelError::Model(format!("compile error: {e}")))?;
     let mut cube = compiled.cube;
     let principal = compiled.root_principal;
 
     if let Err(e) = mc_model::apply_canonical_inputs(&mut cube, &compiled.refs, principal, &inputs)
     {
-        return Err(format!("apply_canonical_inputs failed: {e}"));
+        return Err(LoadModelError::Model(format!(
+            "apply_canonical_inputs failed: {e}"
+        )));
     }
 
     Ok(LoadedModel {
@@ -276,6 +320,16 @@ pub struct LoadedModel {
     pub cube: mc_core::Cube,
     pub root_principal: PrincipalId,
     pub refs: ModelRefs,
+}
+
+/// Phase 6A.1 CRIT-2: emit the Phase 3B-style envelope header at the
+/// start of every Phase 6A verb's `--format json` output. Pairs with
+/// the agent contract that every JSON response carries
+/// `schema_version: "1.0"` as its first field.
+pub fn push_json_envelope_header(out: &mut String) {
+    out.push_str("{\n  \"schema_version\": \"");
+    out.push_str(mc_model::SCHEMA_VERSION);
+    out.push_str("\",\n  ");
 }
 
 // ---------------------------------------------------------------------------
@@ -533,7 +587,7 @@ fn parse_comparison(
 fn parse_filter_atom(
     tokens: &[Token],
     pos: &mut usize,
-    refs: &ModelRefs,
+    _refs: &ModelRefs,
     cube: &mc_core::Cube,
 ) -> Result<FilterAtom, String> {
     if *pos >= tokens.len() {
@@ -556,7 +610,7 @@ fn parse_filter_atom(
 fn parse_filter_value(
     tokens: &[Token],
     pos: &mut usize,
-    refs: &ModelRefs,
+    _refs: &ModelRefs,
     cube: &mc_core::Cube,
 ) -> Result<FilterValue, String> {
     if *pos >= tokens.len() {
@@ -688,7 +742,7 @@ fn compare_values(lhs: &ResolvedValue, op: CmpOp, rhs: &ResolvedValue) -> bool {
             _ => false, // string ordering not supported
         },
         // Comparing a number == 1 with a string (for Should_Bet == 1 style)
-        (ResolvedValue::F64(a), ResolvedValue::Str(_)) => false,
+        (ResolvedValue::F64(_a), ResolvedValue::Str(_)) => false,
         (ResolvedValue::Str(_), ResolvedValue::F64(_)) => false,
         (ResolvedValue::Null, _) | (_, ResolvedValue::Null) => match op {
             CmpOp::Eq => matches!((lhs, rhs), (ResolvedValue::Null, ResolvedValue::Null)),
@@ -706,7 +760,10 @@ fn compare_values(lhs: &ResolvedValue, op: CmpOp, rhs: &ResolvedValue) -> bool {
 /// Returns coords for every combination of leaf elements across all non-Measure dims,
 /// paired with every measure. For query, we iterate only the specific measures
 /// requested via --show after filtering, so we return coords without measure fixed.
-pub(crate) fn enumerate_leaf_coords(cube: &mc_core::Cube, refs: &ModelRefs) -> Vec<CellCoordinate> {
+pub(crate) fn enumerate_leaf_coords(
+    cube: &mc_core::Cube,
+    _refs: &ModelRefs,
+) -> Vec<CellCoordinate> {
     let dims = cube.dimensions();
     // For each non-Measure dimension, collect leaf elements.
     // For Measure dimension, we'll use the first measure as a placeholder
@@ -779,7 +836,7 @@ pub(crate) fn enumerate_leaf_coords(cube: &mc_core::Cube, refs: &ModelRefs) -> V
 /// Read a specific measure at a coordinate (swapping the measure dimension slot).
 pub(crate) fn read_measure_at(
     cube: &mut mc_core::Cube,
-    refs: &ModelRefs,
+    _refs: &ModelRefs,
     principal: PrincipalId,
     base_coord: &CellCoordinate,
     measure_name: &str,
@@ -809,7 +866,7 @@ pub(crate) fn read_measure_at(
 
 fn resolve_show_measures(
     show: &Option<Vec<String>>,
-    refs: &ModelRefs,
+    _refs: &ModelRefs,
     cube: &mc_core::Cube,
 ) -> Vec<String> {
     match show {
@@ -831,7 +888,7 @@ fn resolve_show_measures(
 fn coord_to_names(
     coord: &CellCoordinate,
     cube: &mc_core::Cube,
-    refs: &ModelRefs,
+    _refs: &ModelRefs,
 ) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     let dims = cube.dimensions();
@@ -860,8 +917,6 @@ fn run_single_coord(
     output: &Option<String>,
 ) -> (i32, String) {
     let names = parse_coord_string(coord_str);
-    // Extract measure from coord
-    let measure = names.get("Measure").cloned();
     let coord = match refs.coord_from_names(&names) {
         Some(c) => c,
         None => {
@@ -874,7 +929,8 @@ fn run_single_coord(
             let result_str = match format {
                 OutputFormat::Json => {
                     let mut out = String::new();
-                    out.push_str("{\n  \"coord\": ");
+                    push_json_envelope_header(&mut out);
+                    out.push_str("\"coord\": ");
                     out.push_str(&format_coord_json(&names));
                     out.push_str(",\n  \"value\": ");
                     push_scalar_json(&mut out, &cell.value);
@@ -886,7 +942,7 @@ fn run_single_coord(
                 }
                 OutputFormat::Csv => {
                     let mut out = String::new();
-                    for (k, v) in &names {
+                    for k in names.keys() {
                         let _ = write!(out, "{k},");
                     }
                     out.push_str("value\n");
@@ -926,7 +982,6 @@ fn run_aggregate(
     // Parse aggregate expressions: mean(Measure), sum(Measure), count(predicate),
     // min(Measure), max(Measure)
     let mut agg_results: Vec<(String, f64)> = Vec::new();
-    let mut matched_count = 0usize;
 
     // First pass: collect matching rows
     let mut matching_coords: Vec<&CellCoordinate> = Vec::new();
@@ -938,7 +993,7 @@ fn run_aggregate(
         }
         matching_coords.push(coord);
     }
-    matched_count = matching_coords.len();
+    let matched_count = matching_coords.len();
 
     for expr_str in agg_exprs {
         let expr_str = expr_str.trim();
@@ -1026,7 +1081,8 @@ fn run_aggregate(
     let output_str = match format {
         OutputFormat::Json => {
             let mut out = String::new();
-            out.push_str("{\n  \"query\": null,\n  \"results\": null,\n  \"count\": ");
+            push_json_envelope_header(&mut out);
+            out.push_str("\"query\": null,\n  \"results\": null,\n  \"count\": ");
             let _ = write!(out, "{matched_count}");
             out.push_str(",\n  \"aggregates\": {");
             for (i, (name, val)) in agg_results.iter().enumerate() {
@@ -1096,7 +1152,8 @@ fn format_results(
 
 fn format_json(results: &[QueryRow], where_expr: &Option<String>, count: usize) -> String {
     let mut out = String::new();
-    out.push_str("{\n  \"query\": ");
+    push_json_envelope_header(&mut out);
+    out.push_str("\"query\": ");
     match where_expr {
         Some(q) => push_json_str(&mut out, q),
         None => out.push_str("null"),

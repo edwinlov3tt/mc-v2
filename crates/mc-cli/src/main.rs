@@ -22,21 +22,14 @@ use mc_model::{
     ModelPath, Severity, ValidatedModel, ValidationError, SCHEMA_VERSION,
 };
 
-#[allow(unused_variables, unused_assignments)]
 mod diff;
 mod mcp;
-#[allow(unused_variables, unused_assignments)]
 mod query;
-#[allow(unused_variables, unused_assignments)]
 mod sweep;
 mod tessera;
-#[allow(unused_variables, unused_assignments)]
 mod trace;
-#[allow(unused_variables, unused_assignments)]
 mod transform;
-#[allow(unused_variables, unused_assignments)]
 mod whatif;
-#[allow(unused_variables, unused_assignments)]
 mod write;
 
 fn main() {

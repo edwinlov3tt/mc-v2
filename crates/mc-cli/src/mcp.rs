@@ -629,7 +629,7 @@ fn tool_query(args: &JsonValue) -> ToolOutcome {
     }
     cli_args.push("--format".into());
     cli_args.push("json".into());
-    run_cli_verb(|| {
+    run_cli_verb_json(|| {
         let cmd = crate::query::parse(&cli_args)?;
         Ok(crate::query::run_captured(cmd))
     })
@@ -663,7 +663,7 @@ fn tool_whatif(args: &JsonValue) -> ToolOutcome {
         "--format".into(),
         "json".into(),
     ];
-    run_cli_verb(|| {
+    run_cli_verb_json(|| {
         let cmd = crate::whatif::parse(&cli_args)?;
         Ok(crate::whatif::run_captured(cmd))
     })
@@ -689,7 +689,7 @@ fn tool_trace(args: &JsonValue) -> ToolOutcome {
         cli_args.push("--depth".into());
         cli_args.push(d);
     }
-    run_cli_verb(|| {
+    run_cli_verb_json(|| {
         let cmd = crate::trace::parse(&cli_args)?;
         Ok(crate::trace::run_captured(cmd))
     })
@@ -735,7 +735,7 @@ fn tool_sweep(args: &JsonValue) -> ToolOutcome {
         cli_args.push("--set".into());
         cli_args.push(s);
     }
-    run_cli_verb(|| {
+    run_cli_verb_json(|| {
         let cmd = crate::sweep::parse(&cli_args)?;
         Ok(crate::sweep::run_captured(cmd))
     })
@@ -767,7 +767,7 @@ fn tool_diff(args: &JsonValue) -> ToolOutcome {
         cli_args.push("--limit".into());
         cli_args.push(l);
     }
-    run_cli_verb(|| {
+    run_cli_verb_json(|| {
         let cmd = crate::diff::parse(&cli_args)?;
         Ok(crate::diff::run_captured(cmd))
     })
@@ -802,7 +802,7 @@ fn tool_write(args: &JsonValue) -> ToolOutcome {
     if dry_run {
         cli_args.push("--dry-run".into());
     }
-    run_cli_verb(|| {
+    run_cli_verb_json(|| {
         let cmd = crate::write::parse(&cli_args)?;
         Ok(crate::write::run_captured(cmd))
     })
@@ -851,6 +851,35 @@ where
             stdout: output,
             structured: None,
         },
+        Err(e) => error_outcome(&e),
+    }
+}
+
+/// Like [`run_cli_verb`] but also lifts the captured stdout into
+/// `structured` when the verb succeeded — for Phase 6A verbs that
+/// always emit a `schema_version: "1.0"` JSON envelope under MCP.
+///
+/// Phase 6A.1 MIN-5: closes the gap where `mosaic.model.query` and
+/// siblings returned the JSON only via `stdout`, forcing agents to
+/// double-parse. The legacy `validate` / `inspect` / `lint` tools
+/// already populate `structured`; this brings the new verbs in line.
+fn run_cli_verb_json<F>(f: F) -> ToolOutcome
+where
+    F: FnOnce() -> Result<(i32, String), String>,
+{
+    match f() {
+        Ok((exit_code, output)) => {
+            let structured = if exit_code == 0 && !output.is_empty() {
+                Some(output.clone())
+            } else {
+                None
+            };
+            ToolOutcome {
+                exit_code,
+                stdout: output,
+                structured,
+            }
+        }
         Err(e) => error_outcome(&e),
     }
 }
