@@ -1737,6 +1737,51 @@ fn test_whatif_one_override_fails_rolls_back_all() {
     );
 }
 
+/// 6A.3 item 7: `whatif --dry-run --format json` emits
+/// `requested_outputs` (the renamed field) and NEVER `would_affect`
+/// (the previous misleading name). The previous field-name implied
+/// "cells that would change" but actually echoed --show; the rename
+/// is honest about what the field contains.
+#[test]
+fn test_whatif_dry_run_emits_requested_outputs_field() {
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "whatif",
+        path.to_str().unwrap(),
+        "--set",
+        COORD_SPEND_JAN_TAMPA,
+        "--value",
+        "12345",
+        "--show",
+        "Clicks,Revenue",
+        "--dry-run",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        output.status.success(),
+        "dry-run failed: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = parse_json(&output.stdout);
+    let requested = json
+        .get("requested_outputs")
+        .and_then(|v| v.as_array())
+        .expect("`requested_outputs` field must be present");
+    let names: Vec<&str> = requested.iter().filter_map(|v| v.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["Clicks", "Revenue"],
+        "requested_outputs must echo --show"
+    );
+    assert!(
+        json.get("would_affect").is_none(),
+        "the legacy `would_affect` field must be gone (Phase 6A.3 item 7); got: {}",
+        json
+    );
+}
+
 /// 6A.3 item 1 W5: `--dry-run` with multi-cell overrides. Reports
 /// would-be deltas and never persists. Verified by reading the same
 /// coord in a fresh process: it must equal the canonical (pre-dry-run)
