@@ -150,6 +150,8 @@ pub fn compile(validated: ValidatedModel) -> Result<CompiledCube, EngineError> {
                 let role = match measure.role.as_str() {
                     "Input" => MeasureRole::Input,
                     "Derived" => MeasureRole::Derived,
+                    // Phase 3J item 4: Indicator measure role.
+                    "Indicator" => MeasureRole::Indicator,
                     _ => {
                         return Err(EngineError::Internal(
                             "compile: validator missed an unknown measure role",
@@ -249,12 +251,21 @@ pub fn compile(validated: ValidatedModel) -> Result<CompiledCube, EngineError> {
         refs.rules.insert(rule.name.clone(), rule_id);
         let target = lookup_measure_id(&refs, &validated, &rule.target_measure)?;
         let body = compile_expr(&rule.body, &refs, &validated)?;
+        // Phase 3J item 5: scope variants. Validator (mc-model) maps
+        // unknown names to MC1029 at parse time and (per Amendment §4)
+        // MC2069 if a non-AllLeaves variant is used without a
+        // configured time_anchor; here we trust the names.
         let scope = match rule.scope.as_str() {
             "AllLeaves" => Scope::AllLeaves,
+            "FutureLeaves" => Scope::FutureLeaves,
+            "PastLeaves" => Scope::PastLeaves,
+            "CurrentLeaves" => Scope::CurrentLeaves,
             _ => {
+                // Defense-in-depth: MC2068 (compile-stage) per Decision 5.
+                // Should never fire if validator is correct.
                 return Err(EngineError::Internal(
-                    "compile: validator missed an unknown rule scope",
-                ))
+                    "compile: validator missed an unknown rule scope (MC2068)",
+                ));
             }
         };
         let declared_dependencies: Vec<DependencyDecl> = rule
@@ -275,6 +286,59 @@ pub fn compile(validated: ValidatedModel) -> Result<CompiledCube, EngineError> {
             scope,
             body,
             declared_dependencies,
+        };
+        cb = cb.add_rule(r)?;
+    }
+
+    // Phase 3J item 4 (Amendment §6 binding): synthesize a rule body
+    // for every `Indicator` measure that produces the same
+    // `Expr::IsElement(DimensionId, ElementId)` AST as the equivalent
+    // `is_element(Dim, "Element")` formula function would. Validate
+    // (mc-model) ensures `dimension:` + `element:` resolve to known
+    // names, so the lookups here cannot fail in practice.
+    for measure in &validated.parsed.measures {
+        if measure.role != "Indicator" {
+            continue;
+        }
+        let dim_name = measure.dimension.as_deref().ok_or(EngineError::Internal(
+            "compile: validator missed an Indicator measure with no `dimension:`",
+        ))?;
+        let elem_name = measure.element.as_deref().ok_or(EngineError::Internal(
+            "compile: validator missed an Indicator measure with no `element:`",
+        ))?;
+        let dim_id = refs
+            .dimensions
+            .get(dim_name)
+            .copied()
+            .ok_or(EngineError::Internal(
+                "compile: Indicator measure references unknown dimension",
+            ))?;
+        let elem_id = refs
+            .element(dim_name, elem_name)
+            .ok_or(EngineError::Internal(
+                "compile: Indicator measure references unknown element",
+            ))?;
+        let target = refs
+            .element(
+                validated
+                    .parsed
+                    .dimensions
+                    .get(validated.measure_dim_index)
+                    .map(|d| d.name.as_str())
+                    .unwrap_or("Measure"),
+                &measure.name,
+            )
+            .ok_or(EngineError::Internal(
+                "compile: Indicator measure self-id missing in refs",
+            ))?;
+        let rule_id = g.rule();
+        let r = Rule {
+            id: rule_id,
+            cube: cube_id,
+            target_measure: target,
+            scope: Scope::AllLeaves,
+            body: Expr::IsElement(dim_id, elem_id),
+            declared_dependencies: Vec::new(),
         };
         cb = cb.add_rule(r)?;
     }
@@ -354,6 +418,15 @@ pub fn compile(validated: ValidatedModel) -> Result<CompiledCube, EngineError> {
         cube.reference_data
             .calibration_maps
             .insert(cm.name.clone(), data);
+    }
+
+    // Phase 3J item 3: populate the parameters HashMap from the YAML
+    // `parameters:` block. Validate (mc-model) has already cleared
+    // collisions and references; compile is a straight insert.
+    for p in &validated.parsed.parameters {
+        cube.reference_data
+            .parameters
+            .insert(p.name.clone(), p.value);
     }
 
     // Populate time_anchor_index from the Time-kind dimension's time_anchor field.
@@ -538,8 +611,31 @@ fn compile_expr(
         ParsedRuleBody::Lt(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Lt),
         ParsedRuleBody::Gte(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Gte),
         ParsedRuleBody::Lte(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Lte),
-        ParsedRuleBody::Eq(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Eq),
-        ParsedRuleBody::Neq(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Neq),
+        // Phase 3J item 1: dispatch `==` / `!=` to `Expr::StrEq` /
+        // `Expr::StrNeq` when at least one side statically returns
+        // `Str`. The validator (MC1027) has already rejected mixed
+        // Str/F64 operands, so by the time we reach here either:
+        //   - both sides are F64 (or Indeterminate) → use Expr::Eq/Neq
+        //   - both sides are Str (or one Str, other Indeterminate that
+        //     bottoms to Str at eval time) → use Expr::StrEq/StrNeq
+        ParsedRuleBody::Eq(b) => {
+            if needs_str_compare(&b.left, &b.right) {
+                let lhs = compile_expr(&b.left, refs, validated)?;
+                let rhs = compile_expr(&b.right, refs, validated)?;
+                Ok(Expr::StrEq(Box::new(lhs), Box::new(rhs)))
+            } else {
+                compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Eq)
+            }
+        }
+        ParsedRuleBody::Neq(b) => {
+            if needs_str_compare(&b.left, &b.right) {
+                let lhs = compile_expr(&b.left, refs, validated)?;
+                let rhs = compile_expr(&b.right, refs, validated)?;
+                Ok(Expr::StrNeq(Box::new(lhs), Box::new(rhs)))
+            } else {
+                compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Neq)
+            }
+        }
         // Phase 3E: logical
         ParsedRuleBody::And(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::And),
         ParsedRuleBody::Or(b) => compile_binop_pair(&b.left, &b.right, refs, validated, Expr::Or),
@@ -596,7 +692,40 @@ fn compile_expr(
         }
         ParsedRuleBody::ActualRef(b) => {
             let measure = lookup_measure_id(refs, validated, &b.measure)?;
-            Ok(Expr::ActualRef(measure))
+            // Phase 3J item 6: when a fallback is present, compile to
+            // the new `Expr::ActualRefWithFallback` variant so the
+            // kernel evaluates it lazily. The 1-arg form preserves the
+            // shipped `Expr::ActualRef` shape for backward compat.
+            match &b.fallback {
+                None => Ok(Expr::ActualRef(measure)),
+                Some(fb) => {
+                    let compiled_fb = compile_expr(fb, refs, validated)?;
+                    Ok(Expr::ActualRefWithFallback(measure, Box::new(compiled_fb)))
+                }
+            }
+        }
+        // Phase 3J item 6: scenario_ref(measure, "ScenarioName").
+        // Resolve the scenario element name to ElementId at compile
+        // time; the validator (MC2065) already cleared unknown names.
+        ParsedRuleBody::ScenarioRef(b) => {
+            let measure = lookup_measure_id(refs, validated, &b.measure)?;
+            // Find the Scenario dim; the scenario name resolves against
+            // its elements.
+            let scenario_dim_name = validated
+                .parsed
+                .dimensions
+                .iter()
+                .find(|d| d.kind == "Scenario")
+                .map(|d| d.name.as_str())
+                .ok_or(EngineError::Internal(
+                    "compile: scenario_ref but no Scenario dim",
+                ))?;
+            let scenario_element =
+                refs.element(scenario_dim_name, &b.scenario)
+                    .ok_or(EngineError::Internal(
+                        "compile: scenario_ref references unknown scenario element",
+                    ))?;
+            Ok(Expr::ScenarioRef(measure, scenario_element))
         }
         // Phase 3F: time-series
         ParsedRuleBody::Prev(b) => {
@@ -611,6 +740,11 @@ fn compile_expr(
         ParsedRuleBody::Cumulative(b) => {
             let measure = lookup_measure_id(refs, validated, &b.measure)?;
             Ok(Expr::Cumulative(measure))
+        }
+        // Phase 3J item 7: extrapolate_last_value(measure).
+        ParsedRuleBody::ExtrapolateLastValue(b) => {
+            let measure = lookup_measure_id(refs, validated, &b.measure)?;
+            Ok(Expr::ExtrapolateLastValue(measure))
         }
         ParsedRuleBody::RollingAvg(b) => {
             let measure = lookup_measure_id(refs, validated, &b.measure)?;
@@ -791,7 +925,52 @@ fn compile_expr(
             let weight_measure = lookup_measure_id(refs, validated, &b.weight_measure)?;
             Ok(Expr::WAvgOver(dim_id, value_measure, weight_measure))
         }
+        // Phase 3J item 1: string literal lifts directly to the kernel
+        // `Expr::StrLiteral`. The validator pre-clears Str-in-disallowed
+        // contexts (MC1026/27/28, MC2058); compile is straight rewrite.
+        ParsedRuleBody::StrLiteral(b) => Ok(Expr::StrLiteral(b.str_literal.clone())),
+        // Phase 3J item 2: current_element(Dim). Dim is resolved at
+        // compile time; unknown dim names should have been caught by
+        // validate.
+        ParsedRuleBody::CurrentElement(b) => {
+            let dim_id =
+                refs.dimensions
+                    .get(&b.current_element)
+                    .copied()
+                    .ok_or(EngineError::Internal(
+                        "compile: current_element references unknown dimension",
+                    ))?;
+            Ok(Expr::CurrentElementName(dim_id))
+        }
+        // Phase 3J item 3: param(name). Validator (mc-model) ensures the
+        // name was declared in the model's `parameters:` block; the
+        // value lives in `Cube::reference_data.parameters` after compile.
+        ParsedRuleBody::ParamRef(b) => Ok(Expr::ParamRef(b.param.clone())),
     }
+}
+
+/// Phase 3J item 1: decide whether a `==` / `!=` should compile to the
+/// string-domain variants `Expr::StrEq` / `Expr::StrNeq`. Returns true
+/// iff at least one operand is a static-Str-returning expression
+/// (`StrLiteral` or `current_element`). The validator (MC1027) has
+/// rejected mixed Str/F64 operands; this helper just picks the right
+/// variant for the cases that survive validate.
+///
+/// We deliberately do NOT walk through `if` / `if_null` / `coalesce` to
+/// detect "both branches return Str" — those are `Indeterminate` per
+/// `expr_static_type`, and the runtime `Expr::Eq` falls back to Null on
+/// non-numeric operands, which is the correct behavior.
+fn needs_str_compare(left: &ParsedRuleBody, right: &ParsedRuleBody) -> bool {
+    // `param()` returns F64 by Phase 3J Decision 6 (v1 is f64 only), so
+    // it does NOT qualify as str-like — only StrLiteral and current_element
+    // do.
+    let is_str_like = |b: &ParsedRuleBody| {
+        matches!(
+            b,
+            ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::CurrentElement(_)
+        )
+    };
+    is_str_like(left) || is_str_like(right)
 }
 
 fn compile_binop_pair(

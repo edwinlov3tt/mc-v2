@@ -375,6 +375,27 @@ fn collect_self_refs(expr: &mc_core::Expr) -> std::collections::HashSet<mc_core:
                 acc.insert(*value);
                 acc.insert(*weight);
             }
+            // Phase 3J: string-domain primitives + param don't introduce SelfRef.
+            mc_core::Expr::StrLiteral(_)
+            | mc_core::Expr::CurrentElementName(_)
+            | mc_core::Expr::ParamRef(_) => {}
+            mc_core::Expr::StrEq(a, b) | mc_core::Expr::StrNeq(a, b) => {
+                walk(a, acc);
+                walk(b, acc);
+            }
+            // Phase 3J item 6: cross-coord variants — measure ref +
+            // (optional) fallback expression.
+            mc_core::Expr::ActualRefWithFallback(m, fb) => {
+                acc.insert(*m);
+                walk(fb, acc);
+            }
+            mc_core::Expr::ScenarioRef(m, _scenario) => {
+                acc.insert(*m);
+            }
+            // Phase 3J item 7: extrapolate_last_value's measure dep.
+            mc_core::Expr::ExtrapolateLastValue(m) => {
+                acc.insert(*m);
+            }
         }
     }
     out

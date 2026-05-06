@@ -320,10 +320,13 @@ impl Cube {
         request_trace: bool,
     ) -> Result<CellValue, EngineError> {
         // Identify the measure at this coord and decide Input vs Derived.
+        // Phase 3J item 4: `MeasureRole::Indicator` reads through the same
+        // path as Derived (a synthesized rule body lives in the rule
+        // registry per ADR-0016 Amendment §6).
         let (measure_id, measure_meta) = self.measure_at_coord(coord)?;
         match measure_meta.role {
             MeasureRole::Input => self.read_input_leaf(coord, &measure_meta, request_trace),
-            MeasureRole::Derived => {
+            MeasureRole::Derived | MeasureRole::Indicator => {
                 self.read_derived_leaf(coord, principal, measure_id, &measure_meta, request_trace)
             }
         }
@@ -422,11 +425,46 @@ impl Cube {
             ));
         }
         let rule_index = rule_indices[0];
-        let (rule_id, rule_body) = {
+        let (rule_id, rule_body, rule_scope) = {
             let r = self.rules.rule_at(rule_index).expect("indexed");
-            (r.id, r.body.clone())
+            (r.id, r.body.clone(), r.scope.clone())
         };
         let measure_dim_position = self.measure_dimension_position;
+        // Phase 3J item 5: if the rule's scope filters out this coord,
+        // skip eval and return Null with Default provenance. AllLeaves
+        // never filters anything; FutureLeaves / PastLeaves /
+        // CurrentLeaves filter against the configured time_anchor.
+        if !self.rule_scope_matches(&rule_scope, coord) {
+            let value = ScalarValue::Null;
+            let provenance = Provenance::Default {
+                reason: "rule scope excludes this coord",
+            };
+            let trace = if request_trace {
+                Some(Trace {
+                    root: TraceNode {
+                        coord: coord.clone(),
+                        value: value.clone(),
+                        operation: TraceOp::DefaultFallback {
+                            default: value.clone(),
+                            reason: "rule scope excludes this coord",
+                        },
+                        children: Vec::new(),
+                    },
+                    revision: self.revision,
+                    elapsed_us: 0,
+                })
+            } else {
+                None
+            };
+            return Ok(CellValue {
+                value,
+                dtype: measure_meta.dtype.clone(),
+                provenance,
+                uncertainty: None,
+                trace,
+                revision: self.revision,
+            });
+        }
 
         // Track every measure actually read via SelfRef, for the
         // declared-dependency superset check (per spec §3.10).
@@ -467,6 +505,26 @@ impl Cube {
             };
             eval_expr_unified(&rule_body, &mut handler)?
         };
+
+        // Phase 3J item 1 W1 (audit fix): the rule body's runtime
+        // value MUST be numeric or Null — never `ScalarValue::Str`.
+        // The static MC2058 check at validate catches Str-typed
+        // bodies whose outermost expression returns Str, but
+        // `if(cond, str_a, str_b)` and similar dynamic Str-returning
+        // patterns pass static analysis (`expr_static_type` returns
+        // Indeterminate for If/IfNull/Coalesce). This runtime guard
+        // rejects Str values before they hit `self.store.write` at
+        // line 553 below — the load-bearing boundary per ADR-0016
+        // Decision 2 (no Str in storage).
+        if matches!(value, ScalarValue::Str(_)) {
+            return Err(EngineError::RuleBodyTypeMismatch {
+                detail: format!(
+                    "rule body returned a Str value at coord {:?}; \
+                     rule bodies must evaluate to F64 or Null (MC2058 runtime)",
+                    coord
+                ),
+            });
+        }
 
         // After eval, validate the declared-dep superset for THIS
         // coordinate: every measure we actually read must be in the
@@ -1100,6 +1158,77 @@ impl Cube {
                     None => Ok(ScalarValue::Null),
                 }
             }
+            // Phase 3J item 3: parameter reference. Single HashMap
+            // lookup against `reference_data.parameters`. Validate
+            // (mc-model) catches references to undeclared parameter
+            // names; eval returns Null on a miss as a defense-in-depth
+            // safety net (matches the unknown-name behavior of the
+            // existing benchmark / lookup_table paths).
+            CrossCoordRead::ParameterValue { name } => {
+                match self.reference_data.parameters.get(name) {
+                    Some(v) => Ok(ScalarValue::F64(*v)),
+                    None => Ok(ScalarValue::Null),
+                }
+            }
+            // Phase 3J item 6: shift the Scenario dim to a specific
+            // named element (resolved at compile time) and read the
+            // requested measure there. Mirrors `ScenarioShift` but
+            // uses the user-supplied scenario element instead of the
+            // dim's `Default` (actuals) element.
+            CrossCoordRead::ScenarioElementShift {
+                scenario_element,
+                measure,
+            } => {
+                let scenario_pos = self
+                    .dimensions
+                    .iter()
+                    .position(|d| d.kind == DimensionKind::Scenario);
+                let scenario_pos = match scenario_pos {
+                    Some(p) => p,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let mut elements: SmallVec<[ElementId; 8]> =
+                    target_coord.elements().iter().copied().collect();
+                elements[scenario_pos] = *scenario_element;
+                elements[measure_dim_position] = *measure;
+                let shifted_coord = CellCoordinate::from_parts(cube_id, elements.iter().copied());
+                let cv = self.read_inner(&shifted_coord, principal, false)?;
+                Ok(cv.value)
+            }
+            // Phase 3J item 7: scan backward through Time from the
+            // target coord, returning the most recent non-Null value
+            // of `measure`. If no prior non-Null exists, returns Null.
+            CrossCoordRead::ExtrapolateLastValue { measure } => {
+                let time_pos = match self.find_time_dimension_position() {
+                    Some(p) => p,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let time_dim = &self.dimensions[time_pos];
+                let current_element = target_coord.element_at(time_pos);
+                let current_idx = match time_dim.element_index.get(&current_element).copied() {
+                    Some(i) => i,
+                    None => return Ok(ScalarValue::Null),
+                };
+                // Snapshot the prior-element ids upfront to avoid
+                // holding a `&self.dimensions` borrow across read_inner.
+                let prior_elements: Vec<ElementId> = time_dim.elements[..current_idx]
+                    .iter()
+                    .map(|e| e.id)
+                    .rev()
+                    .collect();
+                for prior_elem in prior_elements {
+                    let mut elements: SmallVec<[ElementId; 8]> =
+                        target_coord.elements().iter().copied().collect();
+                    elements[time_pos] = prior_elem;
+                    elements[measure_dim_position] = *measure;
+                    let shifted = CellCoordinate::from_parts(cube_id, elements.iter().copied());
+                    let cv = self.read_inner(&shifted, principal, false)?;
+                    if !cv.value.is_null() {
+                        return Ok(cv.value);
+                    }
+                }
+                Ok(ScalarValue::Null)
+            }
             // Phase 3I: narrow element-match indicator. Per item 1 W1, the
             // element name was resolved at parse-time to ElementId so the
             // hot path does only an integer compare.
@@ -1399,6 +1528,51 @@ impl Cube {
             .position(|d| d.kind == DimensionKind::Standard)
     }
 
+    /// Phase 3J item 5: decide whether a rule with the given `scope`
+    /// applies at the given `coord`. `Scope::AllLeaves` matches every
+    /// coord. The Future/Past/CurrentLeaves variants compare the
+    /// coord's Time element index against `reference_data.time_anchor_index`:
+    ///
+    /// - `FutureLeaves`: coord_time_index > anchor_index
+    /// - `PastLeaves`:   coord_time_index < anchor_index
+    /// - `CurrentLeaves`: coord_time_index == anchor_index
+    ///
+    /// If `time_anchor_index` is None, non-AllLeaves scopes match no
+    /// coord (returns false). Validate (mc-model) catches the missing
+    /// time_anchor at compile time with MC2069; this is a defense-in-
+    /// depth runtime check.
+    fn rule_scope_matches(&self, scope: &crate::rule::Scope, coord: &CellCoordinate) -> bool {
+        use crate::rule::Scope;
+        match scope {
+            Scope::AllLeaves => true,
+            Scope::FutureLeaves | Scope::PastLeaves | Scope::CurrentLeaves => {
+                let anchor = match self.reference_data.time_anchor_index {
+                    Some(a) => a,
+                    None => return false,
+                };
+                let time_pos = match self.find_time_dimension_position() {
+                    Some(p) => p,
+                    None => return false,
+                };
+                // Resolve the coord's element to its index in the Time
+                // dimension's element list.
+                let time_dim = &self.dimensions[time_pos];
+                let coord_time_id = coord.element_at(time_pos);
+                let coord_time_index =
+                    match time_dim.elements.iter().position(|e| e.id == coord_time_id) {
+                        Some(i) => i,
+                        None => return false,
+                    };
+                match scope {
+                    Scope::FutureLeaves => coord_time_index > anchor,
+                    Scope::PastLeaves => coord_time_index < anchor,
+                    Scope::CurrentLeaves => coord_time_index == anchor,
+                    Scope::AllLeaves => true,
+                }
+            }
+        }
+    }
+
     // --- Write ---
 
     pub fn write(&mut self, req: WritebackRequest) -> Result<WritebackResult, EngineError> {
@@ -1432,9 +1606,15 @@ impl Cube {
             return Err(EngineError::ConsolidatedCellNotWritable { coord: req.coord });
         }
 
-        // (4) Reject derived measure. Per spec §13 I-WB-2.
+        // (4) Reject derived (or Indicator) measure. Per spec §13 I-WB-2;
+        // Phase 3J item 4 W3: Indicator is non-writable for the same
+        // reason (it's a synthesized rule body, not a user-supplied
+        // input).
         let (measure_id, measure_meta) = self.measure_at_coord(&req.coord)?;
-        if measure_meta.role == MeasureRole::Derived {
+        if matches!(
+            measure_meta.role,
+            MeasureRole::Derived | MeasureRole::Indicator
+        ) {
             return Err(EngineError::DerivedCellNotWritable { coord: req.coord });
         }
 
@@ -1505,6 +1685,19 @@ impl Cube {
             }
         };
 
+        // (8a) Phase 3J ADR-0016 Decision 2 / Amendment §1: reject any
+        //      attempt to write a `ScalarValue::Str` value. Strings exist
+        //      only in expression evaluation; storage is numeric-or-Null.
+        //      Surfaced as MC2059 at the mc-model diagnostic layer; the
+        //      kernel reports the typed `TypeMismatch` here. See
+        //      `ScalarValue::Str` doc for the full boundary contract.
+        if matches!(type_check_value, ScalarValue::Str(_)) {
+            return Err(EngineError::TypeMismatch {
+                expected: measure_meta.dtype.clone(),
+                got: req.new_value.clone(),
+            });
+        }
+
         // (8) Type check. Per spec §13 I-WB-9.
         if !measure_meta.dtype.matches(&type_check_value) {
             return Err(EngineError::TypeMismatch {
@@ -1515,6 +1708,13 @@ impl Cube {
 
         // (9) NaN / Inf reject. Per spec §3.18 + §0.A's reaffirmation
         //     of "NaN must never appear in storage."
+        // Phase 3J: defense-in-depth assertion that no `Str` reaches the
+        // NaN-check site. The explicit reject above is the contract; this
+        // assert catches any future code path that bypasses the check.
+        debug_assert!(
+            !matches!(type_check_value, ScalarValue::Str(_)),
+            "Cube::write: ScalarValue::Str must be rejected before NaN check (ADR-0016 D2)"
+        );
         if let ScalarValue::F64(v) = &type_check_value {
             validate_finite_f64(*v)?;
         }
@@ -1667,7 +1867,9 @@ impl Cube {
         let mut measures_to_mark: Vec<ElementId> = vec![measure_id];
         for element in &self.measure_dimension().elements {
             if let Some(meta) = element.measure_meta() {
-                if meta.role == MeasureRole::Derived && element.id != measure_id {
+                if matches!(meta.role, MeasureRole::Derived | MeasureRole::Indicator)
+                    && element.id != measure_id
+                {
                     measures_to_mark.push(element.id);
                 }
             }
@@ -1769,7 +1971,9 @@ impl Cube {
         measures_to_mark.push(measure_id);
         for element in &self.measure_dimension().elements {
             if let Some(meta) = element.measure_meta() {
-                if meta.role == MeasureRole::Derived && element.id != measure_id {
+                if matches!(meta.role, MeasureRole::Derived | MeasureRole::Indicator)
+                    && element.id != measure_id
+                {
                     measures_to_mark.push(element.id);
                 }
             }
@@ -1912,10 +2116,14 @@ impl Cube {
                 coord: coord.clone(),
             });
         }
-        // Per engine-semantics.md §13 I-WB-2: derived measures are not
-        // writable.
+        // Per engine-semantics.md §13 I-WB-2: derived (or Indicator)
+        // measures are not writable. Phase 3J item 4: Indicator is the
+        // declarative form of `is_element` — same non-writable contract.
         let (measure_id, measure_meta) = self.measure_at_coord(coord)?;
-        if measure_meta.role == MeasureRole::Derived {
+        if matches!(
+            measure_meta.role,
+            MeasureRole::Derived | MeasureRole::Indicator
+        ) {
             return Err(EngineError::DerivedCellNotWritable {
                 coord: coord.clone(),
             });
@@ -1955,6 +2163,18 @@ impl Cube {
             return Err(EngineError::LockedCell {
                 coord: coord.clone(),
                 owner: blocking.owner,
+            });
+        }
+        // Phase 3J ADR-0016 Decision 2: explicitly reject `ScalarValue::Str`
+        // values in batch writeback, mirroring `Cube::write` step 8a. The
+        // dtype check below ALSO rejects Str (because `F64.matches(Str)`
+        // returns false), but the explicit check makes the contract
+        // unmistakable + stays robust against any future dtype that
+        // accidentally matches Str.
+        if matches!(value, ScalarValue::Str(_)) {
+            return Err(EngineError::TypeMismatch {
+                expected: measure_meta.dtype.clone(),
+                got: value.clone(),
             });
         }
         // Per engine-semantics.md §13 I-WB-9: type check. WriteBatch
@@ -2351,6 +2571,12 @@ pub struct ReferenceData {
     pub fitted_models: ahash::AHashMap<String, FittedModelData>,
     /// Calibration maps for `calibrate()` evaluation.
     pub calibration_maps: ahash::AHashMap<String, CalibrationMapData>,
+    /// Phase 3J item 3: named scalar constants from the `parameters:`
+    /// YAML block, referenced via `param(name)` in formulas. v1 supports
+    /// only `f64` values (Decision 6 + Amendment §1). Resolution is a
+    /// single HashMap lookup at eval time; no dependency-graph
+    /// participation (constants don't participate in dirty propagation).
+    pub parameters: ahash::AHashMap<String, f64>,
 }
 
 /// Pre-fitted model data for `predict()` evaluation (Phase 3H).
@@ -2454,7 +2680,13 @@ impl CubeBuilder {
         let target_meta = target.measure_meta().ok_or(EngineError::Internal(
             "CubeBuilder::add_rule: target is not a measure element",
         ))?;
-        if target_meta.role != MeasureRole::Derived {
+        // Phase 3J item 4: rules can target either Derived or Indicator
+        // measures. Indicator measures carry a synthesized rule body
+        // (Expr::IsElement) per ADR-0016 Amendment §6.
+        if !matches!(
+            target_meta.role,
+            MeasureRole::Derived | MeasureRole::Indicator
+        ) {
             return Err(EngineError::RuleTargetNotDerived {
                 role: target_meta.role,
             });
@@ -2712,6 +2944,44 @@ fn validate_expr_well_typed(expr: &Expr, measure_dim: &Dimension) -> Result<(), 
             let _ = measure_dim
                 .element(*weight)
                 .ok_or(EngineError::ElementNotFound(*weight, measure_dim.id))?;
+            Ok(())
+        }
+        // Phase 3J: string-domain expressions are well-typed by
+        // construction. No measure references; CurrentElementName resolves
+        // via dim axis. The validator at the mc-model layer ensures Str
+        // sub-expressions don't reach a rule body's outermost slot
+        // (MC2058) or arithmetic / numeric-comparison contexts (MC1026,
+        // MC1027, MC1028).
+        Expr::StrLiteral(_) | Expr::CurrentElementName(_) => Ok(()),
+        Expr::StrEq(a, b) | Expr::StrNeq(a, b) => {
+            validate_expr_well_typed(a, measure_dim)?;
+            validate_expr_well_typed(b, measure_dim)?;
+            Ok(())
+        }
+        // Phase 3J item 3: ParamRef has no measure reference and resolves
+        // to F64 via reference_data.parameters at eval time. Validate
+        // (mc-model) ensures the name exists.
+        Expr::ParamRef(_) => Ok(()),
+        // Phase 3J item 6: validate the measure references for the new
+        // scenario_ref / actual_ref-with-fallback variants.
+        Expr::ActualRefWithFallback(m, fallback) => {
+            let _ = measure_dim
+                .element(*m)
+                .ok_or(EngineError::ElementNotFound(*m, measure_dim.id))?;
+            validate_expr_well_typed(fallback, measure_dim)
+        }
+        Expr::ScenarioRef(m, _scenario) => {
+            let _ = measure_dim
+                .element(*m)
+                .ok_or(EngineError::ElementNotFound(*m, measure_dim.id))?;
+            Ok(())
+        }
+        // Phase 3J item 7: extrapolate_last_value's measure ref must
+        // exist in the measure dim.
+        Expr::ExtrapolateLastValue(m) => {
+            let _ = measure_dim
+                .element(*m)
+                .ok_or(EngineError::ElementNotFound(*m, measure_dim.id))?;
             Ok(())
         }
     }

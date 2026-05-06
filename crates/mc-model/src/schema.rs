@@ -29,6 +29,11 @@ pub struct ParsedModel {
     #[serde(default)]
     pub hierarchies: Vec<ParsedHierarchy>,
     pub measures: Vec<ParsedMeasure>,
+    /// Phase 3J item 4: rules default to empty Vec to allow models that
+    /// declare only `Indicator` measures (which carry synthesized rule
+    /// bodies). Pre-3J models always declared `rules:` explicitly;
+    /// adding the default is purely additive.
+    #[serde(default)]
     pub rules: Vec<ParsedRule>,
     // -- Phase 3G: Reference-data blocks (optional) --
     /// Industry benchmarks with source attribution.
@@ -58,6 +63,12 @@ pub struct ParsedModel {
     /// referenced by `golden_tests[i].fixture` for override semantics.
     #[serde(default)]
     pub test_fixtures: Vec<ParsedFixture>,
+    /// Phase 3J item 3: optional named scalar constants referenced by
+    /// `param(name)` in formulas. v1 supports only `f64` values per
+    /// ADR-0016 Decision 6 + Amendment §1; computed parameters and
+    /// scoped parameters remain deferred to Phase 3J.1 (Amendment §2).
+    #[serde(default)]
+    pub parameters: Vec<ParsedParameter>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -157,10 +168,15 @@ pub struct ParsedHierarchyEdge {
 #[serde(deny_unknown_fields)]
 pub struct ParsedMeasure {
     pub name: String,
-    /// `"Input" | "Derived"`.
+    /// `"Input" | "Derived" | "Indicator"`. Phase 3J item 4 added
+    /// `Indicator` (declarative reusable indicator measures, equivalent
+    /// to the `is_element(Dim, "Element")` formula function per
+    /// ADR-0016 Decision 7 + Amendment §6).
     pub role: String,
     /// `"F64" | "I64" | "Bool" | "Category"`. Phase 3A's Acme uses F64
-    /// only; the others are forward surface.
+    /// only; the others are forward surface. Phase 3J Indicator
+    /// measures default to F64 (and may omit this field).
+    #[serde(default = "default_indicator_data_type")]
     pub data_type: String,
     /// Optional human-readable description. Phase 3B's MC3002 lint fires
     /// when this is missing. Additive over ADR-0004's schema.
@@ -169,12 +185,25 @@ pub struct ParsedMeasure {
     /// Required when `data_type: "Category"`. Ignored otherwise.
     #[serde(default)]
     pub category_domain: Option<Vec<String>>,
-    /// `"Sum" | "WeightedAverage" | "Min" | "Max"`.
+    /// `"Sum" | "WeightedAverage" | "Min" | "Max"`. Phase 3J Indicator
+    /// measures default to Sum if omitted (per Decision 7 W7); explicit
+    /// override permitted.
+    #[serde(default = "default_indicator_aggregation")]
     pub aggregation: String,
     /// Required when `aggregation: "WeightedAverage"`. References another
     /// measure name from this same `measures:` block.
     #[serde(default)]
     pub weight_measure: Option<String>,
+    /// Phase 3J item 4: required when `role: "Indicator"`. Names the
+    /// dimension whose element is checked at each coord. MC2064 fires
+    /// at validate if missing on an Indicator measure.
+    #[serde(default)]
+    pub dimension: Option<String>,
+    /// Phase 3J item 4: required when `role: "Indicator"`. Names the
+    /// element in `dimension:` that the indicator matches. MC2064
+    /// fires at validate if missing on an Indicator measure.
+    #[serde(default)]
+    pub element: Option<String>,
 }
 
 /// A deterministic rule declaration. Phase 3D introduced the
@@ -196,6 +225,13 @@ pub struct ParsedRule {
     pub description: Option<String>,
     pub body: ParsedRuleBodyForm,
     pub declared_dependencies: Vec<String>,
+    /// Phase 3J item 7 + Amendment §11: opt-in flag allowing
+    /// `extrapolate_last_value(measure)` to be used at scopes other
+    /// than `FutureLeaves`. Without this flag, MC2067 fires.
+    /// Specific name (vs the proposed `extrapolate_anywhere`) is
+    /// self-documenting.
+    #[serde(default)]
+    pub allow_past_extrapolation: bool,
 }
 
 /// Phase 3D: the YAML-faithful authoring form for a rule body. `Formula`
@@ -359,6 +395,44 @@ pub enum ParsedRuleBody {
     /// in `Dim` is `"Element"`, 0.0 otherwise.
     IsElement(ParsedIsElementBody),
 
+    // -- Phase 3J item 1: string literal in eval --
+    /// `{ str_literal: "Houston" }` (structured form) or `"Houston"`
+    /// (formula form). Per ADR-0016 Decision 2, `Str` values exist only
+    /// in expression evaluation; the validator rejects Str-typed bodies
+    /// (MC2058), Str-in-arithmetic (MC1026), Str-in-numeric-comparison
+    /// (MC1028), and Str-in-truthy-context (MC1027).
+    StrLiteral(ParsedStrLiteralBody),
+
+    // -- Phase 3J item 2: current_element(Dim) --
+    /// `{ current_element: "Channel" }` (structured form) or
+    /// `current_element(Channel)` (formula form). Returns the current
+    /// coordinate's element name in `dim` as `ScalarValue::Str`. At
+    /// consolidated coords, returns Null.
+    CurrentElement(ParsedCurrentElementBody),
+
+    // -- Phase 3J item 3: param(name) --
+    /// `{ param: "q1_anchor_revenue" }` (structured form) or
+    /// `param(q1_anchor_revenue)` (formula form). Resolves to the
+    /// `f64` value declared on the model's `parameters:` block.
+    /// Validate ensures the name is declared (MC2062 if missing).
+    ParamRef(ParsedParamRefBody),
+
+    // -- Phase 3J item 6: scenario_ref(measure, "ScenarioName") --
+    /// Read `measure` from the named scenario at the current coord.
+    /// Validator (MC2065) catches unknown scenario names.
+    ScenarioRef(ParsedScenarioRefBody),
+
+    // -- Phase 3J item 7: extrapolate_last_value(measure) --
+    /// LOCF (last-observation-carry-forward). Scans backward through
+    /// the Time dim returning the most recent non-Null value of
+    /// `measure`. Per ADR-0016 Decision 9 + Amendment §11, the
+    /// validator (MC2067) requires the host rule to have `scope:
+    /// FutureLeaves` OR `allow_past_extrapolation: true`.
+    /// Amendment §5 reserves the future shape
+    /// `extrapolate_last_value(measure, max_periods)`; v1 ships only
+    /// the 1-arg form.
+    ExtrapolateLastValue(ParsedMeasureRefBody),
+
     // -- Phase 3I: cross-coord scans --
     /// `avg_over(measure, dim)` — mean across leaf elements of `dim`.
     AvgOver(ParsedSumOverBody),
@@ -463,9 +537,29 @@ pub struct ParsedClampBody {
 }
 
 /// `actual_ref(Measure_Name)` — cross-coordinate read (Scenario shift).
+///
+/// Phase 3J item 6 extends this to optionally hold a `fallback`
+/// expression: `actual_ref(measure, fallback_expr)`. If the actual_ref
+/// read returns Null, `fallback` is evaluated lazily. Per ADR-0016
+/// Amendment §3, the fallback may itself contain cross-coord
+/// functions (e.g., `scenario_ref`) — MC1013's nesting prohibition is
+/// explicitly relaxed for this slot only.
 #[derive(Clone, Debug, Deserialize)]
 pub struct ParsedActualRefBody {
     pub measure: String,
+    /// Phase 3J item 6: optional lazy fallback expression. Absent
+    /// (None) preserves the Phase 3E 1-arg form's behavior. Boxed so
+    /// the body type stays sized.
+    #[serde(default)]
+    pub fallback: Option<Box<ParsedRuleBody>>,
+}
+
+/// Phase 3J item 6: `scenario_ref(measure, "ScenarioName")` — read
+/// `measure` from the named scenario at the current coord.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedScenarioRefBody {
+    pub measure: String,
+    pub scenario: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -613,6 +707,59 @@ pub struct ParsedWAvgOverBody {
     pub dimension: String,
     pub value_measure: String,
     pub weight_measure: String,
+}
+
+/// Phase 3J item 4: default `data_type` for an `Indicator` measure when
+/// the YAML omits it. F64 because indicators evaluate to 1.0 / 0.0.
+fn default_indicator_data_type() -> String {
+    "F64".to_string()
+}
+
+/// Phase 3J item 4: default `aggregation` for an `Indicator` measure
+/// when the YAML omits it. Sum per Decision 7 W7 — counts matching
+/// leaves at consolidated coords.
+fn default_indicator_aggregation() -> String {
+    "Sum".to_string()
+}
+
+/// Phase 3J item 1: string literal in expression evaluation. Authored as
+/// `{ str_literal: "Houston" }` in the structured YAML form, or as
+/// `"Houston"` in the friendly-formula form (the formula parser produces
+/// a `StrLiteral` node when a quoted string appears in primary position).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedStrLiteralBody {
+    pub str_literal: String,
+}
+
+/// Phase 3J item 2: `current_element(Dim)` — returns the current coord's
+/// element name in `Dim` as `Str`. Structured form:
+/// `{ current_element: "Channel" }`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedCurrentElementBody {
+    pub current_element: String,
+}
+
+/// Phase 3J item 3: a named scalar constant referenced by `param(name)`
+/// in formulas. ADR-0016 Decision 6 binds v1 to `f64` values only; non-
+/// numeric values are rejected by the validator with MC2060.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedParameter {
+    pub name: String,
+    pub value: f64,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// Phase 3J item 3: `param(name)` — formula reference to a named scalar
+/// constant from the `parameters:` block. Structured form:
+/// `{ param: "q1_anchor_revenue" }`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedParamRefBody {
+    pub param: String,
 }
 
 /// `Const` payload. `f64` and `i64` are the common shapes; `bool` is
@@ -931,6 +1078,8 @@ pub struct ValidatedRule {
     pub description: Option<String>,
     pub body: ParsedRuleBody,
     pub declared_dependencies: Vec<String>,
+    /// Phase 3J item 7 + Amendment §11.
+    pub allow_past_extrapolation: bool,
 }
 
 /// `ValidatedModel` is the contract Phase 4 (LLM authoring) and Phase 6

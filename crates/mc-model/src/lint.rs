@@ -375,6 +375,16 @@ fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
         }
         ParsedRuleBody::ActualRef(b) => {
             out.insert(b.measure.clone());
+            if let Some(fb) = &b.fallback {
+                collect_body_refs(fb, out);
+            }
+        }
+        ParsedRuleBody::ScenarioRef(b) => {
+            out.insert(b.measure.clone());
+        }
+        // Phase 3J item 7: extrapolate_last_value(measure).
+        ParsedRuleBody::ExtrapolateLastValue(b) => {
+            out.insert(b.measure.clone());
         }
         ParsedRuleBody::Prev(b) | ParsedRuleBody::Cumulative(b) => {
             out.insert(b.measure.clone());
@@ -438,6 +448,10 @@ fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
             out.insert(b.value_measure.clone());
             out.insert(b.weight_measure.clone());
         }
+        // Phase 3J: string-domain primitives — no measure refs.
+        ParsedRuleBody::StrLiteral(_)
+        | ParsedRuleBody::CurrentElement(_)
+        | ParsedRuleBody::ParamRef(_) => {}
     }
 }
 

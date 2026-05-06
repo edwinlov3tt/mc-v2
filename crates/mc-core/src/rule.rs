@@ -25,11 +25,24 @@ use crate::error::EngineError;
 use crate::id::{CubeId, ElementId, RuleId};
 use crate::value::ScalarValue;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Scope {
     /// Rule applies to every leaf coordinate (in non-measure dims) where
-    /// the measure is `target_measure`. Phase 1 supports this only.
+    /// the measure is `target_measure`.
     AllLeaves,
+    /// Phase 3J item 5: rule applies only at leaf coords where
+    /// `is_future()` is true (the coord's Time element is later than
+    /// the configured `time_anchor`). Per ADR-0016 Decision 5 +
+    /// Amendment §4, this variant requires `time_anchor` configured on
+    /// the Time dim — validate fires MC2069 otherwise.
+    FutureLeaves,
+    /// Phase 3J item 5: leaves where `is_past()` is true (Time element
+    /// is earlier than `time_anchor`). Same time_anchor requirement.
+    PastLeaves,
+    /// Phase 3J item 5: leaves where `is_current()` is true (Time
+    /// element equals `time_anchor`). Same time_anchor requirement.
+    CurrentLeaves,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -144,6 +157,63 @@ pub enum Expr {
     /// `is_element(DimensionId, ElementId)` — returns 1.0 if the current
     /// coordinate's element in `DimensionId` equals `ElementId`, else 0.0.
     IsElement(crate::id::DimensionId, ElementId),
+
+    // -- Phase 3J item 6: scenario_ref + actual_ref fallback --
+    /// Phase 3J item 6: extends `Expr::ActualRef(measure)` with a lazy
+    /// fallback expression. If the actual_ref read returns `Null`, the
+    /// fallback is evaluated and its result returned. Per ADR-0016
+    /// Amendment §3, the fallback may itself contain cross-coord
+    /// functions (e.g., `scenario_ref`) — MC1013's nesting prohibition
+    /// is explicitly relaxed for this slot.
+    ///
+    /// **Performance note (Amendment §12):** inherits the cross-coord
+    /// dep-graph debt — every write currently invalidates all derived
+    /// cells (correctness preserved via revision-bump; performance fix
+    /// deferred to a future ADR). See
+    /// `docs/research-notes/cross-coord-dep-graph.md`.
+    ActualRefWithFallback(ElementId, Box<Expr>),
+    /// Phase 3J item 6: `scenario_ref(measure, scenario_element)` —
+    /// read `measure` from the named scenario at the current
+    /// coordinate. Resolution is parse-time (the scenario element id
+    /// is resolved from the YAML name during compile).
+    ///
+    /// Inherits the same cross-coord dep-graph performance debt as
+    /// `ActualRef` (Amendment §12).
+    ScenarioRef(ElementId, ElementId),
+    /// Phase 3J item 7: `extrapolate_last_value(measure)` — scan
+    /// backward through the Time dim from the current coord, returning
+    /// the most recent non-Null value of `measure`. If no prior
+    /// non-Null exists, returns `Null`. Per ADR-0016 Decision 9 +
+    /// Amendment §11, the validator (MC2067) requires `scope:
+    /// FutureLeaves` OR `allow_past_extrapolation: true` to be set on
+    /// the rule using this function. Amendment §5 reserves a future
+    /// 2-arg form `extrapolate_last_value(measure, max_periods)`,
+    /// not implemented in v1.
+    ExtrapolateLastValue(ElementId),
+
+    // -- Phase 3J item 1: ScalarValue::Str first-class in eval --
+    /// String literal value. Per ADR-0016 Decision 2, `Str` values exist
+    /// only in expression evaluation; `StrLiteral` is the parser-produced
+    /// constant form. Consumable by `StrEq` / `StrNeq` and by lookup-key
+    /// conversion; never reaches storage. See `ScalarValue::Str` doc for
+    /// the full boundary contract.
+    StrLiteral(String),
+    /// String equality: `Str == Str → F64(1.0/0.0)`. Null in either side
+    /// poisons (returns Null). A non-Str value (e.g., F64) on either side
+    /// is treated as a runtime type mismatch and returns Null — the
+    /// validator should have caught it statically with MC1027.
+    StrEq(Box<Expr>, Box<Expr>),
+    /// String inequality. Inverse of `StrEq`.
+    StrNeq(Box<Expr>, Box<Expr>),
+    /// `current_element(Dim)` — returns the current coordinate's element
+    /// name in `Dim` as `ScalarValue::Str`. At consolidated coords (where
+    /// `Dim` has no single leaf element), returns Null.
+    CurrentElementName(crate::id::DimensionId),
+    /// Phase 3J item 3: `param(name)` — read a named scalar constant
+    /// from `Cube::reference_data.parameters`. Returns the F64 value;
+    /// validate guarantees `name` exists at compile time so eval can
+    /// safely return Null on a missing key (defense-in-depth).
+    ParamRef(String),
 
     // -- Phase 3I: cross-coord scans (avg/min/max/wavg over a dimension) --
     /// `avg_over(measure, dim)` — mean across leaf elements of `dim`,
@@ -320,6 +390,18 @@ fn collect_self_refs(expr: &Expr) -> AHashSet<ElementId> {
             Expr::SelfRef(m) | Expr::ActualRef(m) | Expr::Prev(m) | Expr::Cumulative(m) => {
                 out.insert(*m);
             }
+            // Phase 3J item 6
+            Expr::ActualRefWithFallback(m, fallback) => {
+                out.insert(*m);
+                walk(fallback, out);
+            }
+            Expr::ScenarioRef(m, _scenario) => {
+                out.insert(*m);
+            }
+            // Phase 3J item 7
+            Expr::ExtrapolateLastValue(m) => {
+                out.insert(*m);
+            }
             Expr::Add(a, b)
             | Expr::Sub(a, b)
             | Expr::Mul(a, b)
@@ -404,6 +486,16 @@ fn collect_self_refs(expr: &Expr) -> AHashSet<ElementId> {
                 out.insert(*value);
                 out.insert(*weight);
             }
+            // Phase 3J: string-domain expressions and current_element.
+            // None of these introduce a `SelfRef` measure dependency —
+            // strings flow through eval without touching the dependency
+            // graph. CurrentElementName resolves at the current coord
+            // via the dimension axis, not via a measure read.
+            Expr::StrLiteral(_) | Expr::CurrentElementName(_) | Expr::ParamRef(_) => {}
+            Expr::StrEq(a, b) | Expr::StrNeq(a, b) => {
+                walk(a, out);
+                walk(b, out);
+            }
         }
     }
     walk(expr, &mut out);
@@ -470,6 +562,14 @@ pub fn expr_depth(expr: &Expr) -> u32 {
         | Expr::Floor(a)
         | Expr::Ceil(a) => 1 + expr_depth(a),
         Expr::NormInv(p, mu, sigma) => 1 + expr_depth(p).max(expr_depth(mu)).max(expr_depth(sigma)),
+        // Phase 3J: string-domain + parameter ref
+        Expr::StrLiteral(_) | Expr::CurrentElementName(_) | Expr::ParamRef(_) => 1,
+        Expr::StrEq(a, b) | Expr::StrNeq(a, b) => 1 + expr_depth(a).max(expr_depth(b)),
+        // Phase 3J item 6
+        Expr::ActualRefWithFallback(_, fallback) => 1 + expr_depth(fallback),
+        Expr::ScenarioRef(_, _) => 1,
+        // Phase 3J item 7
+        Expr::ExtrapolateLastValue(_) => 1,
     }
 }
 
@@ -924,6 +1024,67 @@ where
                 weight_measure: *weight_measure,
             })
         }
+        // -- Phase 3J: string-domain expressions --
+        Expr::StrLiteral(s) => Ok(ScalarValue::Str(s.clone())),
+        Expr::CurrentElementName(dim) => {
+            lookup_cross(&CrossCoordRead::CurrentElementName { dimension: *dim })
+        }
+        Expr::StrEq(a, b) => {
+            let lhs = eval_expr(a, lookup_self, lookup_cross)?;
+            let rhs = eval_expr(b, lookup_self, lookup_cross)?;
+            Ok(eval_str_eq(&lhs, &rhs, true))
+        }
+        Expr::StrNeq(a, b) => {
+            let lhs = eval_expr(a, lookup_self, lookup_cross)?;
+            let rhs = eval_expr(b, lookup_self, lookup_cross)?;
+            Ok(eval_str_eq(&lhs, &rhs, false))
+        }
+        // Phase 3J item 3: parameter reference. Resolves through the
+        // cross-coord lookup machinery to keep the eval-path single-
+        // dispatch.
+        Expr::ParamRef(name) => {
+            lookup_cross(&CrossCoordRead::ParameterValue { name: name.clone() })
+        }
+        // Phase 3J item 6: actual_ref with lazy fallback.
+        Expr::ActualRefWithFallback(measure, fallback) => {
+            let primary = lookup_cross(&CrossCoordRead::ScenarioShift { measure: *measure })?;
+            if primary.is_null() {
+                eval_expr(fallback, lookup_self, lookup_cross)
+            } else {
+                Ok(primary)
+            }
+        }
+        // Phase 3J item 6: scenario_ref(measure, scenario_element).
+        Expr::ScenarioRef(measure, scenario_element) => {
+            lookup_cross(&CrossCoordRead::ScenarioElementShift {
+                scenario_element: *scenario_element,
+                measure: *measure,
+            })
+        }
+        // Phase 3J item 7: extrapolate_last_value(measure).
+        Expr::ExtrapolateLastValue(measure) => {
+            lookup_cross(&CrossCoordRead::ExtrapolateLastValue { measure: *measure })
+        }
+    }
+}
+
+/// Phase 3J item 1: string equality / inequality. Returns
+/// `ScalarValue::F64(1.0)` if both sides are equal `Str`s, `F64(0.0)` if
+/// both are `Str` but unequal, `Null` if either side is `Null`. Any
+/// non-`Str` non-`Null` operand (e.g., F64) is a runtime type mismatch
+/// and returns `Null` — the validator should have caught this at compile
+/// time with MC1027. Per ADR-0016 Decision 3, comparisons are
+/// case-sensitive; locale ordering operators are out of scope.
+fn eval_str_eq(lhs: &ScalarValue, rhs: &ScalarValue, equal_polarity: bool) -> ScalarValue {
+    match (lhs, rhs) {
+        (ScalarValue::Null, _) | (_, ScalarValue::Null) => ScalarValue::Null,
+        (ScalarValue::Str(a), ScalarValue::Str(b)) => {
+            let eq = a == b;
+            ScalarValue::F64(if eq == equal_polarity { 1.0 } else { 0.0 })
+        }
+        // Mixed types — defense-in-depth Null. Validator MC1027 catches
+        // statically detectable cases; this is the runtime safety net.
+        _ => ScalarValue::Null,
     }
 }
 
@@ -1121,6 +1282,26 @@ pub enum CrossCoordRead {
     PeriodsToEnd,
     /// Resolve the current coordinate's element name in the given dimension.
     CurrentElementName { dimension: crate::id::DimensionId },
+    /// Phase 3J item 3: resolve a `param(name)` reference to its
+    /// constant `f64` value from `Cube::reference_data.parameters`.
+    /// Doesn't depend on any coordinate; the eval path is a single
+    /// HashMap lookup. Validate guarantees `name` exists; eval returns
+    /// `Null` if the lookup misses (defense-in-depth).
+    ParameterValue { name: String },
+    /// Phase 3J item 6: shift the Scenario dim slot to `scenario_element`
+    /// and read `measure` at the (otherwise unchanged) coord. Sister of
+    /// `ScenarioShift`, which always shifts to the actuals (`Default`)
+    /// element. The `scenario_element` id is resolved at compile time
+    /// from the YAML name.
+    ScenarioElementShift {
+        scenario_element: ElementId,
+        measure: ElementId,
+    },
+    /// Phase 3J item 7: scan backward in Time from the current coord,
+    /// returning the most recent non-Null value of `measure`. If no
+    /// prior non-Null exists, returns Null. Implements LOCF (last-
+    /// observation-carry-forward) for forecasting / gap-fill.
+    ExtrapolateLastValue { measure: ElementId },
     // -- Phase 3I: narrow element-match indicator --
     /// Returns 1.0 if the current coord's element in `dimension` is
     /// `element`, else 0.0. Element resolution is parse-time so the
@@ -1536,6 +1717,49 @@ where
                 dimension: *dim,
                 value_measure: *value_measure,
                 weight_measure: *weight_measure,
+            }))
+        }
+        // -- Phase 3J: string-domain expressions --
+        Expr::StrLiteral(s) => Ok(ScalarValue::Str(s.clone())),
+        Expr::CurrentElementName(dim) => {
+            handler(EvalLookup::Cross(&CrossCoordRead::CurrentElementName {
+                dimension: *dim,
+            }))
+        }
+        Expr::StrEq(a, b) => {
+            let lhs = eval_expr_unified_inner(a, handler)?;
+            let rhs = eval_expr_unified_inner(b, handler)?;
+            Ok(eval_str_eq(&lhs, &rhs, true))
+        }
+        Expr::StrNeq(a, b) => {
+            let lhs = eval_expr_unified_inner(a, handler)?;
+            let rhs = eval_expr_unified_inner(b, handler)?;
+            Ok(eval_str_eq(&lhs, &rhs, false))
+        }
+        Expr::ParamRef(name) => handler(EvalLookup::Cross(&CrossCoordRead::ParameterValue {
+            name: name.clone(),
+        })),
+        // Phase 3J item 6: actual_ref with lazy fallback.
+        Expr::ActualRefWithFallback(measure, fallback) => {
+            let primary = handler(EvalLookup::Cross(&CrossCoordRead::ScenarioShift {
+                measure: *measure,
+            }))?;
+            if primary.is_null() {
+                eval_expr_unified_inner(fallback, handler)
+            } else {
+                Ok(primary)
+            }
+        }
+        Expr::ScenarioRef(measure, scenario_element) => {
+            handler(EvalLookup::Cross(&CrossCoordRead::ScenarioElementShift {
+                scenario_element: *scenario_element,
+                measure: *measure,
+            }))
+        }
+        // Phase 3J item 7: extrapolate_last_value(measure).
+        Expr::ExtrapolateLastValue(measure) => {
+            handler(EvalLookup::Cross(&CrossCoordRead::ExtrapolateLastValue {
+                measure: *measure,
             }))
         }
     }
