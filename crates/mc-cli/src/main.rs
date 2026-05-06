@@ -23,6 +23,7 @@ use mc_model::{
 };
 
 mod diff;
+mod loader;
 mod mcp;
 mod query;
 mod sweep;

@@ -201,23 +201,29 @@ fn test_trace_returns_tree() {
         String::from_utf8_lossy(&output.stderr)
     );
     let json = parse_json(&output.stdout);
-    // Phase 6A.1 CRIT-2: every Phase 6A JSON envelope carries
-    // schema_version as the first field; trace tree lives under "trace".
+    // Phase 6A.2 item 1.3: trace's envelope bumped to schema_version
+    // "1.1" (the only Phase 6A verb to bump in 6A.2; the rest stay
+    // at "1.0"). The shape change moved `inputs` from object to array
+    // and replaced `measure` with the canonical `coord` string.
     assert_eq!(
         json.get("schema_version").and_then(|v| v.as_str()),
-        Some("1.0"),
-        "missing or wrong schema_version"
+        Some("1.1"),
+        "trace must emit schema_version 1.1 (Phase 6A.2 item 1.3)"
     );
     let tree = json.get("trace").expect("missing 'trace' field");
-    assert!(tree.get("measure").is_some(), "missing 'measure' field");
+    assert!(tree.get("coord").is_some(), "missing 'coord' field");
     assert!(tree.get("value").is_some(), "missing 'value' field");
     assert!(tree.get("source").is_some(), "missing 'source' field");
-    // Clicks is derived, so it should have inputs
-    let inputs = tree.get("inputs");
     assert!(
-        inputs.is_some() && !inputs.unwrap().is_null(),
-        "derived cell trace should have 'inputs'"
+        tree.get("child_count").is_some(),
+        "missing 'child_count' field"
     );
+    // Clicks is derived, so inputs must be a non-empty array.
+    let inputs = tree
+        .get("inputs")
+        .and_then(|i| i.as_array())
+        .expect("inputs must be an array");
+    assert!(!inputs.is_empty(), "derived cell trace should have inputs");
 }
 
 // ===========================================================================
@@ -611,9 +617,12 @@ fn test_all_phase_6a_verbs_emit_schema_version() {
             String::from_utf8_lossy(&output.stderr)
         );
         let json = parse_json(&output.stdout);
+        // Phase 6A.2 item 1.3: trace's envelope bumped to "1.1"; the
+        // other 6A verbs stay at "1.0".
+        let expected = if *desc == "trace" { "1.1" } else { "1.0" };
         assert_eq!(
             json.get("schema_version").and_then(|v| v.as_str()),
-            Some("1.0"),
+            Some(expected),
             "{desc}: missing or wrong schema_version in JSON envelope"
         );
     }
@@ -720,5 +729,835 @@ fn test_mcp_query_returns_structured_envelope() {
         parsed.get("schema_version").and_then(|v| v.as_str()),
         Some("1.0"),
         "structured envelope missing schema_version"
+    );
+}
+
+// ===========================================================================
+// Phase 6A.2 item 1.1 — write-log replay (process-notes Rule 9)
+// ===========================================================================
+
+/// RAII guard around a `mc-cli`-owned working directory. Removes the
+/// dir on drop so writes.jsonl does not leak between tests.
+struct WorkDir {
+    path: PathBuf,
+}
+impl WorkDir {
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+impl Drop for WorkDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// Make a temp dir containing a fresh copy of `acme.yaml` + `acme.inputs.csv`.
+/// Avoids the `tempfile` dep (would violate Phase 6A.2 hard rule #4) by
+/// composing process id + tag for uniqueness.
+fn make_acme_workdir(tag: &str) -> (WorkDir, PathBuf) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("mc-cli-{tag}-{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create work dir");
+    let mut src_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    src_dir.pop();
+    src_dir.pop();
+    src_dir.push("crates");
+    src_dir.push("mc-model");
+    src_dir.push("examples");
+    let yaml_dst = dir.join("acme.yaml");
+    let csv_dst = dir.join("acme.inputs.csv");
+    std::fs::copy(src_dir.join("acme.yaml"), &yaml_dst).expect("copy yaml");
+    std::fs::copy(src_dir.join("acme.inputs.csv"), csv_dst).expect("copy csv");
+    (WorkDir { path: dir }, yaml_dst)
+}
+
+/// Append a raw line to `<dir>/.tessera/writes.jsonl`, creating the dir if needed.
+fn append_writes_jsonl(dir: &std::path::Path, line: &str) {
+    let tessera = dir.join(".tessera");
+    std::fs::create_dir_all(&tessera).expect("mkdir .tessera");
+    let path = tessera.join("writes.jsonl");
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("open writes.jsonl");
+    f.write_all(line.as_bytes()).expect("write");
+    if !line.ends_with('\n') {
+        f.write_all(b"\n").expect("nl");
+    }
+}
+
+fn query_value(yaml: &std::path::Path, coord: &str) -> serde_json::Value {
+    let output = run_mc(&[
+        "model",
+        "query",
+        yaml.to_str().unwrap(),
+        "--coord",
+        coord,
+        "--format",
+        "json",
+    ]);
+    assert!(
+        output.status.success(),
+        "query failed: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    parse_json(&output.stdout)
+}
+
+const COORD_SPEND_JAN_TAMPA: &str =
+    "Scenario=Baseline,Version=Working,Time=Jan_2026,Channel=Paid_Search,Market=Tampa,Measure=Spend";
+
+#[test]
+fn test_query_reflects_post_hoc_write() {
+    let (dir, yaml) = make_acme_workdir("query-reflects-write");
+    // Pre-write: Acme Spend@Jan/Paid_Search/Tampa = 10500
+    let before = query_value(&yaml, COORD_SPEND_JAN_TAMPA);
+    assert_eq!(before.get("value").and_then(|v| v.as_f64()), Some(10500.0));
+    // Write 999
+    let w = run_mc(&[
+        "model",
+        "write",
+        yaml.to_str().unwrap(),
+        "--coord",
+        COORD_SPEND_JAN_TAMPA,
+        "--value",
+        "999",
+        "--format",
+        "json",
+    ]);
+    assert!(w.status.success(), "write failed");
+    // Re-query (fresh process load) — must see the post-hoc value.
+    let after = query_value(&yaml, COORD_SPEND_JAN_TAMPA);
+    assert_eq!(
+        after.get("value").and_then(|v| v.as_f64()),
+        Some(999.0),
+        "post-hoc write must be visible to subsequent query (item 1.1 P0)"
+    );
+    drop(dir);
+}
+
+#[test]
+fn test_test_ignores_post_hoc_writes() {
+    let (dir, yaml) = make_acme_workdir("test-ignores-writes");
+    // Write a value that would FAIL the spend_input_anchor golden if it
+    // were replayed: golden expects 11500 at Mar_2026/Paid_Search/Tampa.
+    let coord_mar = "Scenario=Baseline,Version=Working,Time=Mar_2026,Channel=Paid_Search,Market=Tampa,Measure=Spend";
+    let w = run_mc(&[
+        "model",
+        "write",
+        yaml.to_str().unwrap(),
+        "--coord",
+        coord_mar,
+        "--value",
+        "99999",
+        "--format",
+        "json",
+    ]);
+    assert!(w.status.success(), "write failed");
+    // Confirm the write is in the log.
+    let log = dir.path().join(".tessera").join("writes.jsonl");
+    assert!(log.exists(), "writes.jsonl must exist");
+    // `mc model test` must IGNORE the write (Reproducible policy) and
+    // continue to pass all 9 goldens against the canonical CSV.
+    let t = run_mc(&["model", "test", yaml.to_str().unwrap(), "--format", "json"]);
+    assert!(
+        t.status.success(),
+        "model test must remain green: stderr={}",
+        String::from_utf8_lossy(&t.stderr)
+    );
+    let json = parse_json(&t.stdout);
+    let goldens = json
+        .get("goldens")
+        .and_then(|g| g.as_array())
+        .expect("goldens array");
+    for g in goldens {
+        let status = g.get("status").and_then(|s| s.as_str()).unwrap_or("");
+        assert_eq!(
+            status, "Pass",
+            "golden {:?} regressed because writes.jsonl leaked into mc model test (item 1.1 Reproducible policy)",
+            g.get("name")
+        );
+    }
+    // Also confirm the post-hoc write IS visible via query (CurrentReality policy).
+    let q = query_value(&yaml, coord_mar);
+    assert_eq!(q.get("value").and_then(|v| v.as_f64()), Some(99999.0));
+    drop(dir);
+}
+
+#[test]
+fn test_write_log_corrupt_returns_exit_3() {
+    let (dir, yaml) = make_acme_workdir("write-log-corrupt");
+    append_writes_jsonl(dir.path(), "this is not json {{{");
+    let q = run_mc(&[
+        "model",
+        "query",
+        yaml.to_str().unwrap(),
+        "--coord",
+        COORD_SPEND_JAN_TAMPA,
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        q.status.code(),
+        Some(3),
+        "corrupt writes.jsonl must return exit 3 (handoff matrix W3); stderr={}",
+        String::from_utf8_lossy(&q.stderr)
+    );
+    drop(dir);
+}
+
+#[test]
+fn test_write_log_empty_file_silent_noop() {
+    let (dir, yaml) = make_acme_workdir("write-log-empty");
+    let tessera = dir.path().join(".tessera");
+    std::fs::create_dir_all(&tessera).expect("mkdir");
+    std::fs::write(tessera.join("writes.jsonl"), b"").expect("touch empty");
+    let q = run_mc(&[
+        "model",
+        "query",
+        yaml.to_str().unwrap(),
+        "--coord",
+        COORD_SPEND_JAN_TAMPA,
+        "--format",
+        "json",
+    ]);
+    assert!(
+        q.status.success(),
+        "empty writes.jsonl must be silent no-op"
+    );
+    let json = parse_json(&q.stdout);
+    assert_eq!(json.get("value").and_then(|v| v.as_f64()), Some(10500.0));
+    drop(dir);
+}
+
+#[test]
+fn test_write_log_two_writes_same_coord_last_wins() {
+    let (dir, yaml) = make_acme_workdir("write-log-last-wins");
+    let line1 = format!(
+        r#"{{"timestamp":"2026-05-06T00:00:00Z","coord":"{}","value":111,"source":"test"}}"#,
+        COORD_SPEND_JAN_TAMPA
+    );
+    let line2 = format!(
+        r#"{{"timestamp":"2026-05-06T00:00:01Z","coord":"{}","value":222,"source":"test"}}"#,
+        COORD_SPEND_JAN_TAMPA
+    );
+    append_writes_jsonl(dir.path(), &line1);
+    append_writes_jsonl(dir.path(), &line2);
+    let json = query_value(&yaml, COORD_SPEND_JAN_TAMPA);
+    assert_eq!(
+        json.get("value").and_then(|v| v.as_f64()),
+        Some(222.0),
+        "second write must win on replay (last-write-wins, handoff matrix W5)"
+    );
+    drop(dir);
+}
+
+#[test]
+fn test_write_log_stale_element_returns_exit_3() {
+    let (dir, yaml) = make_acme_workdir("write-log-stale-element");
+    // Channel "NonExistentChannel" is not in the YAML.
+    let stale = r#"{"timestamp":"2026-05-06T00:00:00Z","coord":"Scenario=Baseline,Version=Working,Time=Jan_2026,Channel=NonExistentChannel,Market=Tampa,Measure=Spend","value":1,"source":"test"}"#;
+    append_writes_jsonl(dir.path(), stale);
+    let q = run_mc(&[
+        "model",
+        "query",
+        yaml.to_str().unwrap(),
+        "--coord",
+        COORD_SPEND_JAN_TAMPA,
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        q.status.code(),
+        Some(3),
+        "stale-element writes.jsonl must return exit 3 (handoff matrix W1); stderr={}",
+        String::from_utf8_lossy(&q.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&q.stderr);
+    assert!(
+        stderr.contains("NonExistentChannel") || stderr.contains("element"),
+        "stale-element error should mention the missing element; got: {stderr}"
+    );
+    drop(dir);
+}
+
+#[test]
+fn test_write_log_to_derived_measure_returns_exit_3() {
+    let (dir, yaml) = make_acme_workdir("write-log-derived");
+    // Clicks is a derived measure (Spend / CPC). The kernel rejects
+    // direct writes to derived cells, but a writes.jsonl line can
+    // refer to one (e.g., user-edited the model after the write).
+    let derived = r#"{"timestamp":"2026-05-06T00:00:00Z","coord":"Scenario=Baseline,Version=Working,Time=Jan_2026,Channel=Paid_Search,Market=Tampa,Measure=Clicks","value":1,"source":"test"}"#;
+    append_writes_jsonl(dir.path(), derived);
+    let q = run_mc(&[
+        "model",
+        "query",
+        yaml.to_str().unwrap(),
+        "--coord",
+        COORD_SPEND_JAN_TAMPA,
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        q.status.code(),
+        Some(3),
+        "derived-measure writes.jsonl line must return exit 3 (handoff matrix W2); stderr={}",
+        String::from_utf8_lossy(&q.stderr)
+    );
+    drop(dir);
+}
+
+// ===========================================================================
+// Phase 6A.2 items 1.2 + 1.3 — trace formula + array-shape inputs
+// ===========================================================================
+
+const COORD_CLICKS_JAN_TAMPA: &str = "Scenario=Baseline,Version=Working,Time=Jan_2026,\
+    Channel=Paid_Search,Market=Tampa,Measure=Clicks";
+const COORD_REVENUE_JAN_TAMPA: &str = "Scenario=Baseline,Version=Working,Time=Jan_2026,\
+    Channel=Paid_Search,Market=Tampa,Measure=Revenue";
+const COORD_SPEND_Q1_PAID_FL: &str = "Scenario=Baseline,Version=Working,Time=Q1_2026,\
+    Channel=Paid_Media,Market=Florida,Measure=Spend";
+
+fn trace_json(coord: &str) -> serde_json::Value {
+    let path = acme_yaml();
+    let out = run_mc(&[
+        "model",
+        "trace",
+        path.to_str().unwrap(),
+        "--coord",
+        coord,
+        "--format",
+        "json",
+    ]);
+    assert!(
+        out.status.success(),
+        "trace failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    parse_json(&out.stdout)
+}
+
+#[test]
+fn test_trace_emits_authored_formula_for_derived_cell() {
+    // Clicks = Spend / CPC per Acme rule.
+    let json = trace_json(COORD_CLICKS_JAN_TAMPA);
+    let formula = json
+        .get("trace")
+        .and_then(|t| t.get("formula"))
+        .and_then(|f| f.as_str())
+        .expect("derived cell must emit a string formula");
+    assert_eq!(
+        formula, "Spend / CPC",
+        "Phase 6A.2 item 1.2: formula must be authored expression, not debug AST"
+    );
+    // Revenue = Customers * AOV — second derived cell, double-checks the rule lookup.
+    let rev = trace_json(COORD_REVENUE_JAN_TAMPA);
+    let rev_formula = rev
+        .get("trace")
+        .and_then(|t| t.get("formula"))
+        .and_then(|f| f.as_str())
+        .expect("Revenue must emit a string formula");
+    assert_eq!(rev_formula, "Customers * AOV");
+}
+
+#[test]
+fn test_trace_consolidated_coord_has_null_formula() {
+    let json = trace_json(COORD_SPEND_Q1_PAID_FL);
+    let trace = json.get("trace").expect("trace");
+    assert_eq!(
+        trace.get("source").and_then(|v| v.as_str()),
+        Some("consolidation")
+    );
+    let formula = trace.get("formula").expect("formula key always present");
+    assert!(
+        formula.is_null(),
+        "consolidated coord must emit JSON null formula (Phase 6A.2 item 1.2 W2); got {formula:?}"
+    );
+}
+
+#[test]
+fn test_trace_input_cell_has_null_formula() {
+    // Spend@Jan/Paid_Search/Tampa is an input cell.
+    let json = trace_json(COORD_SPEND_JAN_TAMPA);
+    let trace = json.get("trace").expect("trace");
+    assert_eq!(trace.get("source").and_then(|v| v.as_str()), Some("input"));
+    let formula = trace.get("formula").expect("formula key always present");
+    assert!(
+        formula.is_null(),
+        "input cell must emit JSON null formula (Phase 6A.2 item 1.2 W3); got {formula:?}"
+    );
+    assert_eq!(
+        trace.get("child_count").and_then(|v| v.as_u64()),
+        Some(0),
+        "input cell child_count must be 0"
+    );
+}
+
+#[test]
+fn test_trace_consolidated_emits_array_with_all_children() {
+    // Q1_2026 / Paid_Media / Florida — Time has 3 leaves under Q1 (Jan,
+    // Feb, Mar), Channel has 3 leaves under Paid_Media, Market has 3
+    // leaves under Florida. So 27 leaf children total.
+    let json = trace_json(COORD_SPEND_Q1_PAID_FL);
+    let trace = json.get("trace").expect("trace");
+    let inputs = trace
+        .get("inputs")
+        .and_then(|i| i.as_array())
+        .expect("inputs must be a JSON array (Phase 6A.2 item 1.3)");
+    assert_eq!(
+        inputs.len(),
+        27,
+        "consolidated Spend must expand to 27 leaf children"
+    );
+    let child_count = trace
+        .get("child_count")
+        .and_then(|v| v.as_u64())
+        .expect("child_count present");
+    assert_eq!(
+        child_count as usize,
+        inputs.len(),
+        "child_count must equal inputs.len() (handoff matrix W6)"
+    );
+    // No two children share a coord — the old object-keyed shape silently
+    // dropped duplicates; the array shape must preserve all 27.
+    let coords: std::collections::HashSet<&str> = inputs
+        .iter()
+        .filter_map(|c| c.get("coord").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(
+        coords.len(),
+        27,
+        "all 27 child coords must be distinct (no duplicate-key dedup)"
+    );
+}
+
+#[test]
+fn test_trace_envelope_schema_version_is_1_1() {
+    let json = trace_json(COORD_CLICKS_JAN_TAMPA);
+    assert_eq!(
+        json.get("schema_version").and_then(|v| v.as_str()),
+        Some("1.1"),
+        "Phase 6A.2 item 1.3: trace bumps schema_version to 1.1"
+    );
+}
+
+#[test]
+fn test_trace_input_cell_has_empty_inputs_array_and_zero_child_count() {
+    let json = trace_json(COORD_SPEND_JAN_TAMPA);
+    let trace = json.get("trace").expect("trace");
+    let inputs = trace
+        .get("inputs")
+        .and_then(|i| i.as_array())
+        .expect("inputs must be an array (always)");
+    assert!(
+        inputs.is_empty(),
+        "input cell must emit empty inputs array (Phase 6A.2 item 1.3)"
+    );
+    assert_eq!(trace.get("child_count").and_then(|v| v.as_u64()), Some(0));
+}
+
+// ===========================================================================
+// Phase 6A.2 item 1.4 — MCP numeric params + parsed structured
+// ===========================================================================
+
+/// Send one JSON-RPC `tools/call` request to `mc mcp` and return the
+/// parsed response (single-line, JSON-RPC 2.0).
+fn mcp_call(name: &str, args_json: &str) -> serde_json::Value {
+    let req = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{name}","arguments":{args_json}}}}}"#
+    );
+    let mut child = Command::new(mc_binary())
+        .arg("mcp")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn mc mcp");
+    use std::io::Write;
+    {
+        let mut stdin = child.stdin.take().expect("stdin");
+        stdin.write_all(req.as_bytes()).expect("write");
+        stdin.write_all(b"\n").expect("nl");
+    }
+    let output = child.wait_with_output().expect("wait");
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    let line = stdout_str.lines().next().expect("at least one line");
+    serde_json::from_str(line).expect("MCP response valid JSON")
+}
+
+fn acme_path_str() -> String {
+    acme_yaml().to_string_lossy().into_owned()
+}
+
+#[test]
+fn test_mcp_whatif_accepts_json_number_value() {
+    let p = acme_path_str();
+    let resp = mcp_call(
+        "mosaic.model.whatif",
+        &format!(
+            r#"{{"path":"{p}","set_coord":"{COORD_SPEND_JAN_TAMPA}","value":999,"show":"Revenue"}}"#
+        ),
+    );
+    let result = resp.get("result").expect("result");
+    assert_eq!(
+        result.get("isError").and_then(|v| v.as_bool()),
+        Some(false),
+        "JSON number value must be accepted (Phase 6A.2 item 1.4); response: {resp}"
+    );
+}
+
+#[test]
+fn test_mcp_whatif_still_accepts_string_value() {
+    // Compat path: clients that send strings (because the legacy schema
+    // advertised them) keep working via the coercing accessor.
+    let p = acme_path_str();
+    let resp = mcp_call(
+        "mosaic.model.whatif",
+        &format!(
+            r#"{{"path":"{p}","set_coord":"{COORD_SPEND_JAN_TAMPA}","value":"888","show":"Revenue"}}"#
+        ),
+    );
+    let result = resp.get("result").expect("result");
+    assert_eq!(
+        result.get("isError").and_then(|v| v.as_bool()),
+        Some(false),
+        "string value must still be accepted (Phase 6A.2 item 1.4 W1 backward compat)"
+    );
+}
+
+#[test]
+fn test_mcp_query_accepts_integer_limit() {
+    let p = acme_path_str();
+    let resp = mcp_call(
+        "mosaic.model.query",
+        &format!(r#"{{"path":"{p}","coord":"{COORD_SPEND_JAN_TAMPA}","limit":1,"format":"json"}}"#),
+    );
+    let result = resp.get("result").expect("result");
+    assert_eq!(
+        result.get("isError").and_then(|v| v.as_bool()),
+        Some(false),
+        "JSON integer limit must be accepted"
+    );
+}
+
+#[test]
+fn test_mcp_query_returns_parsed_structured_json_object() {
+    let p = acme_path_str();
+    let resp = mcp_call(
+        "mosaic.model.query",
+        &format!(r#"{{"path":"{p}","coord":"{COORD_SPEND_JAN_TAMPA}","format":"json"}}"#),
+    );
+    let result = resp.get("result").expect("result");
+    let structured = result.get("structured").expect("structured");
+    // Phase 6A.2 item 1.4 W3: structured is a parsed JSON object, NOT
+    // a JSON-encoded string. Agents read it directly.
+    assert!(
+        structured.is_object(),
+        "structured must be a JSON object (not a string); got: {structured:?}"
+    );
+    assert_eq!(
+        structured.get("schema_version").and_then(|v| v.as_str()),
+        Some("1.0"),
+        "structured object must carry schema_version"
+    );
+    assert_eq!(
+        structured.get("value").and_then(|v| v.as_f64()),
+        Some(10500.0)
+    );
+}
+
+// ===========================================================================
+// Phase 6A.2 item 1.7 — query pagination + --offset
+// ===========================================================================
+
+#[test]
+fn test_query_with_low_limit_reports_truncated_true() {
+    let path = acme_yaml();
+    let out = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--where",
+        "Spend > 0",
+        "--limit",
+        "3",
+        "--format",
+        "json",
+    ]);
+    assert!(out.status.success());
+    let json = parse_json(&out.stdout);
+    assert_eq!(json.get("limit").and_then(|v| v.as_u64()), Some(3));
+    assert_eq!(json.get("count").and_then(|v| v.as_u64()), Some(3));
+    assert_eq!(
+        json.get("truncated").and_then(|v| v.as_bool()),
+        Some(true),
+        "low-limit query must set truncated=true (Phase 6A.2 item 1.7)"
+    );
+    assert_eq!(
+        json.get("next_offset").and_then(|v| v.as_u64()),
+        Some(3),
+        "next_offset = offset + count when truncated"
+    );
+}
+
+#[test]
+fn test_query_with_offset_skips_first_n_matches() {
+    let path = acme_yaml();
+    let p = path.to_str().unwrap();
+    let first = run_mc(&[
+        "model",
+        "query",
+        p,
+        "--where",
+        "Spend > 0",
+        "--limit",
+        "5",
+        "--format",
+        "json",
+    ]);
+    let second = run_mc(&[
+        "model",
+        "query",
+        p,
+        "--where",
+        "Spend > 0",
+        "--limit",
+        "5",
+        "--offset",
+        "5",
+        "--format",
+        "json",
+    ]);
+    assert!(first.status.success() && second.status.success());
+    let j1 = parse_json(&first.stdout);
+    let j2 = parse_json(&second.stdout);
+    let r1 = j1.get("results").and_then(|v| v.as_array()).unwrap();
+    let r2 = j2.get("results").and_then(|v| v.as_array()).unwrap();
+    assert_eq!(r1.len(), 5);
+    assert_eq!(r2.len(), 5);
+    // The offset=5 page must NOT contain any of the offset=0 page rows.
+    let coords_first: std::collections::HashSet<String> = r1
+        .iter()
+        .filter_map(|r| {
+            serde_json::to_string(r.get("coord").unwrap_or(&serde_json::Value::Null)).ok()
+        })
+        .collect();
+    for row in r2 {
+        let key = serde_json::to_string(row.get("coord").unwrap_or(&serde_json::Value::Null)).ok();
+        if let Some(k) = key {
+            assert!(
+                !coords_first.contains(&k),
+                "offset=5 page leaked offset=0 row: {k}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_query_offset_beyond_matches_returns_empty() {
+    let path = acme_yaml();
+    let out = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--where",
+        "Spend > 100000000", // no rows
+        "--offset",
+        "10",
+        "--format",
+        "json",
+    ]);
+    assert!(out.status.success());
+    let json = parse_json(&out.stdout);
+    assert_eq!(json.get("count").and_then(|v| v.as_u64()), Some(0));
+    assert_eq!(
+        json.get("truncated").and_then(|v| v.as_bool()),
+        Some(false),
+        "offset beyond matches must NOT set truncated=true"
+    );
+    assert!(
+        json.get("next_offset")
+            .map(|v| v.is_null())
+            .unwrap_or(false),
+        "next_offset must be JSON null when not truncated"
+    );
+}
+
+#[test]
+fn test_query_envelope_includes_all_pagination_fields() {
+    let path = acme_yaml();
+    let out = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--where",
+        "Spend > 0",
+        "--limit",
+        "100",
+        "--format",
+        "json",
+    ]);
+    assert!(out.status.success());
+    let json = parse_json(&out.stdout);
+    for field in &["limit", "offset", "count", "truncated", "next_offset"] {
+        assert!(
+            json.get(field).is_some(),
+            "envelope must always carry '{field}' (Phase 6A.2 item 1.7 stable schema)"
+        );
+    }
+    // Schema_version stays at 1.0 — pagination is additive.
+    assert_eq!(
+        json.get("schema_version").and_then(|v| v.as_str()),
+        Some("1.0"),
+        "query envelope schema_version must stay at 1.0 (additive change)"
+    );
+}
+
+// ===========================================================================
+// Phase 6A.2 item 1.5 — tessera transform consumes real mc-recipe schema
+// ===========================================================================
+
+fn workspace_path(rel: &str) -> PathBuf {
+    let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    p.pop();
+    p.pop();
+    p.push(rel);
+    p
+}
+
+#[test]
+fn test_transform_with_acme_recipe_emits_mapped_rows() {
+    let source = workspace_path("crates/mc-model/examples/acme.inputs.csv");
+    // Use the long-format recipe whose `columns:` source headers match
+    // the actual `acme.inputs.csv` column names. The Phase 6A bespoke
+    // parser produced ONLY defaults from this input; the real
+    // `mc_recipe::Recipe` parse pulls Time / Channel / Market through.
+    let recipe = workspace_path("crates/mc-recipe/examples/recipes/acme-long-format.recipe.yaml");
+    let out = run_mc(&[
+        "tessera",
+        "transform",
+        "--source",
+        source.to_str().unwrap(),
+        "--recipe",
+        recipe.to_str().unwrap(),
+        "--preview",
+        "1",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        out.status.success(),
+        "transform failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json = parse_json(&out.stdout);
+    let rows = json
+        .get("rows")
+        .and_then(|r| r.as_array())
+        .expect("rows array");
+    let row = rows.first().expect("at least one preview row");
+    // Time, Channel, Market all came from real `mc-recipe` column
+    // mappings; Phase 6A's bespoke parser would have left these absent.
+    assert_eq!(row.get("Time").and_then(|v| v.as_str()), Some("Jan_2026"));
+    assert_eq!(
+        row.get("Channel").and_then(|v| v.as_str()),
+        Some("Paid_Search")
+    );
+    assert_eq!(row.get("Market").and_then(|v| v.as_str()), Some("Tampa"));
+}
+
+#[test]
+fn test_transform_json_envelope_has_schema_version() {
+    let source = workspace_path("crates/mc-model/examples/acme.inputs.csv");
+    let recipe = workspace_path("crates/mc-recipe/examples/recipes/acme-long-format.recipe.yaml");
+    let out = run_mc(&[
+        "tessera",
+        "transform",
+        "--source",
+        source.to_str().unwrap(),
+        "--recipe",
+        recipe.to_str().unwrap(),
+        "--preview",
+        "1",
+        "--format",
+        "json",
+    ]);
+    assert!(out.status.success());
+    let json = parse_json(&out.stdout);
+    assert_eq!(
+        json.get("schema_version").and_then(|v| v.as_str()),
+        Some("1.0"),
+        "transform JSON must wrap output in a schema_version envelope (Phase 6A.2 item 1.5 / Codex COD-2)"
+    );
+    assert!(
+        json.get("rows").is_some(),
+        "envelope must have 'rows' field"
+    );
+    assert!(
+        json.get("count").is_some(),
+        "envelope must have 'count' field"
+    );
+}
+
+#[test]
+fn test_transform_recipe_parse_error_returns_exit_1() {
+    use std::io::Write;
+    let dir = std::env::temp_dir().join(format!("mc-cli-bad-recipe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let recipe = dir.join("bad.yaml");
+    let mut f = std::fs::File::create(&recipe).expect("create");
+    // Definitely-bad recipe: wrong shape entirely.
+    f.write_all(b"this: is\nnot: a\nrecipe: schema\n")
+        .expect("write");
+    drop(f);
+    let source = workspace_path("crates/mc-model/examples/acme.inputs.csv");
+    let out = run_mc(&[
+        "tessera",
+        "transform",
+        "--source",
+        source.to_str().unwrap(),
+        "--recipe",
+        recipe.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "malformed recipe must return exit 1 (model/recipe class); stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_mcp_trace_accepts_integer_depth() {
+    let p = acme_path_str();
+    let resp = mcp_call(
+        "mosaic.model.trace",
+        &format!(r#"{{"path":"{p}","coord":"{COORD_CLICKS_JAN_TAMPA}","depth":2}}"#),
+    );
+    let result = resp.get("result").expect("result");
+    assert_eq!(
+        result.get("isError").and_then(|v| v.as_bool()),
+        Some(false),
+        "JSON integer depth must be accepted"
+    );
+    let structured = result.get("structured").expect("structured");
+    assert!(
+        structured.is_object(),
+        "trace structured must be a parsed JSON object"
+    );
+    assert_eq!(
+        structured.get("schema_version").and_then(|v| v.as_str()),
+        Some("1.1"),
+        "trace structured carries the bumped schema_version"
     );
 }

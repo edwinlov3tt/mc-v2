@@ -2,11 +2,22 @@
 //!
 //! Returns a hierarchical tree showing how a derived value was computed,
 //! all the way down to input values. The "explainability" feature.
+//!
+//! Phase 6A.2 items 1.2 + 1.3 reshape the JSON envelope. The breaking
+//! changes (documented in handoff §"Backward Compat Inventory"):
+//!
+//! - `inputs` becomes a JSON **array** (was an object keyed by measure
+//!   name — duplicate keys silently dropped consolidated children).
+//! - Every node carries `coord` (canonical `Dim=Elem,...` string),
+//!   `child_count: usize`, and `formula: string|null`. `measure` and
+//!   `rule` are removed (the canonical identifier is `coord`).
+//! - Trace's envelope `schema_version` bumps from `"1.0"` to `"1.1"`.
+//!   Other Phase 6A verbs stay at `"1.0"`.
 
-use crate::query::{
-    load_model, parse_coord_string, push_json_envelope_header, push_json_str, OutputFormat,
-};
-use mc_core::{ScalarValue, TraceNode, TraceOp};
+use crate::query::{load_model, parse_coord_string, push_json_str, OutputFormat};
+use mc_core::{CellCoordinate, DimensionKind, ScalarValue, TraceNode, TraceOp};
+use mc_model::ModelRefs;
+use std::collections::HashMap;
 use std::fmt::Write;
 
 pub struct TraceCommand {
@@ -16,6 +27,10 @@ pub struct TraceCommand {
     pub depth: Option<usize>,
     pub time_anchor: Option<String>,
 }
+
+/// `schema_version` for the trace JSON envelope. Phase 6A.2 item 1.3
+/// bumps this from "1.0" → "1.1" (breaking shape change for `inputs`).
+const TRACE_SCHEMA_VERSION: &str = "1.1";
 
 pub fn parse(args: &[String]) -> Result<TraceCommand, String> {
     let mut path: Option<String> = None;
@@ -89,6 +104,7 @@ pub fn run_captured(cmd: TraceCommand) -> (i32, String) {
     let mut cube = loaded.cube;
     let principal = loaded.root_principal;
     let refs = &loaded.refs;
+    let formulas = &loaded.formulas;
 
     // Apply time-anchor override
     if let Some(anchor_name) = &cmd.time_anchor {
@@ -129,23 +145,16 @@ pub fn run_captured(cmd: TraceCommand) -> (i32, String) {
         }
     };
 
-    // Get measure name from coord
-    let measure_name = coord_names.get("Measure").cloned().unwrap_or_default();
-
-    // Build trace tree from TraceNode if present
     let trace_tree = match &cell.trace {
-        Some(trace) => build_trace_tree(&trace.root, &cube, refs, cmd.depth.unwrap_or(20), 0),
-        None => {
-            // No trace available — return a simple leaf node
-            TraceTree {
-                measure: measure_name.clone(),
-                value: cell.value.clone(),
-                source: "input".to_string(),
-                rule: None,
-                formula: None,
-                inputs: Vec::new(),
-            }
-        }
+        Some(trace) => build_trace_tree(
+            &trace.root,
+            &cube,
+            refs,
+            formulas,
+            cmd.depth.unwrap_or(20),
+            0,
+        ),
+        None => fallback_leaf_tree(&coord, &cell.value, &cube),
     };
 
     let output_str = match cmd.format {
@@ -160,81 +169,170 @@ pub fn run_captured(cmd: TraceCommand) -> (i32, String) {
 // Internal trace tree representation
 // ---------------------------------------------------------------------------
 
+/// Phase 6A.2 schema 1.1 node shape. Every field is always present;
+/// `formula` is null for inputs and consolidations, string for rules.
 struct TraceTree {
-    measure: String,
+    /// Canonical coordinate string `Dim1=Elem1,...,Measure=...`.
+    coord: String,
     value: ScalarValue,
-    source: String, // "input" | "rule" | "consolidation"
-    rule: Option<String>,
+    /// `"input"` | `"rule"` | `"consolidation"` | `"default"` | `"null_poison"`.
+    source: String,
+    /// `inputs.len()` — emitted as a separate field so agents can read
+    /// it without iterating the array.
+    child_count: usize,
+    /// Authored formula (rendered via `mc_model::formula::serialize`)
+    /// for rule sources; `None` for input/consolidation.
     formula: Option<String>,
-    inputs: Vec<(String, TraceTree)>,
+    /// Child trace nodes, in the kernel's emit order.
+    inputs: Vec<TraceTree>,
 }
 
 fn build_trace_tree(
     node: &TraceNode,
     cube: &mc_core::Cube,
-    refs: &mc_model::ModelRefs,
+    refs: &ModelRefs,
+    formulas: &HashMap<String, String>,
     max_depth: usize,
     current_depth: usize,
 ) -> TraceTree {
-    // Get measure name from coord
-    let measure_dim_idx = cube
-        .dimensions()
-        .iter()
-        .position(|d| d.kind == mc_core::DimensionKind::Measure)
-        .unwrap_or(0);
-    let measure_dim = &cube.dimensions()[measure_dim_idx];
-    let measure_elem_id = node.coord.elements()[measure_dim_idx];
-    let measure_name = measure_dim
-        .element(measure_elem_id)
-        .map(|e| e.name.clone())
-        .unwrap_or_else(|| format!("?{:?}", measure_elem_id));
+    let coord_str = coord_to_canonical_string(&node.coord, cube);
 
-    let (source, rule_name, formula) = match &node.operation {
-        TraceOp::InputLookup { .. } => ("input".to_string(), None, None),
-        TraceOp::RuleEvaluation {
-            rule_id,
-            expr_summary,
-        } => {
-            let rule_name = refs
-                .rules
-                .iter()
-                .find(|(_, &id)| id == *rule_id)
-                .map(|(name, _)| name.clone());
-            let formula = Some(format!("{:?}", expr_summary.op));
-            ("rule".to_string(), rule_name, formula)
+    let (source, formula) = match &node.operation {
+        TraceOp::InputLookup { .. } => ("input".to_string(), None),
+        TraceOp::RuleEvaluation { rule_id, .. } => {
+            let formula = lookup_formula(*rule_id, refs, formulas);
+            ("rule".to_string(), formula)
         }
-        TraceOp::Consolidation { child_count, .. } => {
-            (format!("consolidation({child_count} children)"), None, None)
-        }
-        TraceOp::DefaultFallback { reason, .. } => (format!("default({reason})"), None, None),
-        TraceOp::NullPoison { .. } => ("null_poison".to_string(), None, None),
+        TraceOp::Consolidation { .. } => ("consolidation".to_string(), None),
+        TraceOp::DefaultFallback { .. } => ("default".to_string(), None),
+        TraceOp::NullPoison { .. } => ("null_poison".to_string(), None),
     };
 
-    let inputs = if current_depth >= max_depth {
+    let inputs: Vec<TraceTree> = if current_depth >= max_depth {
         Vec::new()
     } else {
         node.children
             .iter()
             .map(|child| {
-                let child_measure_id = child.coord.elements()[measure_dim_idx];
-                let child_name = measure_dim
-                    .element(child_measure_id)
-                    .map(|e| e.name.clone())
-                    .unwrap_or_else(|| "?".to_string());
-                let child_tree = build_trace_tree(child, cube, refs, max_depth, current_depth + 1);
-                (child_name, child_tree)
+                build_trace_tree(child, cube, refs, formulas, max_depth, current_depth + 1)
             })
             .collect()
     };
 
     TraceTree {
-        measure: measure_name,
+        coord: coord_str,
         value: node.value.clone(),
         source,
-        rule: rule_name,
+        child_count: inputs.len(),
         formula,
         inputs,
     }
+}
+
+/// Construct a leaf node for the case where `Cube::read_with_trace`
+/// returned no trace at the requested coordinate.
+///
+/// Phase 6A.2 item 1.3 (Codex M-5 bonus): the previous fallback
+/// unconditionally emitted `source: "input"`. If the coord points at
+/// a consolidated position (any non-Measure dim element that is not a
+/// hierarchy leaf), label as `"consolidation"` and report the
+/// expanded leaf count via `child_count`.
+fn fallback_leaf_tree(
+    coord: &CellCoordinate,
+    value: &ScalarValue,
+    cube: &mc_core::Cube,
+) -> TraceTree {
+    let coord_str = coord_to_canonical_string(coord, cube);
+    let consolidated_count = consolidated_leaf_count(coord, cube);
+    let (source, child_count) = match consolidated_count {
+        Some(n) => ("consolidation".to_string(), n),
+        None => ("input".to_string(), 0),
+    };
+    TraceTree {
+        coord: coord_str,
+        value: value.clone(),
+        source,
+        child_count,
+        formula: None,
+        inputs: Vec::new(),
+    }
+}
+
+/// If `coord` points at a consolidated position, return the count of
+/// leaf coords it expands to. Otherwise (every non-Measure dim element
+/// is a leaf) return `None`.
+fn consolidated_leaf_count(coord: &CellCoordinate, cube: &mc_core::Cube) -> Option<usize> {
+    let dims = cube.dimensions();
+    let elements = coord.elements();
+    let mut count: usize = 1;
+    let mut any_consolidated = false;
+    for (dim_idx, dim) in dims.iter().enumerate() {
+        if dim.kind == DimensionKind::Measure {
+            continue;
+        }
+        let elem_id = elements[dim_idx];
+        let hierarchy = dim.default_hierarchy();
+        if hierarchy.edges.is_empty() {
+            // Flat dimension — every element is a leaf; this dim
+            // contributes a factor of 1 to the count.
+            continue;
+        }
+        if hierarchy.is_leaf(elem_id) {
+            continue;
+        }
+        any_consolidated = true;
+        // Number of leaf descendants (the kernel uses (ElementId, weight)
+        // pairs for `descendants`; for our count we just want the
+        // distinct leaves under this element).
+        let leaves_under: usize = hierarchy
+            .descendants(elem_id)
+            .into_iter()
+            .filter(|(child_id, _)| hierarchy.is_leaf(*child_id))
+            .count();
+        // Defensive: an element with no leaf descendants would yield 0,
+        // which would zero out the product. Treat that as a flat 1.
+        count = count.saturating_mul(if leaves_under == 0 { 1 } else { leaves_under });
+    }
+    if any_consolidated {
+        Some(count)
+    } else {
+        None
+    }
+}
+
+/// Render a `CellCoordinate` as the canonical `"Dim1=Elem1,Dim2=Elem2,..."`
+/// string used by `--coord` flags and by the trace envelope's `coord`
+/// field.
+fn coord_to_canonical_string(coord: &CellCoordinate, cube: &mc_core::Cube) -> String {
+    let dims = cube.dimensions();
+    let elements = coord.elements();
+    let mut out = String::new();
+    for (dim_idx, dim) in dims.iter().enumerate() {
+        if dim_idx > 0 {
+            out.push(',');
+        }
+        out.push_str(&dim.name);
+        out.push('=');
+        let elem_id = elements[dim_idx];
+        let elem_name = dim.element(elem_id).map(|e| e.name.as_str()).unwrap_or("?");
+        out.push_str(elem_name);
+    }
+    out
+}
+
+/// Look up the rendered formula string for a kernel `RuleId`.
+fn lookup_formula(
+    rule_id: mc_core::RuleId,
+    refs: &ModelRefs,
+    formulas: &HashMap<String, String>,
+) -> Option<String> {
+    // `refs.rules` is name → RuleId; reverse-lookup gives us the
+    // authored rule name. The formulas map (built from
+    // `mc_model::inspect::summarize`) is keyed by the same name.
+    refs.rules
+        .iter()
+        .find(|(_, &id)| id == rule_id)
+        .and_then(|(name, _)| formulas.get(name).cloned())
 }
 
 // ---------------------------------------------------------------------------
@@ -243,8 +341,9 @@ fn build_trace_tree(
 
 fn format_trace_json(tree: &TraceTree) -> String {
     let mut out = String::new();
-    push_json_envelope_header(&mut out);
-    out.push_str("\"trace\": ");
+    out.push_str("{\n  \"schema_version\": \"");
+    out.push_str(TRACE_SCHEMA_VERSION);
+    out.push_str("\",\n  \"trace\": ");
     write_trace_json_node(&mut out, tree, 1);
     out.push_str("\n}\n");
     out
@@ -252,15 +351,52 @@ fn format_trace_json(tree: &TraceTree) -> String {
 
 fn write_trace_json_node(out: &mut String, tree: &TraceTree, indent: usize) {
     let pad = "  ".repeat(indent);
-    out.push_str(&format!("{pad}{{\n"));
     let inner = "  ".repeat(indent + 1);
 
-    out.push_str(&format!("{inner}\"measure\": "));
-    push_json_str(out, &tree.measure);
+    out.push_str(&format!("{pad}{{\n"));
+
+    out.push_str(&format!("{inner}\"coord\": "));
+    push_json_str(out, &tree.coord);
     out.push_str(",\n");
 
     out.push_str(&format!("{inner}\"value\": "));
-    match &tree.value {
+    push_value_json(out, &tree.value);
+    out.push_str(",\n");
+
+    out.push_str(&format!("{inner}\"source\": "));
+    push_json_str(out, &tree.source);
+    out.push_str(",\n");
+
+    let _ = write!(out, "{inner}\"child_count\": {}", tree.child_count);
+    out.push_str(",\n");
+
+    out.push_str(&format!("{inner}\"formula\": "));
+    match &tree.formula {
+        Some(f) => push_json_str(out, f),
+        None => out.push_str("null"),
+    }
+    out.push_str(",\n");
+
+    out.push_str(&format!("{inner}\"inputs\": "));
+    if tree.inputs.is_empty() {
+        out.push_str("[]");
+    } else {
+        out.push_str("[\n");
+        for (i, child) in tree.inputs.iter().enumerate() {
+            write_trace_json_node(out, child, indent + 2);
+            if i + 1 < tree.inputs.len() {
+                out.push(',');
+            }
+            out.push('\n');
+        }
+        out.push_str(&format!("{inner}]"));
+    }
+    out.push('\n');
+    out.push_str(&format!("{pad}}}"));
+}
+
+fn push_value_json(out: &mut String, v: &ScalarValue) {
+    match v {
         ScalarValue::F64(f) => {
             if *f == f.trunc() && f.abs() < 1e15 {
                 let _ = write!(out, "{}", *f as i64);
@@ -269,43 +405,11 @@ fn write_trace_json_node(out: &mut String, tree: &TraceTree, indent: usize) {
             }
         }
         ScalarValue::Null => out.push_str("null"),
-        other => out.push_str(&format!("\"{}\"", crate::query::format_scalar(other))),
-    }
-    out.push_str(",\n");
-
-    if let Some(rule) = &tree.rule {
-        out.push_str(&format!("{inner}\"rule\": "));
-        push_json_str(out, rule);
-        out.push_str(",\n");
-    }
-    if let Some(formula) = &tree.formula {
-        out.push_str(&format!("{inner}\"formula\": "));
-        push_json_str(out, formula);
-        out.push_str(",\n");
-    }
-
-    out.push_str(&format!("{inner}\"source\": "));
-    push_json_str(out, &tree.source);
-
-    if tree.inputs.is_empty() {
-        out.push('\n');
-    } else {
-        out.push_str(",\n");
-        out.push_str(&format!("{inner}\"inputs\": {{\n"));
-        for (i, (name, child)) in tree.inputs.iter().enumerate() {
-            let inner2 = "  ".repeat(indent + 2);
-            out.push_str(&inner2.to_string());
-            push_json_str(out, name);
-            out.push_str(": ");
-            write_trace_json_node(out, child, indent + 2);
-            if i + 1 < tree.inputs.len() {
-                out.push(',');
-            }
-            out.push('\n');
+        other => {
+            let s = crate::query::format_scalar(other);
+            push_json_str(out, &s);
         }
-        out.push_str(&format!("{inner}}}\n"));
     }
-    out.push_str(&format!("{pad}}}"));
 }
 
 fn format_trace_text(tree: &TraceTree, depth: usize) -> String {
@@ -329,15 +433,15 @@ fn write_trace_text_node(
         "├── "
     };
     let value_str = crate::query::format_scalar(&tree.value);
-    let source_tag = if tree.source == "input" {
-        " (input)"
-    } else {
-        ""
+    let source_tag = match tree.source.as_str() {
+        "input" => " (input)",
+        "consolidation" => " (consolidation)",
+        _ => "",
     };
     let _ = writeln!(
         out,
         "{prefix}{connector}{} = {value_str}{source_tag}",
-        tree.measure
+        tree.coord
     );
 
     let child_prefix = if is_root {
@@ -348,23 +452,78 @@ fn write_trace_text_node(
         format!("{prefix}│   ")
     };
 
-    for (i, (_, child)) in tree.inputs.iter().enumerate() {
+    for (i, child) in tree.inputs.iter().enumerate() {
         let last = i + 1 == tree.inputs.len();
         write_trace_text_node(out, child, &child_prefix, last, false);
     }
 }
 
 fn format_trace_flat_csv(tree: &TraceTree) -> String {
-    let mut out = String::from("measure,value,source,rule\n");
+    let mut out = String::from("coord,value,source,child_count,formula\n");
     write_trace_csv_row(&mut out, tree);
     out
 }
 
 fn write_trace_csv_row(out: &mut String, tree: &TraceTree) {
     let value_str = crate::query::format_scalar(&tree.value);
-    let rule = tree.rule.as_deref().unwrap_or("");
-    let _ = writeln!(out, "{},{value_str},{},{rule}", tree.measure, tree.source);
-    for (_, child) in &tree.inputs {
+    let formula = tree.formula.as_deref().unwrap_or("");
+    let _ = writeln!(
+        out,
+        "{},{value_str},{},{},{}",
+        tree.coord, tree.source, tree.child_count, formula
+    );
+    for child in &tree.inputs {
         write_trace_csv_row(out, child);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mc_core::CellCoordinate;
+    use mc_fixtures::build_acme_cube;
+
+    /// Phase 6A.2 item 1.3 (Codex M-5 bonus): the no-trace fallback at
+    /// a consolidated coord must label `source: "consolidation"` rather
+    /// than the previous `source: "input"`. Q1_2026/Paid_Media/Florida
+    /// expands to 27 leaf children.
+    #[test]
+    fn test_trace_fallback_at_consolidated_coord_labels_consolidation() {
+        let (cube, refs) = build_acme_cube().expect("acme cube");
+        let coord = CellCoordinate::from_parts(
+            cube.id,
+            vec![
+                refs.scen_baseline,
+                refs.ver_working,
+                refs.q1_2026,
+                refs.paid_media,
+                refs.florida,
+                refs.spend,
+            ],
+        );
+        let tree = fallback_leaf_tree(&coord, &mc_core::ScalarValue::Null, &cube);
+        assert_eq!(tree.source, "consolidation");
+        assert_eq!(tree.child_count, 27);
+        assert!(tree.formula.is_none());
+        assert!(tree.inputs.is_empty());
+    }
+
+    #[test]
+    fn test_trace_fallback_at_input_coord_labels_input() {
+        let (cube, refs) = build_acme_cube().expect("acme cube");
+        let coord = CellCoordinate::from_parts(
+            cube.id,
+            vec![
+                refs.scen_baseline,
+                refs.ver_working,
+                refs.jan_2026,
+                refs.paid_search,
+                refs.tampa,
+                refs.spend,
+            ],
+        );
+        let tree = fallback_leaf_tree(&coord, &mc_core::ScalarValue::F64(10500.0), &cube);
+        assert_eq!(tree.source, "input");
+        assert_eq!(tree.child_count, 0);
     }
 }

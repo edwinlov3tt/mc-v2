@@ -187,7 +187,11 @@ fn handle_tools_list() -> JsonValue {
                 ("fixture", "string", "Optional --fixture <name> filter (filter-only semantic).", false),
             ],
         ),
-        // Phase 6A: Agent-Ready CLI tools
+        // Phase 6A: Agent-Ready CLI tools.
+        // Phase 6A.2 item 1.4: numeric/integer/bool params advertise their
+        // canonical types. The handlers also accept the legacy "string"
+        // shape via coercion (handoff matrix W1) for backward compat
+        // with clients that grew up against the original Phase 6A schema.
         tool_descriptor(
             "mosaic.model.query",
             "Query cells by coordinate filter. Returns matching rows with values. Supports --where filters, --show columns, --aggregate functions.",
@@ -198,7 +202,8 @@ fn handle_tools_list() -> JsonValue {
                 ("coord", "string", "Single coordinate for exact lookup (e.g., \"Scenario=Base,Version=Working,...,Measure=EV_Per_Dollar\").", false),
                 ("aggregate", "string", "Comma-separated aggregate functions (e.g., \"mean(Abs_Error),sum(Profit_Units)\").", false),
                 ("format", "string", "Output format: 'json' (default), 'csv', or 'text'.", false),
-                ("limit", "string", "Max rows to return (default 10000).", false),
+                ("limit", "integer", "Max rows to return (default 10000). JSON numbers preferred; numeric strings also accepted for backward compat.", false),
+                ("offset", "integer", "Skip the first N matches before applying limit (default 0). Use with `limit` for forward pagination.", false),
             ],
         ),
         tool_descriptor(
@@ -207,7 +212,7 @@ fn handle_tools_list() -> JsonValue {
             &[
                 ("path", "string", "Path to a Mosaic YAML model.", true),
                 ("set_coord", "string", "Coordinate of the cell to override (e.g., \"Scenario=Base,...,Measure=Market_Line\").", true),
-                ("value", "string", "New numeric value to set.", true),
+                ("value", "number", "New numeric value to set. JSON numbers preferred; numeric strings also accepted for backward compat.", true),
                 ("show", "string", "Comma-separated measure names to report before/after/delta.", true),
             ],
         ),
@@ -217,7 +222,7 @@ fn handle_tools_list() -> JsonValue {
             &[
                 ("path", "string", "Path to a Mosaic YAML model.", true),
                 ("coord", "string", "Coordinate of the cell to trace (e.g., \"Scenario=Base,...,Measure=EV_Per_Dollar\").", true),
-                ("depth", "string", "Max trace depth (default unlimited).", false),
+                ("depth", "integer", "Max trace depth (default unlimited). JSON integers preferred; integer-valued strings also accepted for backward compat.", false),
             ],
         ),
         tool_descriptor(
@@ -240,7 +245,7 @@ fn handle_tools_list() -> JsonValue {
                 ("path", "string", "Path to a Mosaic YAML model.", true),
                 ("left", "string", "Left state filter (e.g., \"Scenario=Base\").", true),
                 ("right", "string", "Right state filter (e.g., \"Scenario=Forecast\").", true),
-                ("limit", "string", "Max changes to report (default 50).", false),
+                ("limit", "integer", "Max changes to report (default 50). JSON integers preferred; numeric strings also accepted.", false),
             ],
         ),
         tool_descriptor(
@@ -249,7 +254,7 @@ fn handle_tools_list() -> JsonValue {
             &[
                 ("path", "string", "Path to a Mosaic YAML model.", true),
                 ("coord", "string", "Coordinate of the cell to write.", true),
-                ("value", "string", "New numeric value.", true),
+                ("value", "number", "New numeric value. JSON numbers preferred; numeric strings also accepted for backward compat.", true),
                 ("dry_run", "boolean", "If true, show what would change without writing.", false),
             ],
         ),
@@ -261,7 +266,7 @@ fn handle_tools_list() -> JsonValue {
                 ("recipe", "string", "Path to the transform recipe YAML.", true),
                 ("output", "string", "Output file path. Omit for stdout.", false),
                 ("format", "string", "Output format: 'csv' (default) or 'json'.", false),
-                ("preview", "string", "Preview N rows without writing output file.", false),
+                ("preview", "integer", "Preview N rows without writing output file. JSON integers preferred; numeric strings also accepted.", false),
             ],
         ),
     ]);
@@ -369,7 +374,12 @@ impl ToolOutcome {
             ("exit_code".into(), JsonValue::Number(self.exit_code as f64)),
         ];
         if let Some(s) = self.structured {
-            fields.push(("structured".into(), JsonValue::String(s)));
+            // Phase 6A.2 item 1.4 W3: emit `structured` as a parsed
+            // JSON value when possible so agents don't have to double-
+            // parse. Fall back to wrapping the raw text in a JSON
+            // string for non-JSON outputs (e.g. inspect --format text).
+            let parsed = parse_json(&s).unwrap_or(JsonValue::String(s));
+            fields.push(("structured".into(), parsed));
         }
         JsonValue::Object(fields)
     }
@@ -623,9 +633,13 @@ fn tool_query(args: &JsonValue) -> ToolOutcome {
         cli_args.push("--aggregate".into());
         cli_args.push(a);
     }
-    if let Some(l) = args.get("limit").and_then(JsonValue::as_str_owned) {
+    if let Some(l) = args.get("limit").and_then(JsonValue::as_integer_coerced) {
         cli_args.push("--limit".into());
-        cli_args.push(l);
+        cli_args.push(l.to_string());
+    }
+    if let Some(o) = args.get("offset").and_then(JsonValue::as_integer_coerced) {
+        cli_args.push("--offset".into());
+        cli_args.push(o.to_string());
     }
     cli_args.push("--format".into());
     cli_args.push("json".into());
@@ -644,7 +658,7 @@ fn tool_whatif(args: &JsonValue) -> ToolOutcome {
         Some(s) => s,
         None => return error_outcome("missing required argument: set_coord"),
     };
-    let value = match args.get("value").and_then(JsonValue::as_str_owned) {
+    let value = match args.get("value").and_then(JsonValue::as_number_coerced) {
         Some(v) => v,
         None => return error_outcome("missing required argument: value"),
     };
@@ -657,7 +671,7 @@ fn tool_whatif(args: &JsonValue) -> ToolOutcome {
         "--set".into(),
         set_coord,
         "--value".into(),
-        value,
+        format_f64_arg(value),
         "--show".into(),
         show,
         "--format".into(),
@@ -667,6 +681,17 @@ fn tool_whatif(args: &JsonValue) -> ToolOutcome {
         let cmd = crate::whatif::parse(&cli_args)?;
         Ok(crate::whatif::run_captured(cmd))
     })
+}
+
+/// Render an `f64` for a CLI `--value`-style flag. Avoids scientific
+/// notation for typical numeric inputs (the CLI parser accepts both).
+fn format_f64_arg(v: f64) -> String {
+    if v == v.trunc() && v.abs() < 1e15 {
+        // integer-valued — render without trailing ".0"
+        format!("{}", v as i64)
+    } else {
+        format!("{v}")
+    }
 }
 
 fn tool_trace(args: &JsonValue) -> ToolOutcome {
@@ -685,9 +710,9 @@ fn tool_trace(args: &JsonValue) -> ToolOutcome {
         "--format".into(),
         "json".into(),
     ];
-    if let Some(d) = args.get("depth").and_then(JsonValue::as_str_owned) {
+    if let Some(d) = args.get("depth").and_then(JsonValue::as_integer_coerced) {
         cli_args.push("--depth".into());
-        cli_args.push(d);
+        cli_args.push(d.to_string());
     }
     run_cli_verb_json(|| {
         let cmd = crate::trace::parse(&cli_args)?;
@@ -763,9 +788,9 @@ fn tool_diff(args: &JsonValue) -> ToolOutcome {
         "--format".into(),
         "json".into(),
     ];
-    if let Some(l) = args.get("limit").and_then(JsonValue::as_str_owned) {
+    if let Some(l) = args.get("limit").and_then(JsonValue::as_integer_coerced) {
         cli_args.push("--limit".into());
-        cli_args.push(l);
+        cli_args.push(l.to_string());
     }
     run_cli_verb_json(|| {
         let cmd = crate::diff::parse(&cli_args)?;
@@ -782,20 +807,20 @@ fn tool_write(args: &JsonValue) -> ToolOutcome {
         Some(c) => c,
         None => return error_outcome("missing required argument: coord"),
     };
-    let value = match args.get("value").and_then(JsonValue::as_str_owned) {
+    let value = match args.get("value").and_then(JsonValue::as_number_coerced) {
         Some(v) => v,
         None => return error_outcome("missing required argument: value"),
     };
     let dry_run = args
         .get("dry_run")
-        .and_then(JsonValue::as_bool)
+        .and_then(JsonValue::as_bool_coerced)
         .unwrap_or(false);
     let mut cli_args = vec![
         path,
         "--coord".into(),
         coord,
         "--value".into(),
-        value,
+        format_f64_arg(value),
         "--format".into(),
         "json".into(),
     ];
@@ -828,41 +853,28 @@ fn tool_transform(args: &JsonValue) -> ToolOutcome {
         cli_args.push("--output".into());
         cli_args.push(o);
     }
-    if let Some(p) = args.get("preview").and_then(JsonValue::as_str_owned) {
+    if let Some(p) = args.get("preview").and_then(JsonValue::as_integer_coerced) {
         cli_args.push("--preview".into());
-        cli_args.push(p);
+        cli_args.push(p.to_string());
     }
-    run_cli_verb(|| {
+    run_cli_verb_json(|| {
         let cmd = crate::transform::parse(&cli_args)?;
         Ok(crate::transform::run_captured(cmd))
     })
 }
 
-/// Run a CLI verb, capturing its output into a ToolOutcome.
-/// The verb `run_captured` functions return (exit_code, output_string)
-/// instead of printing directly to stdout, preventing MCP stream corruption.
-fn run_cli_verb<F>(f: F) -> ToolOutcome
-where
-    F: FnOnce() -> Result<(i32, String), String>,
-{
-    match f() {
-        Ok((exit_code, output)) => ToolOutcome {
-            exit_code,
-            stdout: output,
-            structured: None,
-        },
-        Err(e) => error_outcome(&e),
-    }
-}
-
-/// Like [`run_cli_verb`] but also lifts the captured stdout into
-/// `structured` when the verb succeeded — for Phase 6A verbs that
-/// always emit a `schema_version: "1.0"` JSON envelope under MCP.
+/// Run a CLI verb, capturing its output into a ToolOutcome and
+/// lifting the captured stdout into `structured` when the verb
+/// succeeded — for Phase 6A verbs that emit JSON envelopes under MCP.
 ///
 /// Phase 6A.1 MIN-5: closes the gap where `mosaic.model.query` and
 /// siblings returned the JSON only via `stdout`, forcing agents to
 /// double-parse. The legacy `validate` / `inspect` / `lint` tools
 /// already populate `structured`; this brings the new verbs in line.
+///
+/// Phase 6A.2 item 1.4 W3: `structured` is parsed into a JsonValue
+/// at output time (see `ToolOutcome::into_call_result`), so agents
+/// receive a structured JSON object rather than a quoted JSON string.
 fn run_cli_verb_json<F>(f: F) -> ToolOutcome
 where
     F: FnOnce() -> Result<(i32, String), String>,
@@ -1194,6 +1206,50 @@ impl JsonValue {
     fn as_bool(&self) -> Option<bool> {
         match self {
             JsonValue::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+    /// Phase 6A.2 item 1.4: accept either a JSON number OR a numeric
+    /// string (legacy path — Phase 6A advertised numeric params as
+    /// `"string"` in the JSON schema, so old clients have been sending
+    /// strings). Both shapes coerce to f64.
+    fn as_number_coerced(&self) -> Option<f64> {
+        match self {
+            JsonValue::Number(n) => Some(*n),
+            JsonValue::String(s) => s.parse::<f64>().ok(),
+            _ => None,
+        }
+    }
+    /// Like [`as_number_coerced`] but rounds-and-checks for integers.
+    /// Used for `limit`, `depth`, `preview`, `offset` MCP params.
+    fn as_integer_coerced(&self) -> Option<i64> {
+        match self {
+            JsonValue::Number(n) => {
+                if n.is_finite() && *n == n.trunc() {
+                    Some(*n as i64)
+                } else {
+                    None
+                }
+            }
+            JsonValue::String(s) => s.parse::<i64>().ok().or_else(|| {
+                s.parse::<f64>()
+                    .ok()
+                    .filter(|f| *f == f.trunc())
+                    .map(|f| f as i64)
+            }),
+            _ => None,
+        }
+    }
+    /// Coerce a JSON bool, or a string `"true"`/`"false"`. Used by MCP
+    /// boolean params that may have been advertised as `"string"`.
+    fn as_bool_coerced(&self) -> Option<bool> {
+        match self {
+            JsonValue::Bool(b) => Some(*b),
+            JsonValue::String(s) => match s.as_str() {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            },
             _ => None,
         }
     }

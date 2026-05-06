@@ -1,10 +1,22 @@
 //! `mc tessera transform` — convert raw data to model-compatible format.
 //!
-//! Fetches from URL or local file, applies recipe-driven column mappings,
-//! and outputs a clean long-format CSV matching the model's canonical_inputs shape.
-//! Scope: simple HTTP GET only (no OAuth, no pagination, no retry).
+//! Fetches from URL or local file, applies a real `mc-recipe` Recipe's
+//! column mappings + defaults, and outputs a clean long-format CSV/JSON
+//! matching the model's canonical_inputs shape. Scope: simple HTTP GET
+//! only (no OAuth, no pagination, no retry).
+//!
+//! Phase 6A.2 item 1.5: the Phase 6A bespoke YAML line-scanner only
+//! recognized `column_mappings:` / `mappings:` keys with `source` /
+//! `target` fields, which `mc-recipe` does not emit. Real
+//! `mc-recipe::Recipe` YAML uses `source: SourceConfig` +
+//! `columns: Vec<ColumnMapping>` (each with `dimension` xor `measure`).
+//! That mismatch silently dropped every mapped row, leaving only
+//! defaults in the output. This module now goes through
+//! `mc_recipe::parse(&yaml) -> Result<Recipe, RecipeError>` and
+//! consults the parsed `Recipe.columns` + `Recipe.defaults` directly.
 
-use crate::query::{push_json_str, OutputFormat};
+use crate::query::{push_json_envelope_header, push_json_str, OutputFormat};
+use mc_recipe::{DriverKind, Recipe};
 use std::fmt::Write;
 
 pub struct TransformCommand {
@@ -78,16 +90,7 @@ pub fn run(cmd: TransformCommand) -> i32 {
 /// Execute the transform verb and return (exit_code, output_string).
 /// Used by MCP to capture output without printing to stdout.
 pub fn run_captured(cmd: TransformCommand) -> (i32, String) {
-    // 1. Fetch source data
-    let raw_data = match fetch_source(&cmd.source) {
-        Ok(data) => data,
-        Err(e) => {
-            eprintln!("error: could not fetch source: {e}");
-            return (3, String::new()); // I/O error exit code
-        }
-    };
-
-    // 2. Load recipe
+    // 1. Read recipe YAML and parse into a real `mc_recipe::Recipe`.
     let recipe_yaml = match std::fs::read_to_string(&cmd.recipe) {
         Ok(s) => s,
         Err(e) => {
@@ -95,51 +98,71 @@ pub fn run_captured(cmd: TransformCommand) -> (i32, String) {
             return (3, String::new());
         }
     };
-
-    // 3. Parse recipe for column mappings and defaults
-    let recipe_config = match parse_transform_recipe(&recipe_yaml) {
-        Ok(c) => c,
+    let recipe = match mc_recipe::parse(&recipe_yaml) {
+        Ok(r) => r,
         Err(e) => {
-            eprintln!("error: invalid recipe: {e}");
+            // RecipeError carries an MC5xxx code via Display; surface
+            // it as exit 1 (model/recipe class), matching `mc model
+            // validate` behavior. Decision Matrix W2.
+            eprintln!("error: recipe parse failed: {e}");
             return (1, String::new());
         }
     };
 
-    // 4. Parse source data into rows
-    let source_rows = if cmd.source.ends_with(".json")
-        || cmd.source.starts_with("http")
-        || raw_data.trim_start().starts_with('{')
-        || raw_data.trim_start().starts_with('[')
-    {
-        match parse_json_source(&raw_data, &recipe_config) {
+    // 2. Driver gate: transform only handles file/URL drivers (Decision
+    // Matrix W3). DB drivers don't make sense here; fail fast with a
+    // pointed message instead of silently producing nothing.
+    match recipe.source.driver {
+        DriverKind::Csv | DriverKind::HttpJson => {}
+        other => {
+            eprintln!(
+                "error: `mc tessera transform` only supports csv / http_json drivers; \
+                 recipe declares {other:?}. Use `mc tessera apply` for DB-backed drivers."
+            );
+            return (1, String::new());
+        }
+    }
+
+    // 3. Fetch source data. CLI flag `--source` overrides the recipe's
+    // `source.path` / `source.url` per Decision Matrix W5.
+    let raw_data = match fetch_source(&cmd.source) {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!("error: could not fetch source: {e}");
+            return (3, String::new()); // I/O error
+        }
+    };
+
+    // 4. Parse rows.
+    let source_rows = match recipe.source.driver {
+        DriverKind::HttpJson => match parse_json_source(&raw_data, &recipe) {
             Ok(rows) => rows,
             Err(e) => {
                 eprintln!("error: could not parse JSON source: {e}");
                 return (1, String::new());
             }
-        }
-    } else {
-        match parse_csv_source(&raw_data, &recipe_config) {
+        },
+        DriverKind::Csv => match parse_csv_source(&raw_data) {
             Ok(rows) => rows,
             Err(e) => {
                 eprintln!("error: could not parse CSV source: {e}");
                 return (1, String::new());
             }
-        }
+        },
+        _ => unreachable!("driver gated above"),
     };
 
-    // 5. Apply transforms and build output rows
-    let mut output_rows = apply_transforms(&source_rows, &recipe_config);
+    // 5. Apply mappings and emit.
+    let mut output_rows = apply_recipe(&source_rows, &recipe);
+    let output_columns = derive_output_columns(&recipe);
 
-    // 6. Preview mode — truncate and display without writing
     if let Some(n) = cmd.preview {
         output_rows.truncate(n);
-        let preview_str = format_output(&output_rows, &recipe_config, cmd.format);
+        let preview_str = format_output(&output_rows, &output_columns, cmd.format);
         return (0, preview_str);
     }
 
-    // 7. Format and emit output
-    let output_str = format_output(&output_rows, &recipe_config, cmd.format);
+    let output_str = format_output(&output_rows, &output_columns, cmd.format);
     let captured = crate::query::capture_output(&output_str, &cmd.output);
     (0, captured)
 }
@@ -157,18 +180,12 @@ fn fetch_source(source: &str) -> Result<String, String> {
 }
 
 fn fetch_url(url: &str) -> Result<String, String> {
-    // Use a simple blocking HTTP GET via std::net (no external dep needed)
-    // Since mc-drivers already depends on ureq, we could use that,
-    // but mc-cli doesn't directly depend on ureq. We'll do a simple approach.
-    //
-    // Actually, let's use std::process::Command to invoke curl as a portable fallback,
-    // or implement a minimal HTTP GET.
-    // For maximum portability without new deps, use curl subprocess:
+    // Phase 6A invariant: no new CLI deps. Shell out to curl for HTTP.
+    // Block 2.6 (if shipped this phase) replaces this with `ureq`.
     let output = std::process::Command::new("curl")
         .args(["-sS", "-L", "--max-time", "30", url])
         .output()
         .map_err(|e| format!("failed to execute curl: {e}"))?;
-
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("curl failed: {stderr}"));
@@ -177,187 +194,25 @@ fn fetch_url(url: &str) -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
-// Recipe parsing (minimal — just column mappings + defaults)
-// ---------------------------------------------------------------------------
-
-struct TransformRecipe {
-    /// Column mappings: source_col → (target_dim_or_measure, options)
-    mappings: Vec<ColumnMapping>,
-    /// Default dimension values
-    defaults: Vec<(String, String)>,
-    /// JSON path to array (for JSON sources)
-    json_path: Option<String>,
-    /// Output columns in order
-    output_columns: Vec<String>,
-    /// Scale factors
-    scales: Vec<(String, f64)>,
-}
-
-struct ColumnMapping {
-    source: String,
-    target: String,
-    is_value: bool,
-}
-
-fn parse_transform_recipe(yaml_str: &str) -> Result<TransformRecipe, String> {
-    // Minimal YAML parsing without serde_yaml dep — look for key patterns
-    // We'll parse a simplified structure using line-by-line scanning.
-    let mut mappings: Vec<ColumnMapping> = Vec::new();
-    let mut defaults: Vec<(String, String)> = Vec::new();
-    let mut json_path: Option<String> = None;
-    let mut output_columns: Vec<String> = Vec::new();
-    let mut scales: Vec<(String, f64)> = Vec::new();
-
-    let mut in_mappings = false;
-    let mut in_defaults = false;
-    let mut current_mapping_source: Option<String> = None;
-    let mut current_mapping_target: Option<String> = None;
-    let mut current_mapping_is_value = false;
-
-    for line in yaml_str.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        // Top-level keys
-        if !line.starts_with(' ') && !line.starts_with('\t') {
-            in_mappings =
-                trimmed.starts_with("column_mappings:") || trimmed.starts_with("mappings:");
-            in_defaults = trimmed.starts_with("defaults:");
-            if trimmed.starts_with("json_path:") {
-                json_path = extract_yaml_value(trimmed).map(|s| s.to_string());
-            }
-            if trimmed.starts_with("output_columns:") {
-                // Will be parsed from subsequent lines
-                output_columns.clear();
-            }
-            continue;
-        }
-
-        if in_defaults {
-            // Parse "  dimension_name: "value""
-            if let Some((k, v)) = trimmed.split_once(':') {
-                let k = k.trim().trim_matches('-').trim();
-                let v = v.trim().trim_matches('"').trim_matches('\'');
-                if !k.is_empty() && !v.is_empty() {
-                    defaults.push((k.to_string(), v.to_string()));
-                }
-            }
-        }
-
-        if in_mappings {
-            if trimmed.starts_with("- source:") || trimmed.starts_with("source:") {
-                // Flush previous
-                if let (Some(src), Some(tgt)) =
-                    (current_mapping_source.take(), current_mapping_target.take())
-                {
-                    mappings.push(ColumnMapping {
-                        source: src,
-                        target: tgt,
-                        is_value: current_mapping_is_value,
-                    });
-                    current_mapping_is_value = false;
-                }
-                current_mapping_source = extract_yaml_value(trimmed).map(|s| s.to_string());
-            } else if trimmed.starts_with("target:")
-                || trimmed.starts_with("dimension:")
-                || trimmed.starts_with("measure:")
-            {
-                current_mapping_target = extract_yaml_value(trimmed).map(|s| s.to_string());
-            } else if trimmed.starts_with("is_value:") || trimmed.starts_with("value_column:") {
-                current_mapping_is_value = trimmed.contains("true") || trimmed.contains("yes");
-            } else if trimmed.starts_with("scale:") {
-                if let Some(val) = extract_yaml_value(trimmed) {
-                    if let Ok(scale) = val.parse::<f64>() {
-                        if let Some(src) = &current_mapping_source {
-                            scales.push((src.clone(), scale));
-                        }
-                    }
-                }
-            }
-        }
-
-        // output_columns list items
-        if trimmed.starts_with("- ") && output_columns.is_empty() && !in_mappings && !in_defaults {
-            let col = trimmed
-                .trim_start_matches("- ")
-                .trim()
-                .trim_matches('"')
-                .trim_matches('\'');
-            output_columns.push(col.to_string());
-        }
-    }
-    // Flush last mapping
-    if let (Some(src), Some(tgt)) = (current_mapping_source, current_mapping_target) {
-        mappings.push(ColumnMapping {
-            source: src,
-            target: tgt,
-            is_value: current_mapping_is_value,
-        });
-    }
-
-    // If no output columns specified, derive from mappings
-    if output_columns.is_empty() {
-        for m in &mappings {
-            if !output_columns.contains(&m.target) {
-                output_columns.push(m.target.clone());
-            }
-        }
-        // Add defaults as dimensions
-        for (k, _) in &defaults {
-            if !output_columns.contains(k) {
-                output_columns.insert(0, k.clone());
-            }
-        }
-        // Ensure "value" column if any mapping is a value
-        if mappings.iter().any(|m| m.is_value) && !output_columns.contains(&"value".to_string()) {
-            output_columns.push("value".to_string());
-        }
-    }
-
-    Ok(TransformRecipe {
-        mappings,
-        defaults,
-        json_path,
-        output_columns,
-        scales,
-    })
-}
-
-fn extract_yaml_value(line: &str) -> Option<&str> {
-    let (_, val) = line.split_once(':')?;
-    let val = val.trim().trim_matches('"').trim_matches('\'');
-    if val.is_empty() {
-        None
-    } else {
-        Some(val)
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Source parsing
 // ---------------------------------------------------------------------------
 
 type Row = Vec<(String, String)>;
 
-fn parse_json_source(data: &str, recipe: &TransformRecipe) -> Result<Vec<Row>, String> {
-    // Simple JSON array parsing via serde_json
+fn parse_json_source(data: &str, recipe: &Recipe) -> Result<Vec<Row>, String> {
     let parsed: serde_json::Value =
         serde_json::from_str(data).map_err(|e| format!("JSON parse error: {e}"))?;
 
-    // Navigate json_path if provided (simplified — just $.key or $.key[*])
-    let array = if let Some(jp) = &recipe.json_path {
+    let array = if let Some(jp) = recipe.source.json_path.as_deref() {
         navigate_json_path(&parsed, jp)?
     } else if parsed.is_array() {
         parsed.as_array().ok_or("expected JSON array")?.clone()
     } else if parsed.is_object() {
-        // Try to find an array in the top-level object
         let obj = parsed.as_object().ok_or("expected JSON object")?;
         let mut found = None;
         for (_, v) in obj {
             if v.is_array() {
-                found = Some(v.as_array().unwrap().clone());
+                found = Some(v.as_array().ok_or("expected array")?.clone());
                 break;
             }
         }
@@ -412,7 +267,7 @@ fn navigate_json_path(
     }
 }
 
-fn parse_csv_source(data: &str, _recipe: &TransformRecipe) -> Result<Vec<Row>, String> {
+fn parse_csv_source(data: &str) -> Result<Vec<Row>, String> {
     let mut lines = data.lines();
     let header_line = lines.next().ok_or("CSV is empty")?;
     let headers: Vec<&str> = header_line.split(',').map(|s| s.trim()).collect();
@@ -434,31 +289,74 @@ fn parse_csv_source(data: &str, _recipe: &TransformRecipe) -> Result<Vec<Row>, S
 }
 
 // ---------------------------------------------------------------------------
-// Transform application
+// Recipe application
 // ---------------------------------------------------------------------------
 
-fn apply_transforms(source_rows: &[Row], recipe: &TransformRecipe) -> Vec<Row> {
+/// Apply the recipe to one batch of source rows. Each output row carries
+/// (default_dim, element_name) entries first, then (target, value) for
+/// each mapped column where `target` is the recipe's `dimension` /
+/// `measure` name (or the literal `"value"` for measure values, with
+/// the measure name as a separate column for long-format output).
+fn apply_recipe(source_rows: &[Row], recipe: &Recipe) -> Vec<Row> {
     let mut output_rows = Vec::new();
 
     for source_row in source_rows {
         let mut output_row: Row = Vec::new();
 
-        // Apply defaults
+        // 1. Apply defaults (in YAML iteration order — HashMap key order
+        //    isn't deterministic, but that doesn't matter here because
+        //    the canonical column ordering is computed separately by
+        //    `derive_output_columns`).
         for (dim, val) in &recipe.defaults {
             output_row.push((dim.clone(), val.clone()));
         }
 
-        // Apply column mappings
-        for mapping in &recipe.mappings {
-            if let Some((_, val)) = source_row.iter().find(|(k, _)| *k == mapping.source) {
-                let mut val = val.clone();
-                // Apply scale if any
-                if let Some((_, scale)) = recipe.scales.iter().find(|(s, _)| *s == mapping.source) {
-                    if let Ok(n) = val.parse::<f64>() {
-                        val = format!("{}", n * scale);
-                    }
-                }
-                output_row.push((mapping.target.clone(), val));
+        // 2. Apply column mappings. For each mapping, look up the source
+        //    column in this row; if found, write it under either the
+        //    target `dimension` name or the long-format `value` slot
+        //    (with the measure name carried as a separate column).
+        let mut measure_name: Option<String> = None;
+        let mut measure_value: Option<String> = None;
+        for mapping in &recipe.columns {
+            if mapping.skip == Some(true) {
+                continue;
+            }
+            let raw_value = source_row
+                .iter()
+                .find(|(k, _)| *k == mapping.source)
+                .map(|(_, v)| v.clone());
+            let raw_value = match raw_value {
+                Some(v) => v,
+                None => continue,
+            };
+            let value = apply_scale(&raw_value, mapping.scale);
+
+            if let Some(dim) = mapping.dimension.as_deref() {
+                output_row.push((dim.to_string(), value));
+            } else if let Some(measure) = mapping.measure.as_deref() {
+                // Long-format output row: each input mapping that
+                // targets a measure becomes one output row downstream.
+                // For now we keep the wider "one source row → one
+                // output row with all measures inline" shape — the same
+                // shape the bespoke parser produced. Producing a true
+                // long-format multi-row stream is Phase 5D scope.
+                output_row.push((measure.to_string(), value.clone()));
+                measure_name = Some(measure.to_string());
+                measure_value = Some(value);
+            }
+        }
+
+        // Carry the last-bound measure forward as a `value` column for
+        // tooling that expects a long-form `Measure=...,value=...`
+        // shape. Compatible with the legacy bespoke-parser output.
+        if let (Some(name), Some(value)) = (measure_name, measure_value) {
+            // Avoid clobbering an existing `Measure` column from
+            // mappings (unlikely but defensive).
+            if !output_row.iter().any(|(k, _)| k == "Measure") {
+                output_row.push(("Measure".to_string(), name));
+            }
+            if !output_row.iter().any(|(k, _)| k == "value") {
+                output_row.push(("value".to_string(), value));
             }
         }
 
@@ -468,36 +366,79 @@ fn apply_transforms(source_rows: &[Row], recipe: &TransformRecipe) -> Vec<Row> {
     output_rows
 }
 
+fn apply_scale(value: &str, scale: Option<f64>) -> String {
+    match scale {
+        Some(s) if (s - 1.0).abs() > f64::EPSILON => match value.parse::<f64>() {
+            Ok(n) => format!("{}", n * s),
+            Err(_) => value.to_string(),
+        },
+        _ => value.to_string(),
+    }
+}
+
+/// Compute a stable column order for the output: defaults first (sorted),
+/// then mapping targets in YAML order (each appears once), then `Measure`
+/// + `value` if any mapping carries a measure.
+fn derive_output_columns(recipe: &Recipe) -> Vec<String> {
+    let mut cols: Vec<String> = Vec::new();
+    let mut default_keys: Vec<&String> = recipe.defaults.keys().collect();
+    default_keys.sort();
+    for k in default_keys {
+        cols.push(k.clone());
+    }
+    let mut any_measure = false;
+    for m in &recipe.columns {
+        if m.skip == Some(true) {
+            continue;
+        }
+        if let Some(dim) = m.dimension.as_deref() {
+            if !cols.iter().any(|c| c == dim) {
+                cols.push(dim.to_string());
+            }
+        } else if let Some(measure) = m.measure.as_deref() {
+            if !cols.iter().any(|c| c == measure) {
+                cols.push(measure.to_string());
+            }
+            any_measure = true;
+        }
+    }
+    if any_measure {
+        if !cols.iter().any(|c| c == "Measure") {
+            cols.push("Measure".to_string());
+        }
+        if !cols.iter().any(|c| c == "value") {
+            cols.push("value".to_string());
+        }
+    }
+    cols
+}
+
 // ---------------------------------------------------------------------------
 // Output formatting
 // ---------------------------------------------------------------------------
 
-fn format_output(rows: &[Row], recipe: &TransformRecipe, format: OutputFormat) -> String {
+fn format_output(rows: &[Row], columns: &[String], format: OutputFormat) -> String {
     match format {
-        OutputFormat::Csv => format_csv_output(rows, recipe),
-        OutputFormat::Json => format_json_output(rows, recipe),
-        OutputFormat::Text => format_text_output(rows, recipe),
+        OutputFormat::Csv => format_csv_output(rows, columns),
+        OutputFormat::Json => format_json_output(rows, columns),
+        OutputFormat::Text => format_text_output(rows, columns),
     }
 }
 
-fn format_csv_output(rows: &[Row], recipe: &TransformRecipe) -> String {
+fn format_csv_output(rows: &[Row], columns: &[String]) -> String {
     let mut out = String::new();
-    // Header
-    let cols = &recipe.output_columns;
-    if cols.is_empty() && !rows.is_empty() {
-        // Derive from first row
+    if columns.is_empty() && !rows.is_empty() {
         let first_row_cols: Vec<&str> = rows[0].iter().map(|(k, _)| k.as_str()).collect();
         out.push_str(&first_row_cols.join(","));
     } else {
-        out.push_str(&cols.join(","));
+        out.push_str(&columns.join(","));
     }
     out.push('\n');
-
     for row in rows {
-        let cols_to_use: Vec<&str> = if cols.is_empty() {
+        let cols_to_use: Vec<&str> = if columns.is_empty() {
             row.iter().map(|(k, _)| k.as_str()).collect()
         } else {
-            cols.iter().map(|s| s.as_str()).collect()
+            columns.iter().map(|s| s.as_str()).collect()
         };
         let values: Vec<&str> = cols_to_use
             .iter()
@@ -514,21 +455,41 @@ fn format_csv_output(rows: &[Row], recipe: &TransformRecipe) -> String {
     out
 }
 
-fn format_json_output(rows: &[Row], _recipe: &TransformRecipe) -> String {
-    let mut out = String::from("[\n");
+fn format_json_output(rows: &[Row], columns: &[String]) -> String {
+    // Phase 6A.2 item 1.5 (Codex bonus / COD-2): wrap in the canonical
+    // `schema_version: "1.0"` envelope to match every other Phase 6A
+    // verb. The previous transform output was a raw JSON array — agents
+    // had to special-case the shape vs every sibling verb.
+    let mut out = String::new();
+    push_json_envelope_header(&mut out);
+    let _ = write!(out, "\"count\": {}", rows.len());
+    out.push_str(",\n  \"rows\": [\n");
     for (i, row) in rows.iter().enumerate() {
-        out.push_str("  {");
-        for (j, (k, v)) in row.iter().enumerate() {
+        out.push_str("    {");
+        let cols_to_emit: Vec<&str> = if columns.is_empty() {
+            row.iter().map(|(k, _)| k.as_str()).collect()
+        } else {
+            columns.iter().map(|s| s.as_str()).collect()
+        };
+        for (j, col) in cols_to_emit.iter().enumerate() {
+            let v = row
+                .iter()
+                .find(|(k, _)| k == col)
+                .map(|(_, v)| v.as_str())
+                .unwrap_or("");
             if j > 0 {
                 out.push(',');
             }
-            push_json_str(&mut out, k);
+            push_json_str(&mut out, col);
             out.push(':');
-            // Try to emit as number if possible
-            if let Ok(n) = v.parse::<f64>() {
-                let _ = write!(out, "{n}");
-            } else if v.is_empty() {
+            if v.is_empty() {
                 out.push_str("null");
+            } else if let Ok(n) = v.parse::<f64>() {
+                if n == n.trunc() && n.abs() < 1e15 {
+                    let _ = write!(out, "{}", n as i64);
+                } else {
+                    let _ = write!(out, "{n}");
+                }
             } else {
                 push_json_str(&mut out, v);
             }
@@ -539,34 +500,38 @@ fn format_json_output(rows: &[Row], _recipe: &TransformRecipe) -> String {
         }
         out.push('\n');
     }
-    out.push_str("]\n");
+    out.push_str("  ]\n}\n");
     out
 }
 
-fn format_text_output(rows: &[Row], _recipe: &TransformRecipe) -> String {
+fn format_text_output(rows: &[Row], columns: &[String]) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "Transform: {} rows", rows.len());
-    // Show first few rows in table format
-    if let Some(first) = rows.first() {
-        let cols: Vec<&str> = first.iter().map(|(k, _)| k.as_str()).collect();
+    let cols: Vec<&str> = if columns.is_empty() {
+        match rows.first() {
+            Some(first) => first.iter().map(|(k, _)| k.as_str()).collect(),
+            None => return out,
+        }
+    } else {
+        columns.iter().map(|s| s.as_str()).collect()
+    };
+    for col in &cols {
+        let _ = write!(out, "{:<18}", col);
+    }
+    out.push('\n');
+    for row in rows.iter().take(20) {
         for col in &cols {
-            let _ = write!(out, "{:<18}", col);
+            let val = row
+                .iter()
+                .find(|(k, _)| k == col)
+                .map(|(_, v)| v.as_str())
+                .unwrap_or("");
+            let _ = write!(out, "{:<18}", &val[..val.len().min(16)]);
         }
         out.push('\n');
-        for row in rows.iter().take(20) {
-            for col in &cols {
-                let val = row
-                    .iter()
-                    .find(|(k, _)| k == col)
-                    .map(|(_, v)| v.as_str())
-                    .unwrap_or("");
-                let _ = write!(out, "{:<18}", &val[..val.len().min(16)]);
-            }
-            out.push('\n');
-        }
-        if rows.len() > 20 {
-            let _ = writeln!(out, "... ({} more rows)", rows.len() - 20);
-        }
+    }
+    if rows.len() > 20 {
+        let _ = writeln!(out, "... ({} more rows)", rows.len() - 20);
     }
     out
 }
@@ -577,7 +542,6 @@ fn format_text_output(rows: &[Row], _recipe: &TransformRecipe) -> String {
 
 fn expand_env_vars(s: &str) -> String {
     let mut result = s.to_string();
-    // Expand ${VAR_NAME} patterns
     while let Some(start) = result.find("${") {
         if let Some(end) = result[start..].find('}') {
             let var_name = &result[start + 2..start + end];
@@ -592,10 +556,9 @@ fn expand_env_vars(s: &str) -> String {
             break;
         }
     }
-    // Also expand $VAR_NAME patterns (without braces)
     while let Some(start) = result.find('$') {
         if start + 1 < result.len() && result.as_bytes()[start + 1] == b'{' {
-            break; // Already handled above
+            break;
         }
         let rest = &result[start + 1..];
         let end = rest

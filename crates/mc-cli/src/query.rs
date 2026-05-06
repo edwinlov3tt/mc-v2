@@ -9,6 +9,17 @@ use mc_model::ModelRefs;
 use std::collections::BTreeMap;
 use std::fmt::Write as FmtWrite;
 
+// Phase 6A.2 item 1.1: `LoadedModel` and `load_model` now live in
+// `crate::loader` (the four-source state model). Re-export here so
+// the existing public surface (used by every Phase 6A verb's CLI
+// module) is unchanged. New callers that need to opt out of the
+// post-hoc writes log replay should use
+// `crate::loader::load_model_with_policy(path, LoadPolicy::Reproducible)`.
+#[allow(unused_imports)]
+pub use crate::loader::{
+    load_model, load_model_with_policy, LoadModelError, LoadPolicy, LoadedModel,
+};
+
 // ---------------------------------------------------------------------------
 // Public entry point (called from main.rs dispatch)
 // ---------------------------------------------------------------------------
@@ -22,6 +33,11 @@ pub struct QueryCommand {
     pub aggregate: Option<Vec<String>>,
     pub output: Option<String>,
     pub limit: Option<usize>,
+    /// Phase 6A.2 item 1.7: skip the first N matched rows before
+    /// applying `--limit`. Default 0. With the default `--limit
+    /// 10000`, `--offset 100` returns up to 10000 rows starting at
+    /// match index 100.
+    pub offset: Option<usize>,
     pub time_anchor: Option<String>,
 }
 
@@ -46,6 +62,7 @@ pub fn parse(args: &[String]) -> Result<QueryCommand, String> {
     let mut limit: Option<usize> = None;
     let mut time_anchor: Option<String> = None;
 
+    let mut offset: Option<usize> = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -85,6 +102,15 @@ pub fn parse(args: &[String]) -> Result<QueryCommand, String> {
                 }
                 None => return Err("--limit requires a number".into()),
             },
+            "--offset" => match iter.next() {
+                Some(v) => {
+                    offset = Some(
+                        v.parse::<usize>()
+                            .map_err(|_| format!("--offset must be a number, got {v:?}"))?,
+                    )
+                }
+                None => return Err("--offset requires a number".into()),
+            },
             "--time-anchor" => match iter.next() {
                 Some(v) => time_anchor = Some(v.clone()),
                 None => return Err("--time-anchor requires an element name".into()),
@@ -105,6 +131,7 @@ pub fn parse(args: &[String]) -> Result<QueryCommand, String> {
         aggregate,
         output,
         limit,
+        offset,
         time_anchor,
     })
 }
@@ -178,6 +205,7 @@ pub fn run_captured(cmd: QueryCommand) -> (i32, String) {
     // Determine which measures to show
     let show_measures = resolve_show_measures(&cmd.show, refs, &cube);
     let limit = cmd.limit.unwrap_or(10000);
+    let offset = cmd.offset.unwrap_or(0);
 
     // Enumerate all leaf coordinates and filter
     let all_leaf_coords = enumerate_leaf_coords(&cube, refs);
@@ -196,20 +224,28 @@ pub fn run_captured(cmd: QueryCommand) -> (i32, String) {
         );
     }
 
-    // Standard row-output mode
+    // Standard row-output mode. Phase 6A.2 item 1.7: track skipped /
+    // returned counts separately so we can emit `truncated` and
+    // `next_offset` in the envelope.
     let mut results: Vec<QueryRow> = Vec::new();
-    let mut matched = 0usize;
+    let mut skipped = 0usize;
+    let mut returned = 0usize;
+    let mut truncated = false;
 
     for coord in &all_leaf_coords {
-        if matched >= limit {
-            break;
-        }
         if let Some(f) = &filter {
             if !eval_filter(f, coord, &mut cube, principal, refs) {
                 continue;
             }
         }
-        matched += 1;
+        if skipped < offset {
+            skipped += 1;
+            continue;
+        }
+        if returned >= limit {
+            truncated = true;
+            break;
+        }
         let mut values: BTreeMap<String, ScalarValue> = BTreeMap::new();
         let coord_names = coord_to_names(coord, &cube, refs);
         for measure_name in &show_measures {
@@ -226,101 +262,38 @@ pub fn run_captured(cmd: QueryCommand) -> (i32, String) {
             coord: coord_names,
             values,
         });
+        returned += 1;
     }
 
-    let output_str = format_results(&results, &cmd.where_expr, cmd.format, matched);
+    let pagination = Pagination {
+        limit,
+        offset,
+        count: returned,
+        truncated,
+        next_offset: if truncated {
+            Some(offset + returned)
+        } else {
+            None
+        },
+    };
+    let output_str = format_results(&results, &cmd.where_expr, cmd.format, &pagination);
     let captured = capture_output(&output_str, &cmd.output);
     (0, captured)
 }
 
+/// Phase 6A.2 item 1.7: pagination metadata that flows from
+/// `run_captured` into the JSON envelope.
+struct Pagination {
+    limit: usize,
+    offset: usize,
+    count: usize,
+    truncated: bool,
+    next_offset: Option<usize>,
+}
+
 // ---------------------------------------------------------------------------
-// Model loading (reused across all Phase 6A verbs)
+// Model loading (re-exported from `crate::loader` — see Phase 6A.2 item 1.1)
 // ---------------------------------------------------------------------------
-
-/// Reason a [`load_model`] call failed. Phase 6A.1 CRIT-3: we
-/// distinguish I/O failures (file not found, permission denied — exit
-/// code 3) from model failures (parse / validate / compile — exit code
-/// 1). The Phase 6A handoff §"Agent-Readiness Invariants" rule 2 fixes
-/// these codes; without the distinction agents can't route the right
-/// retry behavior.
-#[derive(Debug)]
-pub enum LoadModelError {
-    /// File system / I/O error reading the model file.
-    Io(String),
-    /// Parse, validate, resolve_inputs, or compile error.
-    Model(String),
-}
-
-impl LoadModelError {
-    /// Map this error to the canonical CLI exit code (3 for I/O, 1 for
-    /// model). Used by every Phase 6A verb's dispatch.
-    pub fn exit_code(&self) -> i32 {
-        match self {
-            LoadModelError::Io(_) => 3,
-            LoadModelError::Model(_) => 1,
-        }
-    }
-
-    /// Human-readable error message (used after `eprintln!("error: ...")`).
-    pub fn message(&self) -> &str {
-        match self {
-            LoadModelError::Io(m) | LoadModelError::Model(m) => m,
-        }
-    }
-}
-
-impl std::fmt::Display for LoadModelError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.message())
-    }
-}
-
-pub fn load_model(path: &str) -> Result<LoadedModel, LoadModelError> {
-    let yaml = std::fs::read_to_string(path)
-        .map_err(|e| LoadModelError::Io(format!("could not read model file {path:?}: {e}")))?;
-    let parsed = mc_model::parse(&yaml, Some(path.to_string()))
-        .map_err(|e| LoadModelError::Model(format!("parse error: {e}")))?;
-    let validated = mc_model::validate(parsed).map_err(|errs| {
-        LoadModelError::Model(
-            errs.iter()
-                .map(|e| e.to_string())
-                .collect::<Vec<_>>()
-                .join("; "),
-        )
-    })?;
-    let model_dir = std::path::Path::new(path).parent();
-    let inputs = mc_model::resolve_inputs(&validated, model_dir).map_err(|errs| {
-        LoadModelError::Model(
-            errs.iter()
-                .map(|e| e.to_string())
-                .collect::<Vec<_>>()
-                .join("; "),
-        )
-    })?;
-    let compiled = mc_model::compile(validated.clone())
-        .map_err(|e| LoadModelError::Model(format!("compile error: {e}")))?;
-    let mut cube = compiled.cube;
-    let principal = compiled.root_principal;
-
-    if let Err(e) = mc_model::apply_canonical_inputs(&mut cube, &compiled.refs, principal, &inputs)
-    {
-        return Err(LoadModelError::Model(format!(
-            "apply_canonical_inputs failed: {e}"
-        )));
-    }
-
-    Ok(LoadedModel {
-        cube,
-        root_principal: compiled.root_principal,
-        refs: compiled.refs,
-    })
-}
-
-pub struct LoadedModel {
-    pub cube: mc_core::Cube,
-    pub root_principal: PrincipalId,
-    pub refs: ModelRefs,
-}
 
 /// Phase 6A.1 CRIT-2: emit the Phase 3B-style envelope header at the
 /// start of every Phase 6A verb's `--format json` output. Pairs with
@@ -1141,21 +1114,38 @@ fn format_results(
     results: &[QueryRow],
     where_expr: &Option<String>,
     format: OutputFormat,
-    count: usize,
+    pagination: &Pagination,
 ) -> String {
     match format {
-        OutputFormat::Json => format_json(results, where_expr, count),
-        OutputFormat::Text => format_text(results, count),
+        OutputFormat::Json => format_json(results, where_expr, pagination),
+        OutputFormat::Text => format_text(results, pagination),
         OutputFormat::Csv => format_csv(results),
     }
 }
 
-fn format_json(results: &[QueryRow], where_expr: &Option<String>, count: usize) -> String {
+fn format_json(
+    results: &[QueryRow],
+    where_expr: &Option<String>,
+    pagination: &Pagination,
+) -> String {
     let mut out = String::new();
     push_json_envelope_header(&mut out);
     out.push_str("\"query\": ");
     match where_expr {
         Some(q) => push_json_str(&mut out, q),
+        None => out.push_str("null"),
+    }
+    // Phase 6A.2 item 1.7: pagination fields are additive (no
+    // schema_version bump per handoff matrix W8).
+    let _ = write!(out, ",\n  \"limit\": {}", pagination.limit);
+    let _ = write!(out, ",\n  \"offset\": {}", pagination.offset);
+    let _ = write!(out, ",\n  \"count\": {}", pagination.count);
+    let _ = write!(out, ",\n  \"truncated\": {}", pagination.truncated);
+    out.push_str(",\n  \"next_offset\": ");
+    match pagination.next_offset {
+        Some(n) => {
+            let _ = write!(out, "{n}");
+        }
         None => out.push_str("null"),
     }
     out.push_str(",\n  \"results\": [\n");
@@ -1179,13 +1169,12 @@ fn format_json(results: &[QueryRow], where_expr: &Option<String>, count: usize) 
         }
         out.push('\n');
     }
-    out.push_str("  ],\n  \"count\": ");
-    let _ = write!(out, "{count}");
-    out.push_str(",\n  \"aggregates\": null\n}\n");
+    out.push_str("  ],\n  \"aggregates\": null\n}\n");
     out
 }
 
-fn format_text(results: &[QueryRow], count: usize) -> String {
+fn format_text(results: &[QueryRow], pagination: &Pagination) -> String {
+    let count = pagination.count;
     if results.is_empty() {
         return format!("No results ({count} rows matched)\n");
     }
@@ -1220,6 +1209,15 @@ fn format_text(results: &[QueryRow], count: usize) -> String {
         out.push('\n');
     }
     let _ = writeln!(out, "\n{count} rows");
+    if pagination.truncated {
+        if let Some(next) = pagination.next_offset {
+            let _ = writeln!(
+                out,
+                "...truncated at limit {}; pass --offset {next} to continue.",
+                pagination.limit
+            );
+        }
+    }
     out
 }
 

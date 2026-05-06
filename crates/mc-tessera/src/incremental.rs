@@ -118,12 +118,32 @@ pub fn reset_state(model_dir: &Path, recipe_name: &str) -> Result<(), TesseraErr
 
 /// Inject a watermark filter into a SQL query based on incremental state.
 ///
-/// - If the query contains a `{{watermark}}` placeholder, it is replaced
-///   with the `last_value`.
-/// - Otherwise, ` WHERE {column} > '{last_value}'` is appended.
-/// - If there is no prior state (first run), the query is returned unchanged.
+/// Behavior:
+/// - **Placeholder path** (preferred for non-trivial queries): if the
+///   query contains a `{{watermark}}` placeholder, it is replaced
+///   with the escaped `last_value`. The query author keeps full
+///   control over clause ordering and quoting.
+/// - **WHERE-injection path** (fallback): otherwise the function
+///   detects whether the query already has a `WHERE` clause and
+///   builds the new predicate as either ` WHERE col > '...'` (no
+///   existing WHERE) or ` AND col > '...'` (existing WHERE). The
+///   predicate is inserted **before** any `ORDER BY` / `LIMIT` /
+///   `GROUP BY` / `HAVING` clauses so the resulting SQL stays valid.
+/// - If there is no prior state (first run), the query is returned
+///   unchanged.
 /// - For HTTP sources using `param_name`, injection is handled at the
 ///   orchestrator level, not here.
+///
+/// **Limitations of the WHERE-injection path** (Phase 6A.2 item 1.6
+/// Decision Matrix W1, W2, W6): the case-insensitive keyword scan
+/// doesn't understand quoted-string literals, CTEs, or subqueries.
+/// If your query uses any of those AND requires watermark injection,
+/// embed `{{watermark}}` explicitly — the placeholder path is the
+/// safe escape valve. The injection path is correct for the common
+/// cases (`SELECT ... FROM t [WHERE ...] [ORDER BY ...] [LIMIT ...]`).
+///
+/// Single quotes in `last_value` are escaped via SQL doubling
+/// (`'` → `''`).
 pub fn inject_watermark(
     query: &str,
     config: &IncrementalConfig,
@@ -136,14 +156,144 @@ pub fn inject_watermark(
         },
         None => return query.to_string(),
     };
+    let escaped = escape_sql_quotes(last_value);
 
-    // If the query has a {{watermark}} placeholder, substitute it.
+    // Phase 6A.2 item 1.6 W3: keep `{{watermark}}` as the canonical
+    // placeholder syntax (matches the existing tests + handoff
+    // recommendation that complex queries route through the
+    // placeholder path).
     if query.contains("{{watermark}}") {
-        return query.replace("{{watermark}}", last_value);
+        return query.replace("{{watermark}}", &escaped);
     }
 
-    // Otherwise, append a WHERE clause.
-    format!("{query} WHERE {} > '{last_value}'", config.column)
+    let predicate_body = format!("{} > '{escaped}'", config.column);
+    let where_keyword = if has_existing_where(query) {
+        "AND"
+    } else {
+        "WHERE"
+    };
+    let injected = format!(" {where_keyword} {predicate_body}");
+    insert_before_clause_keywords(query, &injected)
+}
+
+/// Replace each `'` in `s` with `''` (SQL string-escaping). Defensive
+/// for `last_value`s that contain a single quote.
+fn escape_sql_quotes(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
+/// Case-insensitive ASCII-only scan that returns true iff `query`
+/// contains a `WHERE` keyword at a word boundary.
+fn has_existing_where(query: &str) -> bool {
+    find_keyword_ci(query, "WHERE").is_some()
+}
+
+/// Insert `clause` immediately before the first occurrence (case-
+/// insensitive, word-boundary) of any of `ORDER BY`, `LIMIT`,
+/// `GROUP BY`, `HAVING`. If none are present, append at the end
+/// (after trimming trailing whitespace / `;`).
+///
+/// Phase 6A.2 item 1.6 W5.
+fn insert_before_clause_keywords(query: &str, clause: &str) -> String {
+    let positions: [Option<usize>; 4] = [
+        find_keyword_ci(query, "ORDER BY"),
+        find_keyword_ci(query, "GROUP BY"),
+        find_keyword_ci(query, "HAVING"),
+        find_keyword_ci(query, "LIMIT"),
+    ];
+    let earliest = positions.iter().filter_map(|p| *p).min();
+    match earliest {
+        Some(idx) => {
+            let mut left = &query[..idx];
+            // Avoid a double space if `query` already had whitespace
+            // before the trailing clause.
+            while left.ends_with(' ') {
+                left = &left[..left.len() - 1];
+            }
+            format!("{left}{clause} {}", &query[idx..])
+        }
+        None => {
+            let mut trimmed = query.trim_end();
+            // Strip a trailing ';' so the new clause doesn't land
+            // after the statement terminator.
+            if trimmed.ends_with(';') {
+                trimmed = &trimmed[..trimmed.len() - 1];
+                trimmed = trimmed.trim_end();
+            }
+            // Re-attach the ';' if the original had one.
+            let suffix = if query.trim_end_matches(char::is_whitespace).ends_with(';') {
+                ";"
+            } else {
+                ""
+            };
+            format!("{trimmed}{clause}{suffix}")
+        }
+    }
+}
+
+/// Find a case-insensitive ASCII keyword in `haystack` at a word
+/// boundary. Treats SQL keywords as ASCII; matches `WHERE`,
+/// `where`, `Where` equivalently. Multi-word keywords like
+/// `ORDER BY` accept any run of whitespace between the words.
+fn find_keyword_ci(haystack: &str, keyword: &str) -> Option<usize> {
+    let bytes = haystack.as_bytes();
+    let parts: Vec<&str> = keyword.split_whitespace().collect();
+    let first = parts.first()?.as_bytes();
+    let mut i = 0;
+    while i + first.len() <= bytes.len() {
+        if matches_word(bytes, i, first) {
+            // Try to match remaining parts after whitespace.
+            let mut j = i + first.len();
+            let mut ok = true;
+            for part in parts.iter().skip(1) {
+                let pb = part.as_bytes();
+                // Require at least one whitespace.
+                let mut ws = j;
+                while ws < bytes.len() && is_ascii_ws(bytes[ws]) {
+                    ws += 1;
+                }
+                if ws == j {
+                    ok = false;
+                    break;
+                }
+                if ws + pb.len() > bytes.len() {
+                    ok = false;
+                    break;
+                }
+                if !matches_word(bytes, ws, pb) {
+                    ok = false;
+                    break;
+                }
+                j = ws + pb.len();
+            }
+            if ok {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn matches_word(haystack: &[u8], start: usize, needle: &[u8]) -> bool {
+    if start + needle.len() > haystack.len() {
+        return false;
+    }
+    let prev_ok = start == 0 || !is_word_byte(haystack[start - 1]);
+    let next_ok =
+        start + needle.len() == haystack.len() || !is_word_byte(haystack[start + needle.len()]);
+    if !(prev_ok && next_ok) {
+        return false;
+    }
+    haystack[start..start + needle.len()].eq_ignore_ascii_case(needle)
+}
+
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn is_ascii_ws(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | b'\r')
 }
 
 /// Scan a [`RowBatch`] and compute the new high-water mark by finding the
@@ -301,6 +451,94 @@ mod tests {
         let state = Some(make_state(None));
         let result = inject_watermark("SELECT * FROM events", &config, &state);
         assert_eq!(result, "SELECT * FROM events");
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 6A.2 item 1.6 regression tests for WHERE-injection
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn t_inject_watermark_no_existing_where() {
+        // Already covered by `t_inject_watermark_appends_where` above —
+        // pinned here under the 6A.2 test naming convention so the
+        // handoff regression matrix can find it.
+        let config = make_config();
+        let state = Some(make_state(Some("2026-05-01")));
+        let result = inject_watermark("SELECT * FROM events", &config, &state);
+        assert_eq!(
+            result,
+            "SELECT * FROM events WHERE updated_at > '2026-05-01'"
+        );
+    }
+
+    #[test]
+    fn t_inject_watermark_with_existing_where_uses_and() {
+        let config = make_config();
+        let state = Some(make_state(Some("2026-05-01")));
+        let result = inject_watermark("SELECT * FROM events WHERE tenant_id = 7", &config, &state);
+        // Phase 6A.2 item 1.6: append AND, not a second WHERE.
+        assert_eq!(
+            result,
+            "SELECT * FROM events WHERE tenant_id = 7 AND updated_at > '2026-05-01'"
+        );
+        // Sanity: only one WHERE keyword in the result.
+        let where_count = result
+            .split_whitespace()
+            .filter(|w| w.eq_ignore_ascii_case("WHERE"))
+            .count();
+        assert_eq!(where_count, 1, "must not produce two WHERE clauses");
+    }
+
+    #[test]
+    fn t_inject_watermark_with_order_by_inserts_before() {
+        let config = make_config();
+        let state = Some(make_state(Some("2026-05-01")));
+        let result = inject_watermark("SELECT * FROM events ORDER BY id DESC", &config, &state);
+        assert_eq!(
+            result, "SELECT * FROM events WHERE updated_at > '2026-05-01' ORDER BY id DESC",
+            "watermark predicate must land before ORDER BY (item 1.6 W5)"
+        );
+        // With LIMIT after the ORDER BY too:
+        let result = inject_watermark(
+            "SELECT * FROM events WHERE tenant_id = 7 ORDER BY id LIMIT 100",
+            &config,
+            &state,
+        );
+        assert_eq!(
+            result,
+            "SELECT * FROM events WHERE tenant_id = 7 AND updated_at > '2026-05-01' ORDER BY id LIMIT 100"
+        );
+    }
+
+    #[test]
+    fn t_inject_watermark_placeholder_used_when_present() {
+        let config = make_config();
+        let state = Some(make_state(Some("2026-05-01")));
+        // Placeholder path bypasses the keyword scan entirely (safe
+        // escape valve for queries the scanner can't parse — CTEs,
+        // subqueries, quoted-string WHEREs).
+        let q = "WITH t AS (SELECT id, value FROM raw WHERE 'WHERE' != 'noise') \
+                 SELECT * FROM t WHERE updated_at > '{{watermark}}' ORDER BY id";
+        let result = inject_watermark(q, &config, &state);
+        assert!(
+            result.contains("'2026-05-01'"),
+            "placeholder must be substituted: {result}"
+        );
+        assert!(
+            !result.contains("{{watermark}}"),
+            "no placeholder should remain"
+        );
+    }
+
+    #[test]
+    fn t_inject_watermark_escapes_single_quote_in_value() {
+        let config = make_config();
+        let state = Some(make_state(Some("O'Brien")));
+        let result = inject_watermark("SELECT * FROM events", &config, &state);
+        assert_eq!(
+            result, "SELECT * FROM events WHERE updated_at > 'O''Brien'",
+            "single quote in last_value must be escaped via SQL doubling (item 1.6 W7)"
+        );
     }
 
     #[test]

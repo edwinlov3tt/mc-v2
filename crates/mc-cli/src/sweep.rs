@@ -4,9 +4,12 @@
 //! point, and reports the optimal value. Named selectors, in-memory struct
 //! override, baseline comparison by default.
 
-use crate::query::{
-    format_f64, load_model, push_json_envelope_header, push_json_str, OutputFormat,
-};
+// Phase 6A.2 item 1.1: sweep is a `Reproducible` policy verb (process-notes
+// Rule 9) — sweep experiments with parameter values starting from the
+// version-controlled model state, not from operational reality patched by
+// `.tessera/writes.jsonl`.
+use crate::loader::{load_model_with_policy, LoadPolicy};
+use crate::query::{format_f64, push_json_envelope_header, push_json_str, OutputFormat};
 use mc_core::{ScalarValue, WriteIntent, WritebackRequest};
 use std::fmt::Write;
 
@@ -163,7 +166,7 @@ pub fn run_captured(cmd: SweepCommand) -> (i32, String) {
     let mut results: Vec<SweepPoint> = Vec::new();
 
     for &point_value in points.iter() {
-        let loaded = match load_model(&cmd.path) {
+        let loaded = match load_model_with_policy(&cmd.path, LoadPolicy::Reproducible) {
             Ok(l) => l,
             Err(e) => {
                 eprintln!("error: {e}");
@@ -253,7 +256,7 @@ pub fn run_captured(cmd: SweepCommand) -> (i32, String) {
 
     // Also get the un-overridden baseline
     let baseline_result = {
-        let loaded = match load_model(&cmd.path) {
+        let loaded = match load_model_with_policy(&cmd.path, LoadPolicy::Reproducible) {
             Ok(l) => l,
             Err(e) => {
                 eprintln!("error: {e}");

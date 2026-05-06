@@ -151,17 +151,16 @@ fn mcp_test_runs_goldens() {
     assert!(body.contains(r#""exit_code":0"#));
     assert!(body.contains(r#"\"goldens\""#));
     // 9 Acme goldens, all Pass. The response carries the goldens
-    // envelope twice (once in content[0].text, once in `structured`),
-    // so we expect 18 = 9 × 2 occurrences and zero Fail/Error.
-    let pass_count = body.matches(r#"\"status\": \"Pass\""#).count();
+    // envelope twice (once in content[0].text — escaped JSON-in-JSON,
+    // once in `structured` — Phase 6A.2 item 1.4 emits a parsed
+    // object so the escapes are absent). We count `"Pass"` substrings
+    // which appear in both forms.
+    let pass_count = body.matches("Pass").count();
     assert_eq!(
         pass_count, 18,
         "all 9 Acme goldens must pass twice over (content + structured): {body}"
     );
-    assert!(
-        !body.contains(r#"\"status\": \"Fail\""#),
-        "no golden may fail: {body}"
-    );
+    assert!(!body.contains("\"Fail\""), "no golden may fail: {body}");
     assert!(
         !body.contains(r#"\"status\": \"Error\""#),
         "no golden may error: {body}"
