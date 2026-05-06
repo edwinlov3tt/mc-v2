@@ -1130,6 +1130,7 @@ dependencies = [
  "mc-recipe",
  "mc-tessera",
  "serde_json",
+ "ureq",
 ]
 
 [[package]]

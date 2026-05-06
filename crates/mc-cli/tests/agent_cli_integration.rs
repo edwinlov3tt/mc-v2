@@ -2413,6 +2413,231 @@ fn test_query_envelope_includes_as_of_write_id() {
     drop(dir);
 }
 
+// ===========================================================================
+// Phase 6A.3 item 6 — ureq replaces the curl subprocess
+// ===========================================================================
+
+mod transform_url_helpers {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    /// Spawn a one-shot HTTP server that responds with `(status, body)`
+    /// to the next request. Returns the URL the client should use.
+    pub fn one_shot_server(status: u16, body: String) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+        let port = listener.local_addr().expect("local_addr").port();
+        let url = format!("http://127.0.0.1:{port}/data");
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut stream, _addr) = match listener.accept() {
+                Ok(p) => p,
+                Err(_) => return,
+            };
+            // Drain request headers (until blank line) so the client can finish.
+            let mut reader = BufReader::new(&stream);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                if line == "\r\n" || line == "\n" {
+                    break;
+                }
+            }
+            drop(reader);
+            let status_line = match status {
+                200 => "HTTP/1.1 200 OK",
+                404 => "HTTP/1.1 404 Not Found",
+                500 => "HTTP/1.1 500 Internal Server Error",
+                _ => "HTTP/1.1 200 OK",
+            };
+            let response = format!(
+                "{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                status_line,
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            let _ = tx.send(());
+        });
+        let _ = rx.recv_timeout(Duration::from_millis(100));
+        url
+    }
+
+    /// Spawn a server that accepts the connection but never sends a
+    /// response. Used to trigger client-side timeouts.
+    pub fn hanging_server() -> (String, std::sync::Arc<TcpListener>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+        let port = listener.local_addr().expect("local_addr").port();
+        let url = format!("http://127.0.0.1:{port}/data");
+        let listener = std::sync::Arc::new(listener);
+        let listener_clone = std::sync::Arc::clone(&listener);
+        thread::spawn(move || {
+            // Accept the connection and hold it open until the client
+            // gives up; the client's --timeout-secs governs.
+            if let Ok((mut stream, _addr)) = listener_clone.accept() {
+                // Read the request to ensure the client has begun the
+                // exchange; then sleep instead of responding.
+                let mut buf = [0u8; 1024];
+                use std::io::Read;
+                let _ = stream.read(&mut buf);
+                std::thread::sleep(Duration::from_secs(60));
+            }
+        });
+        (url, listener)
+    }
+}
+
+/// Minimal http_json recipe pointing at the test URL. The CLI's
+/// `--source` flag overrides the recipe's URL at runtime, so the URL
+/// here is a placeholder.
+fn write_http_json_recipe(dir: &std::path::Path, placeholder_url: &str) -> PathBuf {
+    let path = dir.join("test.recipe.yaml");
+    let model_path = acme_yaml();
+    let body = format!(
+        r#"version: 1
+name: test_http_recipe
+description: "test http json recipe"
+model: {model_path:?}
+
+source:
+  driver: http_json
+  url: "{placeholder_url}"
+
+columns:
+  - {{ source: market, dimension: Market }}
+  - {{ source: channel, dimension: Channel }}
+  - {{ source: time, dimension: Time }}
+  - {{ source: spend, measure: Spend, type: f64 }}
+
+defaults:
+  Scenario: Baseline
+  Version: Working
+
+write_disposition: replace
+incremental: false
+on_missing_element: error
+"#
+    );
+    std::fs::write(&path, body).expect("write recipe");
+    path
+}
+
+/// 6A.3 item 6: a localhost HTTP fetch must succeed end-to-end against
+/// the new ureq path. The previous curl subprocess required `curl` on
+/// PATH; the new path is in-process.
+#[test]
+fn test_transform_url_fetch_uses_ureq_not_curl() {
+    let body = r#"[
+        {"market": "Tampa", "channel": "Paid_Search", "time": "Jan_2026", "spend": 1234.5},
+        {"market": "Tampa", "channel": "Paid_Search", "time": "Feb_2026", "spend": 2345.6}
+    ]"#;
+    let url = transform_url_helpers::one_shot_server(200, body.to_string());
+
+    let (dir, _yaml) = make_acme_workdir("transform-ureq-fetch");
+    let recipe_path = write_http_json_recipe(dir.path(), &url);
+
+    let output = run_mc(&[
+        "tessera",
+        "transform",
+        "--source",
+        &url,
+        "--recipe",
+        recipe_path.to_str().unwrap(),
+        "--format",
+        "csv",
+    ]);
+    assert!(
+        output.status.success(),
+        "transform url fetch failed: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Tampa") && stdout.contains("1234.5"),
+        "transform output should include the fetched JSON rows; got: {stdout}"
+    );
+    drop(dir);
+}
+
+/// 6A.3 item 6 W3: --timeout-secs governs the URL fetch. A server that
+/// hangs forever must trigger a timeout error and exit 3 (I/O class).
+#[test]
+fn test_transform_url_timeout_returns_exit_3() {
+    let (_url, _listener) = transform_url_helpers::hanging_server();
+    // Use the URL as both placeholder and --source.
+    let url = _url.clone();
+    let (dir, _yaml) = make_acme_workdir("transform-ureq-timeout");
+    let recipe_path = write_http_json_recipe(dir.path(), &url);
+
+    let output = run_mc(&[
+        "tessera",
+        "transform",
+        "--source",
+        &url,
+        "--recipe",
+        recipe_path.to_str().unwrap(),
+        "--timeout-secs",
+        "1",
+        "--format",
+        "csv",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "url timeout must return exit 3 (I/O class); stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    drop(dir);
+}
+
+/// 6A.3 item 6 W4: the response-byte cap rejects oversized bodies. The
+/// production cap is 100 MB; this test sets `MC_TRANSFORM_MAX_BYTES=64`
+/// (a test-only escape hatch documented in transform.rs) so it can
+/// validate the cap behavior with a tiny body.
+#[test]
+fn test_transform_url_oversized_response_returns_error() {
+    // 200-byte body, well over the 64-byte cap set below.
+    let body = "x".repeat(200);
+    let url = transform_url_helpers::one_shot_server(200, body);
+
+    let (dir, _yaml) = make_acme_workdir("transform-ureq-cap");
+    let recipe_path = write_http_json_recipe(dir.path(), &url);
+
+    let output = Command::new(mc_binary())
+        .env("MC_TRANSFORM_MAX_BYTES", "64")
+        .args([
+            "tessera",
+            "transform",
+            "--source",
+            &url,
+            "--recipe",
+            recipe_path.to_str().unwrap(),
+            "--format",
+            "csv",
+        ])
+        .output()
+        .expect("spawn mc");
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "oversized response must return exit 3; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cap") || stderr.contains("exceeded"),
+        "stderr should mention the response cap; got: {stderr}"
+    );
+    drop(dir);
+}
+
 /// 6A.3 item 5 W6/W7: when no writes.jsonl exists, the query envelope's
 /// `as_of_write_id` is JSON null (NOT 0, NOT missing).
 #[test]
