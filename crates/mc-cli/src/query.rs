@@ -503,6 +503,7 @@ fn find_cross_coord_in_filter(body: &mc_model::ParsedRuleBody) -> Option<String>
     use mc_model::ParsedRuleBody as B;
     match body {
         B::ActualRef(_) => Some("actual_ref() not allowed in filter".into()),
+        B::ScenarioRef(_) => Some("scenario_ref() not allowed in filter".into()),
         B::Prev(_) => Some("prev() not allowed in filter".into()),
         B::Lag(_) => Some("lag() not allowed in filter".into()),
         B::Cumulative(_) => Some("cumulative() not allowed in filter".into()),
@@ -1151,6 +1152,7 @@ fn eval_filter_expr(
         // Cross-coord operators were rejected at parse-time; treat
         // defensively as Null if we ever see them here.
         B::ActualRef(_)
+        | B::ScenarioRef(_)
         | B::Prev(_)
         | B::Lag(_)
         | B::Cumulative(_)

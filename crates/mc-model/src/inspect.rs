@@ -891,6 +891,12 @@ fn collect_refs(body: &ParsedRuleBody, out: &mut std::collections::BTreeSet<Stri
         }
         ParsedRuleBody::ActualRef(b) => {
             out.insert(b.measure.clone());
+            if let Some(fb) = &b.fallback {
+                collect_refs(fb, out);
+            }
+        }
+        ParsedRuleBody::ScenarioRef(b) => {
+            out.insert(b.measure.clone());
         }
         ParsedRuleBody::Prev(b) | ParsedRuleBody::Cumulative(b) => {
             out.insert(b.measure.clone());

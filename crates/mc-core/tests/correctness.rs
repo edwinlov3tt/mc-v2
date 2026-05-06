@@ -383,6 +383,15 @@ fn collect_self_refs(expr: &mc_core::Expr) -> std::collections::HashSet<mc_core:
                 walk(a, acc);
                 walk(b, acc);
             }
+            // Phase 3J item 6: cross-coord variants — measure ref +
+            // (optional) fallback expression.
+            mc_core::Expr::ActualRefWithFallback(m, fb) => {
+                acc.insert(*m);
+                walk(fb, acc);
+            }
+            mc_core::Expr::ScenarioRef(m, _scenario) => {
+                acc.insert(*m);
+            }
         }
     }
     out

@@ -375,6 +375,12 @@ fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
         }
         ParsedRuleBody::ActualRef(b) => {
             out.insert(b.measure.clone());
+            if let Some(fb) = &b.fallback {
+                collect_body_refs(fb, out);
+            }
+        }
+        ParsedRuleBody::ScenarioRef(b) => {
+            out.insert(b.measure.clone());
         }
         ParsedRuleBody::Prev(b) | ParsedRuleBody::Cumulative(b) => {
             out.insert(b.measure.clone());

@@ -158,6 +158,29 @@ pub enum Expr {
     /// coordinate's element in `DimensionId` equals `ElementId`, else 0.0.
     IsElement(crate::id::DimensionId, ElementId),
 
+    // -- Phase 3J item 6: scenario_ref + actual_ref fallback --
+    /// Phase 3J item 6: extends `Expr::ActualRef(measure)` with a lazy
+    /// fallback expression. If the actual_ref read returns `Null`, the
+    /// fallback is evaluated and its result returned. Per ADR-0016
+    /// Amendment §3, the fallback may itself contain cross-coord
+    /// functions (e.g., `scenario_ref`) — MC1013's nesting prohibition
+    /// is explicitly relaxed for this slot.
+    ///
+    /// **Performance note (Amendment §12):** inherits the cross-coord
+    /// dep-graph debt — every write currently invalidates all derived
+    /// cells (correctness preserved via revision-bump; performance fix
+    /// deferred to a future ADR). See
+    /// `docs/research-notes/cross-coord-dep-graph.md`.
+    ActualRefWithFallback(ElementId, Box<Expr>),
+    /// Phase 3J item 6: `scenario_ref(measure, scenario_element)` —
+    /// read `measure` from the named scenario at the current
+    /// coordinate. Resolution is parse-time (the scenario element id
+    /// is resolved from the YAML name during compile).
+    ///
+    /// Inherits the same cross-coord dep-graph performance debt as
+    /// `ActualRef` (Amendment §12).
+    ScenarioRef(ElementId, ElementId),
+
     // -- Phase 3J item 1: ScalarValue::Str first-class in eval --
     /// String literal value. Per ADR-0016 Decision 2, `Str` values exist
     /// only in expression evaluation; `StrLiteral` is the parser-produced
@@ -357,6 +380,14 @@ fn collect_self_refs(expr: &Expr) -> AHashSet<ElementId> {
             Expr::SelfRef(m) | Expr::ActualRef(m) | Expr::Prev(m) | Expr::Cumulative(m) => {
                 out.insert(*m);
             }
+            // Phase 3J item 6
+            Expr::ActualRefWithFallback(m, fallback) => {
+                out.insert(*m);
+                walk(fallback, out);
+            }
+            Expr::ScenarioRef(m, _scenario) => {
+                out.insert(*m);
+            }
             Expr::Add(a, b)
             | Expr::Sub(a, b)
             | Expr::Mul(a, b)
@@ -520,6 +551,9 @@ pub fn expr_depth(expr: &Expr) -> u32 {
         // Phase 3J: string-domain + parameter ref
         Expr::StrLiteral(_) | Expr::CurrentElementName(_) | Expr::ParamRef(_) => 1,
         Expr::StrEq(a, b) | Expr::StrNeq(a, b) => 1 + expr_depth(a).max(expr_depth(b)),
+        // Phase 3J item 6
+        Expr::ActualRefWithFallback(_, fallback) => 1 + expr_depth(fallback),
+        Expr::ScenarioRef(_, _) => 1,
     }
 }
 
@@ -995,6 +1029,22 @@ where
         Expr::ParamRef(name) => {
             lookup_cross(&CrossCoordRead::ParameterValue { name: name.clone() })
         }
+        // Phase 3J item 6: actual_ref with lazy fallback.
+        Expr::ActualRefWithFallback(measure, fallback) => {
+            let primary = lookup_cross(&CrossCoordRead::ScenarioShift { measure: *measure })?;
+            if primary.is_null() {
+                eval_expr(fallback, lookup_self, lookup_cross)
+            } else {
+                Ok(primary)
+            }
+        }
+        // Phase 3J item 6: scenario_ref(measure, scenario_element).
+        Expr::ScenarioRef(measure, scenario_element) => {
+            lookup_cross(&CrossCoordRead::ScenarioElementShift {
+                scenario_element: *scenario_element,
+                measure: *measure,
+            })
+        }
     }
 }
 
@@ -1218,6 +1268,15 @@ pub enum CrossCoordRead {
     /// HashMap lookup. Validate guarantees `name` exists; eval returns
     /// `Null` if the lookup misses (defense-in-depth).
     ParameterValue { name: String },
+    /// Phase 3J item 6: shift the Scenario dim slot to `scenario_element`
+    /// and read `measure` at the (otherwise unchanged) coord. Sister of
+    /// `ScenarioShift`, which always shifts to the actuals (`Default`)
+    /// element. The `scenario_element` id is resolved at compile time
+    /// from the YAML name.
+    ScenarioElementShift {
+        scenario_element: ElementId,
+        measure: ElementId,
+    },
     // -- Phase 3I: narrow element-match indicator --
     /// Returns 1.0 if the current coord's element in `dimension` is
     /// `element`, else 0.0. Element resolution is parse-time so the
@@ -1655,6 +1714,23 @@ where
         Expr::ParamRef(name) => handler(EvalLookup::Cross(&CrossCoordRead::ParameterValue {
             name: name.clone(),
         })),
+        // Phase 3J item 6: actual_ref with lazy fallback.
+        Expr::ActualRefWithFallback(measure, fallback) => {
+            let primary = handler(EvalLookup::Cross(&CrossCoordRead::ScenarioShift {
+                measure: *measure,
+            }))?;
+            if primary.is_null() {
+                eval_expr_unified_inner(fallback, handler)
+            } else {
+                Ok(primary)
+            }
+        }
+        Expr::ScenarioRef(measure, scenario_element) => {
+            handler(EvalLookup::Cross(&CrossCoordRead::ScenarioElementShift {
+                scenario_element: *scenario_element,
+                measure: *measure,
+            }))
+        }
     }
 }
 

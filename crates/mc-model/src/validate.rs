@@ -129,6 +129,11 @@ pub fn validate(parsed: ParsedModel) -> Result<ValidatedModel, Vec<Error>> {
     // names at parse-time; MC2069 (Amendment §4) rejects non-AllLeaves
     // scopes when `time_anchor` is not configured on the Time dim.
     check_scope_variants(&parsed, &mut val_errors);
+    // Phase 3J item 6: scenario_ref + actual_ref(measure, fallback).
+    // MC2065 rejects scenario_ref against unknown scenario element
+    // names; MC2066 catches actual_ref fallback type mismatches (best-
+    // effort static type analysis).
+    check_scenario_ref_and_fallback(&parsed, &validated_rules, &mut val_errors);
 
     errors.extend(val_errors.into_iter().map(Error::Validation));
 
@@ -665,6 +670,7 @@ fn check_binop_arity(body: &ParsedRuleBody, rule_name: &str, errors: &mut Vec<Va
             return;
         }
         ParsedRuleBody::ActualRef(_)
+        | ParsedRuleBody::ScenarioRef(_)
         | ParsedRuleBody::Prev(_)
         | ParsedRuleBody::Cumulative(_)
         | ParsedRuleBody::SumOver(_) => return,
@@ -816,6 +822,16 @@ fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
         }
         // Cross-coordinate: the measure name IS a dependency
         ParsedRuleBody::ActualRef(b) => {
+            out.insert(b.measure.clone());
+            // Phase 3J item 6: descend into the optional fallback
+            // expression so its measure refs participate in the
+            // declared-deps check.
+            if let Some(fb) = &b.fallback {
+                collect_body_refs(fb, out);
+            }
+        }
+        // Phase 3J item 6: scenario_ref's measure participates in deps.
+        ParsedRuleBody::ScenarioRef(b) => {
             out.insert(b.measure.clone());
         }
         ParsedRuleBody::Prev(b) | ParsedRuleBody::Cumulative(b) => {
@@ -1117,7 +1133,12 @@ fn uses_time_series(body: &ParsedRuleBody) -> bool {
         ParsedRuleBody::Clamp(b) => {
             uses_time_series(&b.value) || uses_time_series(&b.lo) || uses_time_series(&b.hi)
         }
-        ParsedRuleBody::ActualRef(_) | ParsedRuleBody::SumOver(_) => false,
+        // Phase 3J item 6: actual_ref's fallback may use time-series.
+        ParsedRuleBody::ActualRef(b) => match &b.fallback {
+            None => false,
+            Some(fb) => uses_time_series(fb),
+        },
+        ParsedRuleBody::ScenarioRef(_) | ParsedRuleBody::SumOver(_) => false,
         ParsedRuleBody::Benchmark(b) => uses_time_series(&b.key_expr),
         ParsedRuleBody::Lookup(b) => b.key_exprs.iter().any(|k| uses_time_series(k)),
         ParsedRuleBody::Bucket(b) => uses_time_series(&b.value),
@@ -1157,6 +1178,11 @@ fn uses_time_series(body: &ParsedRuleBody) -> bool {
 fn uses_actual_ref(body: &ParsedRuleBody) -> bool {
     match body {
         ParsedRuleBody::ActualRef(_) => true,
+        // Phase 3J item 6: scenario_ref does NOT require the Scenario
+        // dim's `actuals_element` to be configured — it targets a
+        // user-named scenario element directly. So it doesn't
+        // participate in the MC2037 check.
+        ParsedRuleBody::ScenarioRef(_) => false,
         ParsedRuleBody::Const(_)
         | ParsedRuleBody::Ref(_)
         | ParsedRuleBody::PeriodIndex(_)
@@ -1333,7 +1359,16 @@ fn check_cross_coord_nesting(validated_rules: &[ValidatedRule], errors: &mut Vec
 fn find_cross_coord_nesting(body: &ParsedRuleBody) -> Option<String> {
     match body {
         // Cross-coord functions: check if their arguments contain another cross-coord
-        ParsedRuleBody::ActualRef(_) => None, // leaf, bare identifier — can't nest
+        // Phase 3J item 6 + Amendment §3: actual_ref's `fallback`
+        // expression IS a relaxation point — cross-coord functions
+        // (scenario_ref, prev, lag, lookup, etc.) are explicitly
+        // allowed inside the fallback. Other cross-coord nesting
+        // patterns (e.g., `prev(actual_ref(...))`) remain rejected by
+        // MC1013 elsewhere in this walk.
+        ParsedRuleBody::ActualRef(_) => None,
+        // Phase 3J item 6: scenario_ref takes a bare measure name and a
+        // string literal — no nestable expression slots.
+        ParsedRuleBody::ScenarioRef(_) => None,
         ParsedRuleBody::Prev(_) | ParsedRuleBody::Cumulative(_) => None, // leaf measure ref
         ParsedRuleBody::Lag(b) => {
             if crate::formula::contains_cross_coord(&b.periods) {
@@ -1932,6 +1967,7 @@ fn uses_anchor_function(body: &ParsedRuleBody) -> bool {
                 || uses_anchor_function(&b.hi)
         }
         ParsedRuleBody::ActualRef(_)
+        | ParsedRuleBody::ScenarioRef(_)
         | ParsedRuleBody::Prev(_)
         | ParsedRuleBody::Cumulative(_)
         | ParsedRuleBody::SumOver(_) => false,
@@ -2265,6 +2301,7 @@ fn walk_is_element_and_over(
         | ParsedRuleBody::PeriodsSinceAnchor(_)
         | ParsedRuleBody::PeriodsToEnd(_)
         | ParsedRuleBody::ActualRef(_)
+        | ParsedRuleBody::ScenarioRef(_)
         | ParsedRuleBody::Prev(_)
         | ParsedRuleBody::Cumulative(_)
         | ParsedRuleBody::SumOver(_) => {}
@@ -2464,7 +2501,7 @@ fn walk_predict_arity(
         | ParsedRuleBody::IsFuture(_)
         | ParsedRuleBody::PeriodsSinceAnchor(_)
         | ParsedRuleBody::PeriodsToEnd(_)
-        | ParsedRuleBody::ActualRef(_)
+        | ParsedRuleBody::ActualRef(_) | ParsedRuleBody::ScenarioRef(_)
         | ParsedRuleBody::Prev(_)
         | ParsedRuleBody::Cumulative(_)
         | ParsedRuleBody::SumOver(_)
@@ -2622,6 +2659,10 @@ fn expr_static_type(body: &ParsedRuleBody) -> ExprStaticType {
         // only `f64` parameter values; non-numeric values are rejected
         // at validate time).
         ParsedRuleBody::ParamRef(_) => T::F64,
+        // Phase 3J: scenario_ref returns the measure's domain — F64
+        // for the only measure data_types Phase 3J supports for cross-
+        // scenario reads.
+        ParsedRuleBody::ScenarioRef(_) => T::F64,
         // Numeric primitives + every arithmetic / comparison / logical /
         // function call returning F64.
         ParsedRuleBody::Const(_)
@@ -3066,6 +3107,7 @@ fn check_str_type_context_walk(
         | ParsedRuleBody::PeriodsSinceAnchor(_)
         | ParsedRuleBody::PeriodsToEnd(_)
         | ParsedRuleBody::ActualRef(_)
+        | ParsedRuleBody::ScenarioRef(_)
         | ParsedRuleBody::Prev(_)
         | ParsedRuleBody::Cumulative(_)
         | ParsedRuleBody::SumOver(_)
@@ -3181,6 +3223,7 @@ fn walk_param_refs(
         | ParsedRuleBody::PeriodsSinceAnchor(_)
         | ParsedRuleBody::PeriodsToEnd(_)
         | ParsedRuleBody::ActualRef(_)
+        | ParsedRuleBody::ScenarioRef(_)
         | ParsedRuleBody::Prev(_)
         | ParsedRuleBody::Cumulative(_)
         | ParsedRuleBody::SumOver(_)
@@ -3385,6 +3428,207 @@ fn check_indicator_measures(parsed: &ParsedModel, errors: &mut Vec<ValidationErr
 //        scope names; if compile sees one it fires MC2068 (handled in
 //        compile.rs's `EngineError::Internal` arm).
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Phase 3J item 6: scenario_ref + actual_ref(measure, fallback) validation
+//
+// MC2065: scenario_ref's `scenario` argument is not a declared element
+//         of the Scenario-kind dim.
+// MC2066: actual_ref's optional fallback expression has a static type
+//         (Str) that mismatches the measure's domain (F64). Best-effort
+//         — Indeterminate fallbacks (e.g., `if(...)`) are accepted and
+//         the runtime checks again.
+// ---------------------------------------------------------------------------
+
+fn check_scenario_ref_and_fallback(
+    parsed: &ParsedModel,
+    validated_rules: &[ValidatedRule],
+    errors: &mut Vec<ValidationError>,
+) {
+    // Collect Scenario element names.
+    let scenario_elems: BTreeSet<&str> = parsed
+        .dimensions
+        .iter()
+        .filter(|d| d.kind == "Scenario")
+        .flat_map(|d| d.elements.iter().map(|e| e.name.as_str()))
+        .collect();
+    for r in validated_rules {
+        walk_scenario_and_fallback(&r.body, &r.name, &scenario_elems, errors);
+    }
+}
+
+fn walk_scenario_and_fallback(
+    body: &ParsedRuleBody,
+    rule_name: &str,
+    scenario_elems: &BTreeSet<&str>,
+    errors: &mut Vec<ValidationError>,
+) {
+    use ExprStaticType as T;
+    match body {
+        ParsedRuleBody::ScenarioRef(b) => {
+            if !scenario_elems.contains(b.scenario.as_str()) {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "rule {rule_name:?}: scenario_ref({}, {:?}) references unknown \
+                         scenario element (MC2065)",
+                        b.measure, b.scenario
+                    ),
+                });
+            }
+        }
+        ParsedRuleBody::ActualRef(b) => {
+            if let Some(fb) = &b.fallback {
+                // MC2066: fallback type mismatch. F64 measures (the
+                // only Phase 3J kind) require a numeric-typed fallback;
+                // Str fallbacks are rejected.
+                if expr_static_type(fb) == T::Str {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "rule {rule_name:?}: actual_ref({}, fallback) fallback returns Str \
+                             but the measure is numeric (MC2066)",
+                            b.measure
+                        ),
+                    });
+                }
+                walk_scenario_and_fallback(fb, rule_name, scenario_elems, errors);
+            }
+        }
+        // Recurse through composite nodes.
+        ParsedRuleBody::Const(_)
+        | ParsedRuleBody::Ref(_)
+        | ParsedRuleBody::PeriodIndex(_)
+        | ParsedRuleBody::AnchorIndex(_)
+        | ParsedRuleBody::IsPast(_)
+        | ParsedRuleBody::IsCurrent(_)
+        | ParsedRuleBody::IsFuture(_)
+        | ParsedRuleBody::PeriodsSinceAnchor(_)
+        | ParsedRuleBody::PeriodsToEnd(_)
+        | ParsedRuleBody::Prev(_)
+        | ParsedRuleBody::Cumulative(_)
+        | ParsedRuleBody::SumOver(_)
+        | ParsedRuleBody::IsElement(_)
+        | ParsedRuleBody::AvgOver(_)
+        | ParsedRuleBody::MinOver(_)
+        | ParsedRuleBody::MaxOver(_)
+        | ParsedRuleBody::WAvgOver(_)
+        | ParsedRuleBody::StrLiteral(_)
+        | ParsedRuleBody::CurrentElement(_)
+        | ParsedRuleBody::ParamRef(_) => {}
+        ParsedRuleBody::Add(b) => {
+            for a in &b.add {
+                walk_scenario_and_fallback(a, rule_name, scenario_elems, errors);
+            }
+        }
+        ParsedRuleBody::Sub(b) => {
+            for a in &b.sub {
+                walk_scenario_and_fallback(a, rule_name, scenario_elems, errors);
+            }
+        }
+        ParsedRuleBody::Mul(b) => {
+            for a in &b.mul {
+                walk_scenario_and_fallback(a, rule_name, scenario_elems, errors);
+            }
+        }
+        ParsedRuleBody::Div(b) => {
+            for a in &b.div {
+                walk_scenario_and_fallback(a, rule_name, scenario_elems, errors);
+            }
+        }
+        ParsedRuleBody::IfNull(b) => {
+            for a in &b.if_null {
+                walk_scenario_and_fallback(a, rule_name, scenario_elems, errors);
+            }
+        }
+        ParsedRuleBody::Gt(b)
+        | ParsedRuleBody::Lt(b)
+        | ParsedRuleBody::Gte(b)
+        | ParsedRuleBody::Lte(b)
+        | ParsedRuleBody::Eq(b)
+        | ParsedRuleBody::Neq(b)
+        | ParsedRuleBody::And(b)
+        | ParsedRuleBody::Or(b) => {
+            walk_scenario_and_fallback(&b.left, rule_name, scenario_elems, errors);
+            walk_scenario_and_fallback(&b.right, rule_name, scenario_elems, errors);
+        }
+        ParsedRuleBody::Not(b) | ParsedRuleBody::Abs(b) => {
+            walk_scenario_and_fallback(&b.operand, rule_name, scenario_elems, errors);
+        }
+        ParsedRuleBody::If(b) => {
+            walk_scenario_and_fallback(&b.condition, rule_name, scenario_elems, errors);
+            walk_scenario_and_fallback(&b.then_branch, rule_name, scenario_elems, errors);
+            walk_scenario_and_fallback(&b.else_branch, rule_name, scenario_elems, errors);
+        }
+        ParsedRuleBody::Min(b) | ParsedRuleBody::Max(b) | ParsedRuleBody::Coalesce(b) => {
+            for a in &b.args {
+                walk_scenario_and_fallback(a, rule_name, scenario_elems, errors);
+            }
+        }
+        ParsedRuleBody::SafeDiv(b) => {
+            walk_scenario_and_fallback(&b.numerator, rule_name, scenario_elems, errors);
+            walk_scenario_and_fallback(&b.denominator, rule_name, scenario_elems, errors);
+            walk_scenario_and_fallback(&b.default, rule_name, scenario_elems, errors);
+        }
+        ParsedRuleBody::Clamp(b) => {
+            walk_scenario_and_fallback(&b.value, rule_name, scenario_elems, errors);
+            walk_scenario_and_fallback(&b.lo, rule_name, scenario_elems, errors);
+            walk_scenario_and_fallback(&b.hi, rule_name, scenario_elems, errors);
+        }
+        ParsedRuleBody::Lag(b) => {
+            walk_scenario_and_fallback(&b.periods, rule_name, scenario_elems, errors);
+        }
+        ParsedRuleBody::RollingAvg(b) => {
+            walk_scenario_and_fallback(&b.window, rule_name, scenario_elems, errors);
+        }
+        ParsedRuleBody::Benchmark(b) => {
+            walk_scenario_and_fallback(&b.key_expr, rule_name, scenario_elems, errors);
+        }
+        ParsedRuleBody::Lookup(b) => {
+            for k in &b.key_exprs {
+                walk_scenario_and_fallback(k, rule_name, scenario_elems, errors);
+            }
+        }
+        ParsedRuleBody::Bucket(b) => {
+            walk_scenario_and_fallback(&b.value, rule_name, scenario_elems, errors);
+        }
+        ParsedRuleBody::Predict(b) => {
+            for f in &b.features {
+                walk_scenario_and_fallback(f, rule_name, scenario_elems, errors);
+            }
+        }
+        ParsedRuleBody::Calibrate(b) => {
+            walk_scenario_and_fallback(&b.value, rule_name, scenario_elems, errors);
+        }
+        ParsedRuleBody::Exp(b) => {
+            walk_scenario_and_fallback(&b.operand, rule_name, scenario_elems, errors);
+        }
+        ParsedRuleBody::NormCdf(b) => {
+            walk_scenario_and_fallback(&b.x, rule_name, scenario_elems, errors);
+            walk_scenario_and_fallback(&b.mu, rule_name, scenario_elems, errors);
+            walk_scenario_and_fallback(&b.sigma, rule_name, scenario_elems, errors);
+        }
+        ParsedRuleBody::Pow(b) => {
+            walk_scenario_and_fallback(&b.base, rule_name, scenario_elems, errors);
+            walk_scenario_and_fallback(&b.exponent, rule_name, scenario_elems, errors);
+        }
+        ParsedRuleBody::Sqrt(b)
+        | ParsedRuleBody::Ln(b)
+        | ParsedRuleBody::Log10(b)
+        | ParsedRuleBody::Round(b)
+        | ParsedRuleBody::Floor(b)
+        | ParsedRuleBody::Ceil(b) => {
+            walk_scenario_and_fallback(&b.operand, rule_name, scenario_elems, errors);
+        }
+        ParsedRuleBody::Mod(b) => {
+            walk_scenario_and_fallback(&b.dividend, rule_name, scenario_elems, errors);
+            walk_scenario_and_fallback(&b.divisor, rule_name, scenario_elems, errors);
+        }
+        ParsedRuleBody::NormInv(b) => {
+            walk_scenario_and_fallback(&b.p, rule_name, scenario_elems, errors);
+            walk_scenario_and_fallback(&b.mu, rule_name, scenario_elems, errors);
+            walk_scenario_and_fallback(&b.sigma, rule_name, scenario_elems, errors);
+        }
+    }
+}
 
 fn check_scope_variants(parsed: &ParsedModel, errors: &mut Vec<ValidationError>) {
     // Determine if a `time_anchor` is configured on any Time dim.

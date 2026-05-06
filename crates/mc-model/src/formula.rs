@@ -29,8 +29,8 @@ use crate::schema::{
     ParsedIfBody, ParsedIfNullBody, ParsedIsElementBody, ParsedLagBody, ParsedLookupRefBody,
     ParsedMeasureRefBody, ParsedModBody, ParsedMulBody, ParsedNormCdfBody, ParsedNormInvBody,
     ParsedParamRefBody, ParsedPowBody, ParsedPredictBody, ParsedRefBody, ParsedRollingAvgBody,
-    ParsedRuleBody, ParsedSafeDivBody, ParsedScalar, ParsedStrLiteralBody, ParsedSubBody,
-    ParsedSumOverBody, ParsedUnaryBody, ParsedVarargBody,
+    ParsedRuleBody, ParsedSafeDivBody, ParsedScalar, ParsedScenarioRefBody, ParsedStrLiteralBody,
+    ParsedSubBody, ParsedSumOverBody, ParsedUnaryBody, ParsedVarargBody,
 };
 
 // ---------------------------------------------------------------------------
@@ -641,11 +641,45 @@ impl<'a> Parser<'a> {
                     self.skip_ws();
                     let measure = self.parse_bare_identifier("actual_ref", call_start)?;
                     self.skip_ws();
+                    // Phase 3J item 6: optional 2nd arg is a fallback
+                    // expression. Per Amendment §3, cross-coord
+                    // functions are allowed inside the fallback (the
+                    // MC1013 nesting prohibition is relaxed for this
+                    // slot only).
+                    let fallback = if self.peek_byte() == Some(b',') {
+                        self.advance();
+                        let fb = self.parse_or_expression()?;
+                        self.skip_ws();
+                        Some(Box::new(fb))
+                    } else {
+                        None
+                    };
                     self.expect_close_paren("actual_ref")?;
-                    // Check for cross-coordinate nesting: the measure name
-                    // must be a bare identifier, not an expression containing
-                    // another cross-coord function.
-                    Ok(ParsedRuleBody::ActualRef(ParsedActualRefBody { measure }))
+                    Ok(ParsedRuleBody::ActualRef(ParsedActualRefBody {
+                        measure,
+                        fallback,
+                    }))
+                }
+                // Phase 3J item 6: scenario_ref(measure, "ScenarioName").
+                "scenario_ref" => {
+                    self.skip_ws();
+                    let measure = self.parse_bare_identifier("scenario_ref", call_start)?;
+                    self.skip_ws();
+                    if self.peek_byte() != Some(b',') {
+                        return Err(FormulaError::wrong_arg_count(
+                            call_start,
+                            "scenario_ref expects 2 arguments: scenario_ref(measure, \"ScenarioName\")".into(),
+                        ));
+                    }
+                    self.advance();
+                    self.skip_ws();
+                    let scenario = self.parse_string_literal("scenario_ref", call_start)?;
+                    self.skip_ws();
+                    self.expect_close_paren("scenario_ref")?;
+                    Ok(ParsedRuleBody::ScenarioRef(ParsedScenarioRefBody {
+                        measure,
+                        scenario,
+                    }))
                 }
                 "prev" => {
                     self.skip_ws();
@@ -1584,7 +1618,8 @@ fn prec(body: &ParsedRuleBody) -> u8 {
         // Phase 3J: string literal + current_element + param are atomic primaries
         | ParsedRuleBody::StrLiteral(_)
         | ParsedRuleBody::CurrentElement(_)
-        | ParsedRuleBody::ParamRef(_) => 8,
+        | ParsedRuleBody::ParamRef(_)
+        | ParsedRuleBody::ScenarioRef(_) => 8,
         // Multiplicative
         ParsedRuleBody::Mul(_) | ParsedRuleBody::Div(_) => 7,
         // Additive
@@ -1707,6 +1742,12 @@ fn write_node_bare(out: &mut String, body: &ParsedRuleBody) {
         ParsedRuleBody::ActualRef(b) => {
             out.push_str("actual_ref(");
             out.push_str(&b.measure);
+            // Phase 3J item 6: optional fallback. When present, emit
+            // `, <fallback>` so round-trip preserves the 2-arg form.
+            if let Some(fb) = &b.fallback {
+                out.push_str(", ");
+                write_node(out, fb, 0, false);
+            }
             out.push(')');
         }
 
@@ -1916,6 +1957,14 @@ fn write_node_bare(out: &mut String, body: &ParsedRuleBody) {
             out.push_str(&b.param);
             out.push(')');
         }
+        // Phase 3J item 6: scenario_ref(measure, "ScenarioName").
+        ParsedRuleBody::ScenarioRef(b) => {
+            out.push_str("scenario_ref(");
+            out.push_str(&b.measure);
+            out.push_str(", \"");
+            out.push_str(&b.scenario);
+            out.push_str("\")");
+        }
     }
 }
 
@@ -1989,7 +2038,9 @@ pub fn contains_cross_coord(body: &ParsedRuleBody) -> bool {
         | ParsedRuleBody::AvgOver(_)
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
-        | ParsedRuleBody::WAvgOver(_) => true,
+        | ParsedRuleBody::WAvgOver(_)
+        // Phase 3J item 6: scenario_ref is cross-coord (Scenario shift).
+        | ParsedRuleBody::ScenarioRef(_) => true,
         ParsedRuleBody::Const(_)
         | ParsedRuleBody::Ref(_)
         | ParsedRuleBody::PeriodIndex(_)

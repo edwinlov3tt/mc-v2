@@ -692,7 +692,40 @@ fn compile_expr(
         }
         ParsedRuleBody::ActualRef(b) => {
             let measure = lookup_measure_id(refs, validated, &b.measure)?;
-            Ok(Expr::ActualRef(measure))
+            // Phase 3J item 6: when a fallback is present, compile to
+            // the new `Expr::ActualRefWithFallback` variant so the
+            // kernel evaluates it lazily. The 1-arg form preserves the
+            // shipped `Expr::ActualRef` shape for backward compat.
+            match &b.fallback {
+                None => Ok(Expr::ActualRef(measure)),
+                Some(fb) => {
+                    let compiled_fb = compile_expr(fb, refs, validated)?;
+                    Ok(Expr::ActualRefWithFallback(measure, Box::new(compiled_fb)))
+                }
+            }
+        }
+        // Phase 3J item 6: scenario_ref(measure, "ScenarioName").
+        // Resolve the scenario element name to ElementId at compile
+        // time; the validator (MC2065) already cleared unknown names.
+        ParsedRuleBody::ScenarioRef(b) => {
+            let measure = lookup_measure_id(refs, validated, &b.measure)?;
+            // Find the Scenario dim; the scenario name resolves against
+            // its elements.
+            let scenario_dim_name = validated
+                .parsed
+                .dimensions
+                .iter()
+                .find(|d| d.kind == "Scenario")
+                .map(|d| d.name.as_str())
+                .ok_or(EngineError::Internal(
+                    "compile: scenario_ref but no Scenario dim",
+                ))?;
+            let scenario_element =
+                refs.element(scenario_dim_name, &b.scenario)
+                    .ok_or(EngineError::Internal(
+                        "compile: scenario_ref references unknown scenario element",
+                    ))?;
+            Ok(Expr::ScenarioRef(measure, scenario_element))
         }
         // Phase 3F: time-series
         ParsedRuleBody::Prev(b) => {

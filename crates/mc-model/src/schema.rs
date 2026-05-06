@@ -410,6 +410,11 @@ pub enum ParsedRuleBody {
     /// Validate ensures the name is declared (MC2062 if missing).
     ParamRef(ParsedParamRefBody),
 
+    // -- Phase 3J item 6: scenario_ref(measure, "ScenarioName") --
+    /// Read `measure` from the named scenario at the current coord.
+    /// Validator (MC2065) catches unknown scenario names.
+    ScenarioRef(ParsedScenarioRefBody),
+
     // -- Phase 3I: cross-coord scans --
     /// `avg_over(measure, dim)` — mean across leaf elements of `dim`.
     AvgOver(ParsedSumOverBody),
@@ -514,9 +519,29 @@ pub struct ParsedClampBody {
 }
 
 /// `actual_ref(Measure_Name)` — cross-coordinate read (Scenario shift).
+///
+/// Phase 3J item 6 extends this to optionally hold a `fallback`
+/// expression: `actual_ref(measure, fallback_expr)`. If the actual_ref
+/// read returns Null, `fallback` is evaluated lazily. Per ADR-0016
+/// Amendment §3, the fallback may itself contain cross-coord
+/// functions (e.g., `scenario_ref`) — MC1013's nesting prohibition is
+/// explicitly relaxed for this slot only.
 #[derive(Clone, Debug, Deserialize)]
 pub struct ParsedActualRefBody {
     pub measure: String,
+    /// Phase 3J item 6: optional lazy fallback expression. Absent
+    /// (None) preserves the Phase 3E 1-arg form's behavior. Boxed so
+    /// the body type stays sized.
+    #[serde(default)]
+    pub fallback: Option<Box<ParsedRuleBody>>,
+}
+
+/// Phase 3J item 6: `scenario_ref(measure, "ScenarioName")` — read
+/// `measure` from the named scenario at the current coord.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParsedScenarioRefBody {
+    pub measure: String,
+    pub scenario: String,
 }
 
 // ---------------------------------------------------------------------------

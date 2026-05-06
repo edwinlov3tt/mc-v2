@@ -1150,6 +1150,31 @@ impl Cube {
                     None => Ok(ScalarValue::Null),
                 }
             }
+            // Phase 3J item 6: shift the Scenario dim to a specific
+            // named element (resolved at compile time) and read the
+            // requested measure there. Mirrors `ScenarioShift` but
+            // uses the user-supplied scenario element instead of the
+            // dim's `Default` (actuals) element.
+            CrossCoordRead::ScenarioElementShift {
+                scenario_element,
+                measure,
+            } => {
+                let scenario_pos = self
+                    .dimensions
+                    .iter()
+                    .position(|d| d.kind == DimensionKind::Scenario);
+                let scenario_pos = match scenario_pos {
+                    Some(p) => p,
+                    None => return Ok(ScalarValue::Null),
+                };
+                let mut elements: SmallVec<[ElementId; 8]> =
+                    target_coord.elements().iter().copied().collect();
+                elements[scenario_pos] = *scenario_element;
+                elements[measure_dim_position] = *measure;
+                let shifted_coord = CellCoordinate::from_parts(cube_id, elements.iter().copied());
+                let cv = self.read_inner(&shifted_coord, principal, false)?;
+                Ok(cv.value)
+            }
             // Phase 3I: narrow element-match indicator. Per item 1 W1, the
             // element name was resolved at parse-time to ElementId so the
             // hot path does only an integer compare.
@@ -2871,6 +2896,20 @@ fn validate_expr_well_typed(expr: &Expr, measure_dim: &Dimension) -> Result<(), 
         // to F64 via reference_data.parameters at eval time. Validate
         // (mc-model) ensures the name exists.
         Expr::ParamRef(_) => Ok(()),
+        // Phase 3J item 6: validate the measure references for the new
+        // scenario_ref / actual_ref-with-fallback variants.
+        Expr::ActualRefWithFallback(m, fallback) => {
+            let _ = measure_dim
+                .element(*m)
+                .ok_or(EngineError::ElementNotFound(*m, measure_dim.id))?;
+            validate_expr_well_typed(fallback, measure_dim)
+        }
+        Expr::ScenarioRef(m, _scenario) => {
+            let _ = measure_dim
+                .element(*m)
+                .ok_or(EngineError::ElementNotFound(*m, measure_dim.id))?;
+            Ok(())
+        }
     }
 }
 
