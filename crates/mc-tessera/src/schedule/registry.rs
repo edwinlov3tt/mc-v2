@@ -68,17 +68,23 @@ impl ScheduleRegistry {
 
     /// Save registry to `<model_dir>/.tessera/schedules.json`.
     /// Creates the `.tessera/` directory if it doesn't exist.
+    ///
+    /// Phase 6A.1 MAJ-2: write atomically via tmp+rename so a daemon
+    /// crash mid-write can never leave the registry truncated. Mirrors
+    /// the watermark pattern in [`crate::incremental::save_state`].
     pub fn save(&self, model_dir: &Path) -> Result<(), TesseraError> {
         let tessera_dir = model_dir.join(".tessera");
         if !tessera_dir.exists() {
             std::fs::create_dir_all(&tessera_dir).map_err(|e| TesseraError::io(&tessera_dir, e))?;
         }
         let path = tessera_dir.join("schedules.json");
+        let tmp_path = tessera_dir.join("schedules.json.tmp");
         let content =
             serde_json::to_string_pretty(self).map_err(|e| TesseraError::SidecarSerialize {
                 message: e.to_string(),
             })?;
-        std::fs::write(&path, content).map_err(|e| TesseraError::io(&path, e))?;
+        std::fs::write(&tmp_path, content).map_err(|e| TesseraError::io(&tmp_path, e))?;
+        std::fs::rename(&tmp_path, &path).map_err(|e| TesseraError::io(&path, e))?;
         Ok(())
     }
 }
@@ -118,6 +124,37 @@ mod tests {
         assert_eq!(loaded.version, 1);
         assert_eq!(loaded.schedules.len(), 1);
         assert_eq!(loaded.schedules[0].id, "sched_test_123_456");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_uses_tmp_rename_atomically() {
+        // Phase 6A.1 MAJ-2 regression: confirm save() uses tmp+rename
+        // so the final schedules.json is only ever the complete payload,
+        // and no stale schedules.json.tmp is left around even when a
+        // dangling tmp from a prior crashed save was already on disk.
+        let dir = std::env::temp_dir().join("mc_tessera_schedule_test_atomic");
+        let _ = fs::remove_dir_all(&dir);
+        let tessera_dir = dir.join(".tessera");
+        fs::create_dir_all(&tessera_dir).unwrap();
+        // Plant a stale tmp file simulating a prior crashed save.
+        let stale_tmp = tessera_dir.join("schedules.json.tmp");
+        fs::write(&stale_tmp, b"GARBAGE FROM PRIOR CRASH").unwrap();
+        assert!(stale_tmp.exists());
+
+        let reg = ScheduleRegistry::new();
+        reg.save(&dir).unwrap();
+
+        let final_path = tessera_dir.join("schedules.json");
+        assert!(final_path.exists(), "final schedules.json should exist");
+        assert!(
+            !stale_tmp.exists(),
+            "tmp file should be renamed away, leaving no .tmp behind"
+        );
+
+        // Sanity: the final file is a parseable registry (not garbage).
+        let _ = ScheduleRegistry::load(&dir).expect("load after atomic save");
 
         let _ = fs::remove_dir_all(&dir);
     }

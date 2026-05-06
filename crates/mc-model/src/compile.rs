@@ -311,16 +311,26 @@ pub fn compile(validated: ValidatedModel) -> Result<CompiledCube, EngineError> {
             .insert(st.name.clone(), bands);
     }
 
-    // Populate fitted_models
+    // Populate fitted_models. Phase 6A.1 CRIT-1: emit feature names alongside
+    // coefficients and standardization params so the engine can look up
+    // (mean, std) by name at eval time. Declaration order is preserved (no
+    // sorting) — eval reads coefficients in order against feature_values
+    // and indexes standardization by feature name.
     for fm in &validated.parsed.fitted_models {
-        let standardization = fm
-            .standardization
-            .as_ref()
-            .map(|sc| sc.params.iter().map(|p| (p.mean, p.std)).collect());
+        let standardization = fm.standardization.as_ref().map(|sc| {
+            sc.params
+                .iter()
+                .map(|p| (p.feature.clone(), p.mean, p.std))
+                .collect()
+        });
         let data = mc_core::FittedModelData {
             method: fm.method.clone(),
             intercept: fm.intercept,
-            coefficients: fm.coefficients.iter().map(|c| c.weight).collect(),
+            coefficients: fm
+                .coefficients
+                .iter()
+                .map(|c| (c.feature.clone(), c.weight))
+                .collect(),
             residual_std: fm.residual_std,
             standardization,
         };

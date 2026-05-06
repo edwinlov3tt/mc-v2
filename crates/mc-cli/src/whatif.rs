@@ -4,7 +4,8 @@
 //! The source CSV is never modified. No persistent side effects.
 
 use crate::query::{
-    format_f64, format_scalar, load_model, parse_coord_string, push_json_str, OutputFormat,
+    format_f64, format_scalar, load_model, parse_coord_string, push_json_envelope_header,
+    push_json_str, OutputFormat,
 };
 use mc_core::{ScalarValue, WriteIntent, WritebackRequest};
 use std::fmt::Write;
@@ -97,9 +98,9 @@ pub fn run(cmd: WhatifCommand) -> i32 {
 pub fn run_captured(cmd: WhatifCommand) -> (i32, String) {
     let loaded = match load_model(&cmd.path) {
         Ok(l) => l,
-        Err(msg) => {
-            eprintln!("error: {msg}");
-            return (1, String::new());
+        Err(e) => {
+            eprintln!("error: {e}");
+            return (e.exit_code(), String::new());
         }
     };
     let mut cube = loaded.cube;
@@ -210,7 +211,7 @@ struct AffectedMeasure {
 
 fn read_show_measures(
     cube: &mut mc_core::Cube,
-    refs: &mc_model::ModelRefs,
+    _refs: &mc_model::ModelRefs,
     principal: mc_core::PrincipalId,
     base_coord: &mc_core::CellCoordinate,
     show: &[String],
@@ -249,7 +250,8 @@ fn format_whatif_output(
     match format {
         OutputFormat::Json => {
             let mut out = String::new();
-            out.push_str("{\n  \"cell_overridden\": {\n    \"coord\": ");
+            push_json_envelope_header(&mut out);
+            out.push_str("\"cell_overridden\": {\n    \"coord\": ");
             push_json_str(&mut out, set_coord);
             out.push_str(",\n    \"before\": ");
             push_scalar_val(&mut out, before_value);
@@ -320,13 +322,14 @@ fn format_whatif_output(
 fn format_dry_run(
     cmd: &WhatifCommand,
     before_value: &ScalarValue,
-    before_measures: &[Option<f64>],
+    _before_measures: &[Option<f64>],
     format: OutputFormat,
 ) -> String {
     match format {
         OutputFormat::Json => {
             let mut out = String::new();
-            out.push_str("{\n  \"dry_run\": true,\n  \"would_override\": {\n    \"coord\": ");
+            push_json_envelope_header(&mut out);
+            out.push_str("\"dry_run\": true,\n  \"would_override\": {\n    \"coord\": ");
             push_json_str(&mut out, &cmd.set_coord);
             out.push_str(",\n    \"current_value\": ");
             push_scalar_val(&mut out, before_value);

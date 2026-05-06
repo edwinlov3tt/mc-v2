@@ -4,7 +4,10 @@
 //! Use cases: detect line movements, compare scenarios, track changes since
 //! last import.
 
-use crate::query::{format_f64, load_model, parse_coord_string, push_json_str, OutputFormat};
+use crate::query::{
+    format_f64, load_model, parse_coord_string, push_json_envelope_header, push_json_str,
+    OutputFormat,
+};
 use mc_core::{DimensionKind, ScalarValue};
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -89,9 +92,9 @@ pub fn run(cmd: DiffCommand) -> i32 {
 pub fn run_captured(cmd: DiffCommand) -> (i32, String) {
     let loaded = match load_model(&cmd.path) {
         Ok(l) => l,
-        Err(msg) => {
-            eprintln!("error: {msg}");
-            return (1, String::new());
+        Err(e) => {
+            eprintln!("error: {e}");
+            return (e.exit_code(), String::new());
         }
     };
     let mut cube = loaded.cube;
@@ -228,7 +231,7 @@ struct DiffEntry {
 
 fn read_with_overrides(
     cube: &mut mc_core::Cube,
-    refs: &mc_model::ModelRefs,
+    _refs: &mc_model::ModelRefs,
     principal: mc_core::PrincipalId,
     base_coord: &mc_core::CellCoordinate,
     measure_name: &str,
@@ -304,7 +307,8 @@ fn format_diff_output(
     match format {
         OutputFormat::Json => {
             let mut out = String::new();
-            out.push_str("{\n  \"comparison\": ");
+            push_json_envelope_header(&mut out);
+            out.push_str("\"comparison\": ");
             push_json_str(&mut out, &comparison);
             let _ = write!(out, ",\n  \"changed_cells\": {total_changed}");
             out.push_str(",\n  \"top_changes\": [\n");

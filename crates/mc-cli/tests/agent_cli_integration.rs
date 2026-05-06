@@ -201,12 +201,19 @@ fn test_trace_returns_tree() {
         String::from_utf8_lossy(&output.stderr)
     );
     let json = parse_json(&output.stdout);
-    // Trace should have 'measure', 'value', 'source' fields
-    assert!(json.get("measure").is_some(), "missing 'measure' field");
-    assert!(json.get("value").is_some(), "missing 'value' field");
-    assert!(json.get("source").is_some(), "missing 'source' field");
+    // Phase 6A.1 CRIT-2: every Phase 6A JSON envelope carries
+    // schema_version as the first field; trace tree lives under "trace".
+    assert_eq!(
+        json.get("schema_version").and_then(|v| v.as_str()),
+        Some("1.0"),
+        "missing or wrong schema_version"
+    );
+    let tree = json.get("trace").expect("missing 'trace' field");
+    assert!(tree.get("measure").is_some(), "missing 'measure' field");
+    assert!(tree.get("value").is_some(), "missing 'value' field");
+    assert!(tree.get("source").is_some(), "missing 'source' field");
     // Clicks is derived, so it should have inputs
-    let inputs = json.get("inputs");
+    let inputs = tree.get("inputs");
     assert!(
         inputs.is_some() && !inputs.unwrap().is_null(),
         "derived cell trace should have 'inputs'"
@@ -490,4 +497,228 @@ fn test_all_verbs_json_valid() {
             panic!("{desc}: output is not valid JSON: {e}\nstdout:\n{stdout_text}");
         });
     }
+}
+
+// ===========================================================================
+// Phase 6A.1 Block 2 — envelope-discipline regressions
+// ===========================================================================
+
+/// CRIT-2: every Phase 6A verb's `--format json` output carries
+/// `schema_version: "1.0"` as the first envelope field, matching the
+/// Phase 3B diagnostic-envelope shape and the existing tessera /
+/// validate / inspect / lint outputs.
+#[test]
+fn test_all_phase_6a_verbs_emit_schema_version() {
+    let path = acme_yaml();
+    let path_str = path.to_str().unwrap();
+    let coord = "Scenario=Baseline,Version=Working,Time=Jan_2026,Channel=Paid_Search,Market=Tampa,Measure=Spend";
+    let coord_clicks = "Scenario=Baseline,Version=Working,Time=Jan_2026,Channel=Paid_Search,Market=Tampa,Measure=Clicks";
+
+    let cases: &[(&[&str], &str)] = &[
+        (
+            &[
+                "model", "query", path_str, "--coord", coord, "--format", "json",
+            ],
+            "query --coord",
+        ),
+        (
+            &[
+                "model",
+                "query",
+                path_str,
+                "--aggregate",
+                "mean(Spend)",
+                "--format",
+                "json",
+            ],
+            "query --aggregate",
+        ),
+        (
+            &[
+                "model", "whatif", path_str, "--set", coord, "--value", "20000", "--show",
+                "Clicks", "--format", "json",
+            ],
+            "whatif",
+        ),
+        (
+            &[
+                "model",
+                "trace",
+                path_str,
+                "--coord",
+                coord_clicks,
+                "--format",
+                "json",
+            ],
+            "trace",
+        ),
+        (
+            &[
+                "model",
+                "sweep",
+                path_str,
+                "--set",
+                coord,
+                "--range",
+                "5000:15000:5000",
+                "--metric",
+                "mean(Clicks)",
+                "--goal",
+                "maximize",
+                "--format",
+                "json",
+            ],
+            "sweep",
+        ),
+        (
+            &[
+                "model",
+                "diff",
+                path_str,
+                "--left",
+                "Scenario=Baseline",
+                "--right",
+                "Scenario=Aggressive",
+                "--format",
+                "json",
+                "--limit",
+                "5",
+            ],
+            "diff",
+        ),
+        (
+            &[
+                "model",
+                "write",
+                path_str,
+                "--coord",
+                coord,
+                "--value",
+                "12345",
+                "--dry-run",
+                "--format",
+                "json",
+            ],
+            "write --dry-run",
+        ),
+    ];
+
+    for (args, desc) in cases {
+        let output = run_mc(args);
+        assert!(
+            output.status.success(),
+            "{desc}: non-zero exit. stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let json = parse_json(&output.stdout);
+        assert_eq!(
+            json.get("schema_version").and_then(|v| v.as_str()),
+            Some("1.0"),
+            "{desc}: missing or wrong schema_version in JSON envelope"
+        );
+    }
+}
+
+/// CRIT-3 part 1: I/O failures (file not found) return exit code 3, not 1.
+#[test]
+fn test_query_returns_exit_3_when_model_file_missing() {
+    let output = run_mc(&[
+        "model",
+        "query",
+        "/this/path/should/not/exist/zzz.yaml",
+        "--coord",
+        "Scenario=Baseline,Version=Working,Time=Jan_2026,Channel=Paid_Search,Market=Tampa,Measure=Spend",
+        "--format",
+        "json",
+    ]);
+    let code = output.status.code();
+    assert_eq!(
+        code,
+        Some(3),
+        "expected exit 3 for missing-file (got {code:?}). stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// CRIT-3 part 2: parse / validate failures return exit code 1, not 3.
+#[test]
+fn test_query_returns_exit_1_when_model_invalid() {
+    use std::io::Write;
+    let dir = std::env::temp_dir().join(format!("mc-cli-invalid-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create tempdir");
+    let path = dir.join("invalid.yaml");
+    let mut f = std::fs::File::create(&path).expect("create file");
+    // Definitely-bad YAML: not even a map at top level.
+    f.write_all(b": : :\n  -- not yaml --\n").expect("write");
+    drop(f);
+
+    let output = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--coord",
+        "Scenario=Baseline,Version=Working,Time=Jan_2026,Channel=Paid_Search,Market=Tampa,Measure=Spend",
+        "--format",
+        "json",
+    ]);
+    let code = output.status.code();
+    assert_eq!(
+        code,
+        Some(1),
+        "expected exit 1 for invalid YAML (got {code:?}). stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// MIN-5: MCP `mosaic.model.query` returns the JSON envelope *both* in
+/// the captured stdout text AND as a `structured` field on the
+/// outcome — the same shape the legacy `validate` / `inspect` / `lint`
+/// tools use. Without this, agents calling the Phase 6A MCP tools
+/// would have to double-parse to get a structured response.
+#[test]
+fn test_mcp_query_returns_structured_envelope() {
+    let path = acme_yaml().to_string_lossy().into_owned();
+    let req = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"mosaic.model.query","arguments":{{"path":"{path}","coord":"Scenario=Baseline,Version=Working,Time=Jan_2026,Channel=Paid_Search,Market=Tampa,Measure=Spend","format":"json"}}}}}}"#
+    );
+
+    let mut child = Command::new(mc_binary())
+        .arg("mcp")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn mc mcp");
+
+    use std::io::Write;
+    let mut stdin = child.stdin.take().expect("stdin");
+    stdin.write_all(req.as_bytes()).expect("write");
+    stdin.write_all(b"\n").expect("newline");
+    drop(stdin);
+
+    let output = child.wait_with_output().expect("wait");
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout_str.lines().collect();
+    assert_eq!(lines.len(), 1, "MCP response must be exactly one line");
+    let response: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("MCP response is not valid JSON");
+    let result = response.get("result").expect("missing result");
+    let structured = result
+        .get("structuredContent")
+        .or_else(|| result.get("structured"))
+        .expect("missing structured (Phase 6A.1 MIN-5)");
+    // structured can be a string (the JSON envelope text) — parse it
+    // and confirm it carries schema_version: "1.0".
+    let parsed: serde_json::Value = match structured {
+        serde_json::Value::String(s) => serde_json::from_str(s)
+            .unwrap_or_else(|e| panic!("structured content is not valid JSON: {e}")),
+        v => v.clone(),
+    };
+    assert_eq!(
+        parsed.get("schema_version").and_then(|v| v.as_str()),
+        Some("1.0"),
+        "structured envelope missing schema_version"
+    );
 }

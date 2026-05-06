@@ -563,7 +563,12 @@ where
             let v = eval_expr(a, lookup_self, lookup_cross)?;
             match to_f64_opt(&v) {
                 None => Ok(ScalarValue::Null),
-                Some(x) => Ok(bool_to_scalar(x == 0.0)),
+                // Phase 6A.1 MIN-6: use the project's 1e-9 epsilon
+                // convention (see CLAUDE.md §3.1). Float arithmetic like
+                // `Spend - Spend` can produce values like `-2.7e-17` that
+                // are conceptually zero but `== 0.0` fails. Treat
+                // anything whose abs() is below epsilon as falsy.
+                Some(x) => Ok(bool_to_scalar(x.abs() < 1e-9)),
             }
         }
         // -- Phase 3E: Functions --
@@ -571,7 +576,9 @@ where
             let c = eval_expr(cond, lookup_self, lookup_cross)?;
             match to_f64_opt(&c) {
                 None => eval_expr(else_b, lookup_self, lookup_cross), // Null → else
-                Some(x) if x == 0.0 => eval_expr(else_b, lookup_self, lookup_cross), // falsy
+                // Phase 6A.1 MIN-6: same epsilon convention as Expr::Not
+                // above. Falsy iff the value is within 1e-9 of zero.
+                Some(x) if x.abs() < 1e-9 => eval_expr(else_b, lookup_self, lookup_cross),
                 Some(_) => eval_expr(then_b, lookup_self, lookup_cross), // truthy
             }
         }
@@ -964,7 +971,10 @@ where
         Expr::Not(a) => {
             let v = eval_expr_unified_inner(a, handler)?;
             match to_f64_opt(&v) {
-                Some(x) => Ok(bool_to_scalar(x == 0.0)),
+                // Phase 6A.1 MIN-6: mirror the epsilon convention from eval_expr.
+                // Float arithmetic like `A - A` can yield near-zero values (~1e-17)
+                // that are conceptually zero but fail the exact `== 0.0` check.
+                Some(x) => Ok(bool_to_scalar(x.abs() < 1e-9)),
                 None => Ok(ScalarValue::Null),
             }
         }
@@ -972,7 +982,8 @@ where
             let c = eval_expr_unified_inner(cond, handler)?;
             match to_f64_opt(&c) {
                 None => eval_expr_unified_inner(else_b, handler),
-                Some(x) if x == 0.0 => eval_expr_unified_inner(else_b, handler),
+                // Phase 6A.1 MIN-6: same epsilon convention as Expr::Not above.
+                Some(x) if x.abs() < 1e-9 => eval_expr_unified_inner(else_b, handler),
                 Some(_) => eval_expr_unified_inner(then_b, handler),
             }
         }
@@ -2268,5 +2279,37 @@ mod tests {
         let body = Expr::Calibrate(Box::new(Expr::Const(ScalarValue::Null)), "m".into());
         let v = eval_expr(&body, &mut |_| Ok(ScalarValue::Null), &mut no_cross).unwrap();
         assert!(v.is_null());
+    }
+
+    // Phase 6A.1 MIN-6 regression: eval_expr_unified_inner (the production
+    // eval path called from cube.rs) must use 1e-9 epsilon for not() and if().
+    // A near-zero value like 5e-10 is conceptually false/zero; under the old
+    // `x == 0.0` check it would test as truthy.
+    #[test]
+    fn eval_unified_not_near_zero_is_true() {
+        // 5e-10 < 1e-9 → not(5e-10) should be true (1.0)
+        let body = Expr::Not(Box::new(Expr::Const(ScalarValue::F64(5e-10))));
+        let v = eval_expr_unified(&body, &mut |_| Ok(ScalarValue::Null)).unwrap();
+        assert!(
+            (v.as_f64().unwrap() - 1.0).abs() < 1e-12,
+            "not(5e-10) expected 1.0, got {:?}",
+            v
+        );
+    }
+
+    #[test]
+    fn eval_unified_if_near_zero_takes_else_branch() {
+        // if(5e-10, 99.0, 1.0) → condition is near-zero (falsy) → else = 1.0
+        let body = Expr::If(
+            Box::new(Expr::Const(ScalarValue::F64(5e-10))),
+            Box::new(Expr::Const(ScalarValue::F64(99.0))),
+            Box::new(Expr::Const(ScalarValue::F64(1.0))),
+        );
+        let v = eval_expr_unified(&body, &mut |_| Ok(ScalarValue::Null)).unwrap();
+        assert!(
+            (v.as_f64().unwrap() - 1.0).abs() < 1e-12,
+            "if(5e-10, 99, 1) expected 1.0 (else branch), got {:?}",
+            v
+        );
     }
 }

@@ -376,7 +376,7 @@ violates any of these, fix it before declaring the file done.
 | `.unwrap()` in `mc-core/src/` | §12 acceptance criterion 10 | Return `Result<_, EngineError>` |
 | `.expect(...)` in `mc-core/src/` | Same | Same — `Result` everywhere |
 | `panic!()` in `mc-core/src/` | Same | `EngineError::Internal` |
-| `unsafe` anywhere | §13 of brief | Find a safe alternative; if none, stop and ask |
+| `unsafe` anywhere | §13 of brief | Find a safe alternative; if none, stop and ask. **Sole sanctioned exception:** `crates/mc-tessera/src/schedule/daemon.rs` lines 273–283 — POSIX signal-handler registration via `libc::signal`. The handler stores into an atomic shutdown flag (async-signal-safe), and stable Rust offers no signal-handler abstraction. Documented under Phase 6A.1 MIN-4. Any new `unsafe` site requires an ADR. |
 | `serde::*` imports | Banned dep | None — Phase 1 has no serialization |
 | `tokio::*`, `async fn`, `.await` | Banned | Phase 1 is sync only |
 | `Box<dyn Trait>` for storage | §3.9 | Use concrete `HashMapStore` |

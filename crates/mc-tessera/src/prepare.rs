@@ -122,6 +122,21 @@ pub enum MappingTarget {
         /// `ModelRefs::dimension_order` (used to drop the resolved
         /// `ElementId` into the correct coordinate slot).
         dim_position: usize,
+        /// `true` if the YAML model's dim kind is `"Time"`. Phase 6A.1
+        /// MAJ-1: drives the strptime parse-and-canonicalize at row
+        /// transform time when [`time_format`](Self::Dimension) is set.
+        is_time_dim: bool,
+        /// Optional strptime-style format string for non-ISO date
+        /// columns (e.g., `"%m/%d/%Y"`). Phase 6A.1 MAJ-1: when present
+        /// and `is_time_dim` is true, the row's raw value is parsed
+        /// using this format, canonicalized via [`map_to_period`](Self::Dimension),
+        /// and the canonical string is matched against the Time dim's
+        /// element names.
+        time_format: Option<String>,
+        /// Optional bucketing period (`"year"` | `"quarter"` | `"month"` |
+        /// `"week"` | `"day"`). Phase 6A.1 MAJ-1: drives canonicalization
+        /// of the parsed timestamp to the Time-element name format.
+        map_to_period: Option<String>,
     },
     /// Measure column. The `Measure` dimension element is fixed at
     /// prepare-time; the column carries the F64 value.
@@ -245,8 +260,23 @@ fn prepare_from_yaml_with_workspace(
     let driver_schema = driver.schema().map_err(TesseraError::Driver)?;
     let driver_schema_names: Vec<String> = driver_schema.iter().map(|c| c.name.clone()).collect();
 
-    // Step 8: resolve column mappings.
-    let column_plan = resolve_column_plan(&recipe, &compiled.refs, &driver_schema_names)?;
+    // Step 8: resolve column mappings. Build the set of Time-kind dim
+    // names from the validated model so resolve_column_plan can mark
+    // Time-dim mappings (Phase 6A.1 MAJ-1: time_format gets consumed
+    // at row-transform time, but only on Time-kind columns).
+    let time_dim_names: std::collections::HashSet<String> = validated_model
+        .parsed
+        .dimensions
+        .iter()
+        .filter(|d| d.kind == "Time")
+        .map(|d| d.name.clone())
+        .collect();
+    let column_plan = resolve_column_plan(
+        &recipe,
+        &compiled.refs,
+        &driver_schema_names,
+        &time_dim_names,
+    )?;
 
     // Step 9: resolve defaults.
     let defaults = resolve_defaults(&recipe, &compiled.refs)?;
@@ -541,6 +571,7 @@ fn resolve_column_plan(
     recipe: &Recipe,
     refs: &ModelRefs,
     driver_schema_names: &[String],
+    time_dim_names: &std::collections::HashSet<String>,
 ) -> Result<Vec<ResolvedColumnMapping>, TesseraError> {
     // Build a name → position lookup over the driver schema for fast
     // source-index resolution.
@@ -582,10 +613,18 @@ fn resolve_column_plan(
                     dimension: dim_name.clone(),
                 }
             })?;
+            // Phase 6A.1 MAJ-1: capture time_format / map_to_period so
+            // transform.rs can apply strptime parsing for non-ISO Time
+            // columns. is_time_dim guards the parse — the kind comes
+            // from the YAML model's dim declaration.
+            let is_time_dim = time_dim_names.contains(dim_name.as_str());
             MappingTarget::Dimension {
                 dim_name: dim_name.clone(),
                 dim_id,
                 dim_position: dim_pos,
+                is_time_dim,
+                time_format: col.time_format.clone(),
+                map_to_period: col.map_to_period.clone(),
             }
         } else if let Some(measure_name) = &col.measure {
             // The measure target is an element of the "Measure" dimension.

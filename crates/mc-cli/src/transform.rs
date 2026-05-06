@@ -543,7 +543,7 @@ fn format_json_output(rows: &[Row], _recipe: &TransformRecipe) -> String {
     out
 }
 
-fn format_text_output(rows: &[Row], recipe: &TransformRecipe) -> String {
+fn format_text_output(rows: &[Row], _recipe: &TransformRecipe) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "Transform: {} rows", rows.len());
     // Show first few rows in table format
