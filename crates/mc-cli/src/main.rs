@@ -132,6 +132,7 @@ fn print_help() {
     println!("    mc model trace  <path> --coord <coord> [--depth <n>] [--format text|json|csv]");
     println!("    mc model sweep  <path> --range <start:end:step> --metric <fn> --goal <min|max>");
     println!("                           [--model <name> --coefficient <name>] [--set <coord>]");
+    println!("                           [--metric-where <expr>] [--format text|json|csv]");
     println!(
         "    mc model diff   <path> --left <filter> --right <filter> [--format text|json|csv]"
     );

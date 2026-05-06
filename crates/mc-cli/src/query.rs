@@ -312,8 +312,10 @@ pub fn push_json_envelope_header(out: &mut String) {
 /// A parsed filter expression. We implement a simple recursive-descent
 /// parser here because the formula parser doesn't support string literals
 /// in general expressions (only inside function args).
+/// Phase 6A.3 item 3: lifted to `pub(crate)` so `sweep.rs` can reuse the
+/// query filter parser for `--metric-where`. No external surface change.
 #[derive(Debug)]
-enum Filter {
+pub(crate) enum Filter {
     And(Box<Filter>, Box<Filter>),
     Or(Box<Filter>, Box<Filter>),
     Not(Box<Filter>),
@@ -321,7 +323,7 @@ enum Filter {
 }
 
 #[derive(Debug, Clone)]
-enum FilterAtom {
+pub(crate) enum FilterAtom {
     /// A measure reference — will read the measure value at the current coord.
     Measure(String),
     /// A dimension reference — will resolve to the current element name.
@@ -329,14 +331,14 @@ enum FilterAtom {
 }
 
 #[derive(Debug, Clone)]
-enum FilterValue {
+pub(crate) enum FilterValue {
     Number(f64),
     StringLit(String),
     Atom(FilterAtom),
 }
 
 #[derive(Debug, Clone, Copy)]
-enum CmpOp {
+pub(crate) enum CmpOp {
     Eq,
     Neq,
     Gt,
@@ -346,7 +348,11 @@ enum CmpOp {
 }
 
 impl Filter {
-    fn parse(input: &str, refs: &ModelRefs, cube: &mc_core::Cube) -> Result<Filter, String> {
+    pub(crate) fn parse(
+        input: &str,
+        refs: &ModelRefs,
+        cube: &mc_core::Cube,
+    ) -> Result<Filter, String> {
         let tokens = tokenize_filter(input)?;
         let mut pos = 0;
         let result = parse_or(&tokens, &mut pos, refs, cube)?;
@@ -616,7 +622,8 @@ fn is_dimension_name(name: &str, cube: &mc_core::Cube) -> bool {
     cube.dimensions().iter().any(|d| d.name == name)
 }
 
-fn eval_filter(
+/// Phase 6A.3 item 3: lifted to `pub(crate)` for reuse from `sweep.rs`.
+pub(crate) fn eval_filter(
     filter: &Filter,
     coord: &CellCoordinate,
     cube: &mut mc_core::Cube,

@@ -1867,6 +1867,195 @@ fn test_sweep_does_not_reload_yaml_per_point() {
     );
 }
 
+/// 6A.3 item 3: `--metric-where Market=Tampa` restricts the metric to
+/// the Tampa subset. The Tampa-only mean(Clicks) must differ from the
+/// global mean(Clicks) at the same sweep value.
+#[test]
+fn test_sweep_metric_where_restricts_to_subset() {
+    let path = acme_yaml();
+    let path_str = path.to_str().unwrap();
+    let common_args: &[&str] = &[
+        "model",
+        "sweep",
+        path_str,
+        "--set",
+        COORD_SPEND_JAN_TAMPA,
+        "--range",
+        "10000:10000:1000", // single point
+        "--metric",
+        "mean(Clicks)",
+        "--goal",
+        "maximize",
+        "--format",
+        "json",
+    ];
+
+    // Unfiltered metric.
+    let global = run_mc(common_args);
+    assert!(
+        global.status.success(),
+        "global sweep failed: stderr={}",
+        String::from_utf8_lossy(&global.stderr)
+    );
+    let global_metric = parse_json(&global.stdout)
+        .get("sweep")
+        .and_then(|s| s.as_array())
+        .and_then(|a| a.first().cloned())
+        .and_then(|p| p.get("metric").and_then(|v| v.as_f64()))
+        .expect("global metric");
+
+    // Tampa-only metric.
+    let mut filtered_args: Vec<&str> = common_args.to_vec();
+    filtered_args.push("--metric-where");
+    filtered_args.push("Market == \"Tampa\"");
+    let filtered = run_mc(&filtered_args);
+    assert!(
+        filtered.status.success(),
+        "filtered sweep failed: stderr={}",
+        String::from_utf8_lossy(&filtered.stderr)
+    );
+    let tampa_metric = parse_json(&filtered.stdout)
+        .get("sweep")
+        .and_then(|s| s.as_array())
+        .and_then(|a| a.first().cloned())
+        .and_then(|p| p.get("metric").and_then(|v| v.as_f64()))
+        .expect("tampa metric");
+
+    assert!(
+        (global_metric - tampa_metric).abs() > 1e-6,
+        "Tampa-only metric ({tampa_metric}) must differ from global ({global_metric})"
+    );
+}
+
+/// 6A.3 item 3 W3: when `--metric-where` matches zero coords, the metric
+/// is reported as JSON null (not zero, not an error). The sweep
+/// completes successfully — the user asked a valid question, and the
+/// answer is "nothing matched."
+#[test]
+fn test_sweep_metric_where_zero_matches_returns_null() {
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "sweep",
+        path.to_str().unwrap(),
+        "--set",
+        COORD_SPEND_JAN_TAMPA,
+        "--range",
+        "10000:10000:1000",
+        "--metric",
+        "mean(Clicks)",
+        "--goal",
+        "maximize",
+        "--metric-where",
+        "Market == \"NotARealMarket\"",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        output.status.success(),
+        "zero-match sweep must succeed: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = parse_json(&output.stdout);
+    let metric = json
+        .get("sweep")
+        .and_then(|s| s.as_array())
+        .and_then(|a| a.first().cloned())
+        .and_then(|p| p.get("metric").cloned())
+        .expect("metric field");
+    assert!(
+        metric.is_null(),
+        "metric must be JSON null when filter matches zero coords; got {metric}"
+    );
+    let optimal = json.get("optimal").expect("optimal");
+    assert!(
+        optimal.is_null(),
+        "optimal must be null when no point produced a numeric metric; got {optimal}"
+    );
+}
+
+/// 6A.3 item 3 W4: `--metric-where` AND-combines with the rest of the
+/// sweep configuration. Filtering by a dimension value while ALSO
+/// fixing a Spend coord with `--set` produces a metric specific to the
+/// filtered subset, distinct from the un-filtered run.
+#[test]
+fn test_sweep_metric_where_combines_with_existing_scope_flags() {
+    let path = acme_yaml();
+    let path_str = path.to_str().unwrap();
+
+    // Single point with a Spend override AND a metric filter scoped
+    // narrower than the override (Channel filter on top of a Spend
+    // coord that already pins Channel=Paid_Search). The filter must
+    // be applied on top of the scope, producing a different aggregate
+    // than the same run without the filter.
+    let with_filter = run_mc(&[
+        "model",
+        "sweep",
+        path_str,
+        "--set",
+        COORD_SPEND_JAN_TAMPA,
+        "--range",
+        "10000:10000:1000",
+        "--metric",
+        "sum(Spend)",
+        "--goal",
+        "maximize",
+        "--metric-where",
+        "Channel == \"Paid_Search\" AND Market == \"Tampa\"",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        with_filter.status.success(),
+        "filter+scope sweep failed: stderr={}",
+        String::from_utf8_lossy(&with_filter.stderr)
+    );
+    let with_metric = parse_json(&with_filter.stdout)
+        .get("sweep")
+        .and_then(|s| s.as_array())
+        .and_then(|a| a.first().cloned())
+        .and_then(|p| p.get("metric").and_then(|v| v.as_f64()))
+        .expect("with-filter metric");
+
+    let without_filter = run_mc(&[
+        "model",
+        "sweep",
+        path_str,
+        "--set",
+        COORD_SPEND_JAN_TAMPA,
+        "--range",
+        "10000:10000:1000",
+        "--metric",
+        "sum(Spend)",
+        "--goal",
+        "maximize",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        without_filter.status.success(),
+        "no-filter sweep failed: stderr={}",
+        String::from_utf8_lossy(&without_filter.stderr)
+    );
+    let without_metric = parse_json(&without_filter.stdout)
+        .get("sweep")
+        .and_then(|s| s.as_array())
+        .and_then(|a| a.first().cloned())
+        .and_then(|p| p.get("metric").and_then(|v| v.as_f64()))
+        .expect("no-filter metric");
+
+    // Tampa+Paid_Search slice of total Spend is a small fraction of
+    // the global sum. The two values must differ by a meaningful margin.
+    assert!(
+        with_metric < without_metric,
+        "filtered sum(Spend) ({with_metric}) must be < global sum(Spend) ({without_metric})"
+    );
+    assert!(
+        (without_metric - with_metric).abs() > 1.0,
+        "filtered metric must differ from global by more than rounding noise"
+    );
+}
+
 /// 6A.3 item 2 W3: an unknown coefficient must error BEFORE the loop
 /// starts (exit code 1, no partial sweep output).
 #[test]
