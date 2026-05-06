@@ -488,6 +488,70 @@ rules:
     assert!(any, "expected MC1026 in errors: {errs:?}");
 }
 
+/// Test 10b (audit-pinned regression — Section L finding): a rule body
+/// whose static type is Indeterminate (an `if` whose branches both
+/// return Str) must be rejected at runtime when the rule fires. The
+/// pre-fix bug: such a body validated cleanly (because
+/// `expr_static_type(If)` returns Indeterminate so MC2058 doesn't fire
+/// statically), and at eval time the Str value was cached into
+/// `HashMapStore` and emitted in trace JSON output as `"value": "Email"`.
+/// The runtime guard in `Cube::read_derived_leaf` now rejects Str
+/// values before they hit `self.store.write`, surfaced as
+/// `EngineError::RuleBodyTypeMismatch`.
+#[test]
+fn test_runtime_str_in_rule_body_rejected_at_eval_time() {
+    let yaml = r#"
+model_format_version: 1
+metadata: { name: "x", description: "x", author: "x", created: "2026-01-01" }
+dimensions:
+  - { name: "Scenario", kind: "Scenario", elements: [{ name: "B", scenario_meta: "Default" }] }
+  - { name: "Version", kind: "Version", elements: [{ name: "W", version_state: "Draft" }] }
+  - { name: "Time", kind: "Time", elements: [{ name: "P1" }] }
+  - { name: "Channel", kind: "Standard", elements: [{ name: "Email" }] }
+  - { name: "Market", kind: "Standard", elements: [{ name: "U" }] }
+  - { name: "Measure", kind: "Measure", elements: [] }
+measures:
+  - { name: "R", role: "Derived", data_type: "F64", aggregation: "Sum" }
+rules:
+  - name: "rr"
+    target_measure: "R"
+    scope: "AllLeaves"
+    body: 'if(1 > 0, current_element(Channel), current_element(Market))'
+    declared_dependencies: []
+"#;
+    let compiled = mc_model::load_str(yaml, Some("test".into())).expect(
+        "validate must accept dynamic Str (Indeterminate static type) — runtime catches it",
+    );
+    let mut cube = compiled.cube;
+    let c = mc_core::CellCoordinate::from_parts(
+        compiled.refs.cube_id,
+        compiled
+            .refs
+            .dimension_order
+            .iter()
+            .map(|dim| match dim.as_str() {
+                "Scenario" => compiled.refs.element("Scenario", "B").unwrap(),
+                "Version" => compiled.refs.element("Version", "W").unwrap(),
+                "Time" => compiled.refs.element("Time", "P1").unwrap(),
+                "Channel" => compiled.refs.element("Channel", "Email").unwrap(),
+                "Market" => compiled.refs.element("Market", "U").unwrap(),
+                "Measure" => compiled.refs.element("Measure", "R").unwrap(),
+                _ => panic!("unknown dim"),
+            }),
+    );
+    let result = cube.read(&c, compiled.root_principal);
+    assert!(
+        result.is_err(),
+        "rule body returning Str at runtime must error, not cache the Str value"
+    );
+    let err = result.unwrap_err();
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("MC2058 runtime") || msg.contains("Str value"),
+        "expected runtime Str rejection error, got: {msg}"
+    );
+}
+
 /// Test 10: Writeback receives `ScalarValue::Str` → kernel rejects with
 /// EngineError::TypeMismatch (the MC2059 contract). The mc-model layer
 /// surfaces this as TypeMismatch from the kernel — there is no parser

@@ -504,6 +504,45 @@ sees them:
   follow-up could add CLI-level smoke checks for `param(...)` /
   `current_element(...)` etc.
 
+- **Audit finding D.1.a — `test_str_writeback_rejected_with_mc2059`
+  is a "boundary OK" test, not a "step 8a fires" test.** Reverting
+  the new step 8a alone does not fail the test, because the pre-
+  existing dtype check at step 8 (`CellDataType::F64.matches(Str)`
+  returns false) catches Str values too. The boundary is double-
+  fenced; my new check is documentation + defense-in-depth. This
+  is acceptable (the load-bearing contract — no Str in storage — is
+  still verified end-to-end), but the test does not specifically
+  prove step 8a's existence. A future test that constructs a
+  scenario where step 8 misses but step 8a catches would be ideal,
+  but no such scenario exists today (the dtype check is total).
+
+- **Audit finding (Section B) — `crates/mc-cli/src/query.rs`
+  modified despite Hard Rule 1.** Rule 1 said "CLI source files
+  stay unchanged"; `query.rs` gained 34 lines (in two existing
+  match expressions) because `mc_model::ParsedRuleBody` is not
+  `#[non_exhaustive]` — adding new variants forced exhaustiveness
+  arms. The arms are required-for-compile, not new CLI features:
+  the new cross-coord variants (ScenarioRef, ExtrapolateLastValue)
+  reject in filter context (matching existing ActualRef/Prev
+  behavior); the new local primitives (StrLiteral, ParamRef,
+  CurrentElement) evaluate normally in filters (matching their
+  rule-eval semantics). Could be remediated by either marking
+  `ParsedRuleBody` as `#[non_exhaustive]` (much larger surface
+  change) or using `_ =>` wildcards in query.rs. **Surface this
+  to the project owner before merge if the intent of Hard Rule 1
+  was strict.**
+
+- **Audit finding (Section F.5) — test name misleading.**
+  `test_scope_all_leaves_default_when_field_absent` actually sets
+  `scope: "AllLeaves"` explicitly in its YAML. The handoff Item 5
+  W6 says "Default to AllLeaves (matches existing behavior)" but
+  the schema's `pub scope: String` was already required pre-3J
+  (no `#[serde(default)]`). My implementation matches existing
+  behavior (field is required); the test name is misleading and
+  should be renamed in a follow-up, or the field should gain
+  `#[serde(default = "default_scope_all_leaves")]` to actually
+  default-when-absent.
+
 ---
 
 ## Phase 3J scope summary

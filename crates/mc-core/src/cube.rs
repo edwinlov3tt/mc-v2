@@ -506,6 +506,26 @@ impl Cube {
             eval_expr_unified(&rule_body, &mut handler)?
         };
 
+        // Phase 3J item 1 W1 (audit fix): the rule body's runtime
+        // value MUST be numeric or Null — never `ScalarValue::Str`.
+        // The static MC2058 check at validate catches Str-typed
+        // bodies whose outermost expression returns Str, but
+        // `if(cond, str_a, str_b)` and similar dynamic Str-returning
+        // patterns pass static analysis (`expr_static_type` returns
+        // Indeterminate for If/IfNull/Coalesce). This runtime guard
+        // rejects Str values before they hit `self.store.write` at
+        // line 553 below — the load-bearing boundary per ADR-0016
+        // Decision 2 (no Str in storage).
+        if matches!(value, ScalarValue::Str(_)) {
+            return Err(EngineError::RuleBodyTypeMismatch {
+                detail: format!(
+                    "rule body returned a Str value at coord {:?}; \
+                     rule bodies must evaluate to F64 or Null (MC2058 runtime)",
+                    coord
+                ),
+            });
+        }
+
         // After eval, validate the declared-dep superset for THIS
         // coordinate: every measure we actually read must be in the
         // rule's declared dependencies (per spec §10.7
@@ -2143,6 +2163,18 @@ impl Cube {
             return Err(EngineError::LockedCell {
                 coord: coord.clone(),
                 owner: blocking.owner,
+            });
+        }
+        // Phase 3J ADR-0016 Decision 2: explicitly reject `ScalarValue::Str`
+        // values in batch writeback, mirroring `Cube::write` step 8a. The
+        // dtype check below ALSO rejects Str (because `F64.matches(Str)`
+        // returns false), but the explicit check makes the contract
+        // unmistakable + stays robust against any future dtype that
+        // accidentally matches Str.
+        if matches!(value, ScalarValue::Str(_)) {
+            return Err(EngineError::TypeMismatch {
+                expected: measure_meta.dtype.clone(),
+                got: value.clone(),
             });
         }
         // Per engine-semantics.md §13 I-WB-9: type check. WriteBatch
