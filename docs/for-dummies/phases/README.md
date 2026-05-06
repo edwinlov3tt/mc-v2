@@ -18,6 +18,7 @@ The phases section walks through the *optimization phases* (Phase 2 and onward).
 | **3B** | **Add the four-verb mental model for YAML authors: validate / inspect / lint / test. 10 lint rules + structured diagnostics for future LLM + UI consumption.** | **complete** | **[phase-3b.md](./phase-3b.md)** |
 | **3C** | **Make model files self-contained: delete the embarrassing Acme-name special case in the CLI; let YAML models declare their own input data via a new `canonical_inputs:` block (sibling CSV or inline tabular).** | **complete** | **[phase-3c.md](./phase-3c.md)** |
 | **3D** | **Excel's formula bar comes to YAML: rule bodies can now be authored as `"Customers * AOV"` instead of nested s-expression-shaped objects. Both forms still work; the kernel doesn't know the difference.** | **complete** | **[phase-3d.md](./phase-3d.md)** |
+| **3E – 3J** | **Grew the formula language vocabulary from "1985 Excel" to "modern planning system." Conditionals, time-series ops (`prev`/`lag`/`cumsum`), reference-data blocks (`lookup_tables`/`benchmarks`), fitted-model evaluation (`predict`/`calibrate`), math primitives (`pow`/`sqrt`/`norm_inv`), indicator measures, scope-restricted rules, last-observation-carried-forward. After this arc the formula engine is at the "completion line" — future additions are demand-driven only.** | **3E-3I complete; 3J in progress** | **[phase-3e-through-3j.md](./phase-3e-through-3j.md)** (one consolidated note for the whole arc) |
 
 ## How to read these
 
