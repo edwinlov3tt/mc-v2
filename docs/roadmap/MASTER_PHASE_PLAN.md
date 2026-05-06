@@ -4,7 +4,7 @@
 >
 > Read this before inventing a phase name or starting work that isn't already on the list. If a new phase is needed and it isn't here, add it here first (and link the ADR explaining the decision).
 
-**Last updated:** 2026-05-06 (post-Phase 6A.3 agent surface polish; 785 / 0 / 5 tests; HEAD `46b1f7a`)
+**Last updated:** 2026-05-06 (post-Phase 3I formula language completion; 830 / 0 / 5 tests; HEAD `1265f78`)
 **Maintained by:** project lead. New sub-phases require an ADR in [`../decisions/`](../decisions/).
 
 ---
@@ -48,7 +48,8 @@ Productization beyond the first usable product (multi-tenancy, customer-facing a
 | **3E–3G** | Formula language expansion (conditionals + time-series + reference-data blocks) | **complete** | `phase-3e-3f-3g-formula-expansion` |
 | **3F.1** | Runtime time anchor + metadata validation | **complete** (bundled with 3E–3G merge) | — |
 | **3H** | Fitted-model evaluation (predict / calibrate / exp / norm_cdf) | **complete** | `phase-3h-fitted-model-evaluation` (`99477ef`) |
-| **3I–3N** | Further model layer extensions (TBD) | not started | — |
+| **3I** | Formula language completion — `is_element`, 9 math primitives (BSM `norm_inv`), multi-key `lookup_tables`, `predict()` arity validation, `avg/min/max/wavg_over` family, `ifs`/`switch`, filter-formula parser unification (per ADR-0015 + Amendment §1) | **complete** (report at [`../reports/phase-3i-completion-report.md`](../reports/phase-3i-completion-report.md)) | `phase-3i-formula-language-completion` (`1265f78`) |
+| **3J–3N** | Further model layer extensions (TBD — `parameters:` blocks, `scenario_ref`, LOCF, general string literals, `Indicator` measure role, advanced aggregation methods, multi-frequency Time) | not started | — |
 | **4A** | LLM-assisted authoring — Mosaic Claude Code plugin (skills + agents + commands + MCP server + marketing-mix domain schema) per ADR-0008 | **complete** (report at [`../reports/phase-4a-completion-report.md`](../reports/phase-4a-completion-report.md)) | `phase-4a-mosaic-plugin` (`36af56c`) |
 | **4B** | Python reference adapters under `mosaic-plugin/examples/adapters/` (`anthropic-python/` + `openai-python/` ~150 lines each) | **complete** (report at [`../reports/phase-4b-completion-report.md`](../reports/phase-4b-completion-report.md); both adapters cleared best-of-3 gate — Anthropic 3/3, OpenAI 3/3) | `phase-4b-python-adapters` (`b5b6229`) |
 | **5A** | Tessera Core Engine — `WriteBatch`, recipe format, 6 source drivers, orchestrator + 5 CLI verbs (per ADR-0010) | **complete** | `phase-5a-tessera-core` (`2f20d24`) |

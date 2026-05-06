@@ -265,4 +265,27 @@ The strict ADR-first interpretation. **Rejected** because the 8 in-scope items d
 
 ## Acceptance amendments
 
-*(None as of authoring — to be appended if review surfaces amendments.)*
+### Amendment §1 — MC2053 → MC2057 correction (2026-05-06)
+
+**Source:** Phase 3I implementer self-audit (Section G — diagnostic-code namespace check).
+
+**The error.** Decision 5 of this ADR (and the corresponding handoff at [`../handoffs/phase-3i-formula-completion-handoff.md`](../handoffs/phase-3i-formula-completion-handoff.md) item 4) specified **MC2053** for `predict()` arity validation. The implementer's audit verified against baseline `548eb6b` and discovered MC2053 was already shipped by Phase 3H for "duplicate fitted-artifact name" in `crates/mc-model/src/validate.rs::check_fitted_model_blocks` (5 occurrences at baseline). Per process-notes Rule 3 (CVE-style diagnostic-code retirement), shipped codes are forever locked; reusing MC2053 for a different rule would be a hard violation.
+
+**The remediation (binding correction).** The `predict()` arity validation code is **MC2057**, not MC2053. Verified MC2057 was unassigned at baseline. Decision 5 of this ADR and Decision 9's code table are corrected accordingly.
+
+**Updated code table (Decision 9):**
+
+| Code | Stage | Meaning |
+|---|---|---|
+| MC1022 | parse | `is_element` references unknown element |
+| MC1023 | parse | `is_element` references unknown dimension |
+| MC1024 | parse | string literal outside `is_element`'s second arg |
+| MC1025 | parse | cross-coord operator in filter expression |
+| MC2050 | validate | `lookup_table` has both `key_dimension` and `key_dimensions` set |
+| MC2051 | validate | `lookup_table` element name contains separator (pipe) |
+| MC2052 | validate | `lookup_table` key arity mismatch |
+| **MC2057** | **validate** | **`predict()` feature count does not match fitted model coefficient count** *(was MC2053 in original ADR; corrected)* |
+
+MC2053 stays assigned to its Phase 3H meaning ("duplicate fitted-artifact name"). MC2054, MC2055, MC2056 are unassigned; the implementer chose the next free slot above MC2056 to make the audit-trail clear. Future codes start at MC2058.
+
+**Process implication.** This is the first time a binding decision in a published ADR was caught and corrected by the implementer's self-audit. The audit pattern (process-notes Rule 10 + the per-phase audit prompt) worked exactly as designed — the implementer surfaced the collision, picked a safe alternative, and documented in their completion report rather than silently shipping the violation. **Future formula-expansion ADRs should sweep `git show <baseline>:crates/mc-model/src/validate.rs | grep -c "<proposed-code>"` for each new code in the proposal phase, not just the implementation phase.** PM (this ADR's author) takes responsibility for the original error; the audit pattern caught it before it shipped.

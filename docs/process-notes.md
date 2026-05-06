@@ -86,7 +86,9 @@ CVE-style. Once a code is shipped (validation MC2xxx, lint MC3xxx, parse MC1xxx)
 
 Established by ADR-0005 amendment #11 (MC3008's permanent retirement after promotion to MC2011). Carry-forward through ADR-0006 (no retirements; MC2025 was repurposed PRE-acceptance, which is the only window for repurposing — once shipped, locked) and ADR-0007 (no retirements; deliberately did NOT introduce MC1007 to keep the option for tighter codes later).
 
-**Implementation requirement:** every active phase ships an assertion test that no active validator/lint emits a retired code. Phase 3B established this for MC3008; Phase 3D will add a check that no formula-related diagnostic emits MC1007 (reserved-for-future).
+**Implementation requirement:** every active phase ships an assertion test that no active validator/lint emits a retired code. Phase 3B established this for MC3008; Phase 3D added a check that no formula-related diagnostic emits MC1007 (reserved-for-future).
+
+**Pre-flight requirement for ADRs proposing new codes (added 2026-05-06 after ADR-0015 §1 amendment):** before publishing any ADR that reserves new MC codes, the PM MUST sweep `git show <baseline>:crates/mc-model/src/validate.rs | grep -c "<proposed-code>"` (and `lint.rs`, `error.rs`) for each proposed code against the baseline commit. ADR-0015 originally specified MC2053 for predict-arity validation without this check; MC2053 had been shipped in Phase 3H for an unrelated rule. The Phase 3I implementer caught the collision during self-audit and remediated to MC2057, but the cost was an in-flight scope correction that should have been pre-empted. Future ADRs sweep first, propose codes second.
 
 ### 4. Locked surfaces are forever (until explicit ADR unlocks them)
 
@@ -221,6 +223,7 @@ The audit-pattern variant: when running parallel audit instances (e.g., the Phas
 - Writing handoff/review docs on main while the instance is on a branch. (Recurring failure mode — the instance's session lacks the doc context.)
 - Letting old phase branches accumulate after merge + tag. (As of 2026-05-06: 8 stale branches existed for shipped phases. Tags preserve history; branches were just clutter.)
 - Pushing branches before the work is reviewed. (Branches on origin become a contract someone might fork from; only push when the work is reviewed and ready.)
+- **All-uncommitted-at-end** (Phase 3I) — implementer did 8 items + 45 tests + audit fixes entirely uncommitted, with a one-shot commit at PM-merge time. Per-item commits enable incremental review (the PM can see "item 1 looks fine, item 5 might have an issue"); a single big commit forces a full-or-nothing review and loses the per-item progression in `git log`. **Kickoff prompts must say "commit AS YOU GO, not at the end" explicitly** — implicit "commit per item" wording from prior phases is insufficient. The work also risks total loss to a crash before the merge commit lands.
 
 **The PM's git workflow self-test (run before kickoff):**
 
