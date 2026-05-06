@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="760" viewBox="0 0 1180 760" role="img" aria-labelledby="title desc">
+  <title id="title">Mosaic 1M Cell Write Diagnostic Profile Fallback</title>
+  <desc id="desc">macOS sample top-of-stack profile for baseline_writebatch/per_cell/1M. cargo-flamegraph was unavailable on Rust 1.78, so this SVG is a fallback bar profile, not a true flamegraph.</desc>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172026; }
+    .muted { fill: #5d6972; font-size: 14px; }
+    .label { font-size: 14px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+    .bar { fill: #2f7f76; }
+    .bar2 { fill: #a34f2a; }
+    .grid { stroke: #d8dde1; stroke-width: 1; }
+  </style>
+  <rect width="1180" height="760" fill="#ffffff"/>
+  <text x="36" y="46" font-size="24" font-weight="700">1M Cell Write Profile - fallback artifact</text>
+  <text x="36" y="74" class="muted">Benchmark: baseline_writebatch/per_cell/1M. Tool: /usr/bin/sample, 30s, 25,434 samples, macOS 26.3 on Apple M4.</text>
+  <text x="36" y="98" class="muted">cargo-flamegraph could not be installed on pinned rustc 1.78.0; see report for install errors.</text>
+
+  <text x="36" y="138" font-size="18" font-weight="700">Top of stack samples</text>
+  <line x1="330" y1="160" x2="1060" y2="160" class="grid"/>
+  <line x1="330" y1="160" x2="330" y2="680" class="grid"/>
+  <line x1="1060" y1="160" x2="1060" y2="680" class="grid"/>
+  <text x="330" y="704" class="muted">0%</text>
+  <text x="520" y="704" class="muted">5%</text>
+  <text x="715" y="704" class="muted">10%</text>
+  <text x="915" y="704" class="muted">15%</text>
+  <text x="1030" y="704" class="muted">18.5%</text>
+
+  <text x="36" y="186" class="mono">Cube::compute_dirty_ancestors</text>
+  <rect x="330" y="170" width="730" height="24" class="bar"/>
+  <text x="1072" y="188" class="mono">4704 / 18.5%</text>
+
+  <text x="36" y="236" class="mono">_xzm_free</text>
+  <rect x="330" y="220" width="498" height="24" class="bar2"/>
+  <text x="840" y="238" class="mono">3212 / 12.6%</text>
+
+  <text x="36" y="286" class="mono">DirtyTracker::mark</text>
+  <rect x="330" y="270" width="415" height="24" class="bar"/>
+  <text x="758" y="288" class="mono">2678 / 10.5%</text>
+
+  <text x="36" y="336" class="mono">_xzm_xzone_malloc_tiny</text>
+  <rect x="330" y="320" width="401" height="24" class="bar2"/>
+  <text x="744" y="338" class="mono">2590 / 10.2%</text>
+
+  <text x="36" y="386" class="mono">DirtyTracker::is_dirty</text>
+  <rect x="330" y="370" width="311" height="24" class="bar"/>
+  <text x="654" y="388" class="mono">2008 / 7.9%</text>
+
+  <text x="36" y="436" class="mono">_platform_memmove</text>
+  <rect x="330" y="420" width="239" height="24" class="bar2"/>
+  <text x="582" y="438" class="mono">1539 / 6.1%</text>
+
+  <text x="36" y="486" class="mono">_platform_memset</text>
+  <rect x="330" y="470" width="196" height="24" class="bar2"/>
+  <text x="539" y="488" class="mono">1262 / 5.0%</text>
+
+  <text x="36" y="536" class="mono">_free</text>
+  <rect x="330" y="520" width="145" height="24" class="bar2"/>
+  <text x="488" y="538" class="mono">937 / 3.7%</text>
+
+  <text x="36" y="586" class="mono">_xzm_xzone_malloc</text>
+  <rect x="330" y="570" width="131" height="24" class="bar2"/>
+  <text x="474" y="588" class="mono">847 / 3.3%</text>
+
+  <text x="36" y="636" class="mono">libsystem_malloc dedup</text>
+  <rect x="330" y="620" width="120" height="24" class="bar2"/>
+  <text x="463" y="638" class="mono">774 / 3.0%</text>
+
+  <text x="36" y="732" class="muted">Interpretation: samples are dominated by dirty ancestor computation and allocator/memory movement on the per-cell Cube::write path.</text>
+</svg>
