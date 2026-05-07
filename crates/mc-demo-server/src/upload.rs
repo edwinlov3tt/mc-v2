@@ -232,6 +232,9 @@ pub fn process_upload(
     let summary = workspace::build_summary(&label, &tactics);
     timer.mark_narrative_done();
 
+    // Phase 7A.2: auto-write ledger entries for all narratives.
+    write_demo_ledger(&label, &tactics);
+
     let csv_count = csvs.len();
     let tactic_count = count_unique_tactics(&detections);
 
@@ -255,4 +258,82 @@ pub fn process_upload(
         tactics,
         summary,
     })
+}
+
+/// Phase 7A.2: write all narrative outputs from this upload to the
+/// interpretation ledger. Uses the current working directory as the
+/// workspace root.
+fn write_demo_ledger(advertiser: &str, tactics: &[TacticGroup]) {
+    use mc_narrative::ledger;
+    use std::collections::BTreeMap;
+
+    // Collect all narratives across all tactic groups.
+    let all_narratives: Vec<&crate::narrative::NarrativeOutput> =
+        tactics.iter().flat_map(|g| g.narratives.iter()).collect();
+
+    if all_narratives.is_empty() {
+        return;
+    }
+
+    let generated_at = {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        format!("{secs}")
+    };
+
+    let model_hash = ledger::compute_hash_from_bytes(b"demo-upload");
+
+    let mut scope = BTreeMap::new();
+    scope.insert("advertiser".to_string(), advertiser.to_string());
+
+    let entries: Vec<ledger::LedgerEntry> = all_narratives
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            let entry_id = ledger::generate_entry_id(&generated_at, &model_hash, i);
+            ledger::LedgerEntry {
+                schema_version: ledger::LEDGER_SCHEMA_VERSION.to_string(),
+                ledger_entry_id: entry_id,
+                generated_at: generated_at.clone(),
+                model: "demo-upload".to_string(),
+                model_hash: model_hash.clone(),
+                report_period: None,
+                scope: scope.clone(),
+                narrative: ledger::NarrativeRecord {
+                    id: n.template_id.clone(),
+                    section: None,
+                    severity: match n.severity {
+                        crate::narrative::Severity::Info => "info",
+                        crate::narrative::Severity::Success => "success",
+                        crate::narrative::Severity::Warning => "warning",
+                        crate::narrative::Severity::Critical => "critical",
+                        _ => "info",
+                    }
+                    .to_string(),
+                    text: n.text.clone(),
+                    template_id: n.template_id.clone(),
+                    notability_score: None,
+                },
+                evidence: n.evidence.clone(),
+                benchmarks_referenced: Vec::new(),
+            }
+        })
+        .collect();
+
+    let cwd = std::path::Path::new(".");
+    match ledger::write_ledger_entries(cwd, &entries) {
+        Ok(path) => {
+            eprintln!(
+                "  [ledger] Wrote {} entries to {}",
+                entries.len(),
+                path.display()
+            );
+        }
+        Err(e) => {
+            eprintln!("  [ledger] warning: write failed: {e}");
+        }
+    }
 }
