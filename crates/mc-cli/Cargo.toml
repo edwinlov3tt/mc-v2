@@ -24,6 +24,8 @@ serde_json = "1"
 # level (used by mc-drivers); declaring it here makes the dep explicit
 # without changing Cargo.lock.
 ureq = { workspace = true }
+# Phase 6D: demo server for `mc start`.
+mc-demo-server = { path = "../mc-demo-server" }
 
 [[bin]]
 name = "mc"

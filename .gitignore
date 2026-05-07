@@ -5,3 +5,8 @@ Cargo.lock.bak
 .DS_Store
 *.swp
 *.swo
+
+# Phase 6D demo frontend
+demo/frontend/node_modules/
+demo/frontend/dist/
+demo/sample-data/*.zip
