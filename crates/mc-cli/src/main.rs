@@ -170,7 +170,7 @@ fn print_help() {
         "    mc model diff   <path> --left <filter> --right <filter> [--format text|json|csv]"
     );
     println!("    mc model write  <path> --coord <coord> --value <n> [--dry-run] [--format ...]");
-    println!("    mc model narrate <path> [--templates <dir>] [--format text|json|markdown]");
+    println!("    mc model narrate <path> [--templates <dir>] [--format text|json|markdown] [--save-ledger]");
     println!();
     println!("    mc tessera apply      <recipe.yaml>            [--format text|json]");
     println!("    mc tessera dry-run    <recipe.yaml>            [--format text|json]");

@@ -7,6 +7,7 @@
 pub mod context;
 pub mod error;
 pub mod evaluator;
+pub mod ledger;
 pub mod renderer;
 pub mod schema;
 
