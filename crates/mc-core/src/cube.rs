@@ -1343,6 +1343,19 @@ impl Cube {
                     _ => linear_result, // "linear" default
                 };
 
+                // Phase 3H.1 (ADR-0017 Decision 3): clamp the final
+                // prediction to the configured `output_bound` if any.
+                // `OutputBound::apply` is NaN-safe (passes NaN through
+                // unchanged for defense-in-depth, even though Phase
+                // 6A.1 NaN-rejection at writeback should make NaN
+                // unreachable here). The validator (MC2070) has
+                // already cleared `min < max` so the floor/ceiling
+                // composition is well-defined.
+                let result = match &model.output_bound {
+                    Some(bound) => bound.apply(result),
+                    None => result,
+                };
+
                 Ok(ScalarValue::F64(result))
             }
             CrossCoordRead::CalibrateMap { map_id, value } => {
@@ -2586,6 +2599,10 @@ pub struct ReferenceData {
 /// than by position. The previous positional shape silently produced
 /// wrong predictions when `standardization.params` was declared in a
 /// different order than `coefficients`.
+///
+/// Phase 3H.1 amendment (ADR-0017): optional `output_bound` clamps the
+/// prediction after the link function. Either or both of `min`/`max`
+/// may be set.
 #[derive(Clone, Debug)]
 pub struct FittedModelData {
     /// `"linear"` or `"logistic"`.
@@ -2602,6 +2619,39 @@ pub struct FittedModelData {
     /// name from the coefficient list, so declaration order here is
     /// irrelevant to correctness.
     pub standardization: Option<Vec<(String, f64, f64)>>,
+    /// Phase 3H.1 (ADR-0017): optional clamp applied to the prediction
+    /// after the link function. None → no clamp; Some(b) → apply
+    /// `b.min`/`b.max` floor/ceiling per ADR-0017 Decision 3.
+    pub output_bound: Option<OutputBound>,
+}
+
+/// Phase 3H.1 (ADR-0017): output clamp on a fitted model. Either field may
+/// be `None` (one-sided clamp). The validator (MC2070) ensures `min < max`
+/// strictly when both are set, so eval can apply them in any order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutputBound {
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+}
+
+impl OutputBound {
+    /// Apply the clamp to `value`. NaN passes through unchanged
+    /// (defense-in-depth; Phase 6A.1 NaN-rejection at writeback should
+    /// make NaN unreachable here, but the kernel does not assume).
+    /// Per ADR-0017 Decision 3: floor first, then ceiling.
+    pub(crate) fn apply(&self, value: f64) -> f64 {
+        if value.is_nan() {
+            return value;
+        }
+        let mut v = value;
+        if let Some(min) = self.min {
+            v = v.max(min);
+        }
+        if let Some(max) = self.max {
+            v = v.min(max);
+        }
+        v
+    }
 }
 
 /// Calibration map data for `calibrate()` evaluation (Phase 3H).

@@ -2125,6 +2125,24 @@ fn check_fitted_model_blocks(parsed: &ParsedModel, errors: &mut Vec<ValidationEr
                 }
             }
         }
+
+        // Phase 3H.1 (ADR-0017 Decision 4): MC2070 — `output_bound.min`
+        // and `output_bound.max` both set, but `min >= max`. One-sided
+        // bounds are valid; only reject the contradictory two-sided case.
+        // NaN/infinite values are rejected by serde_yaml at parse time.
+        if let Some(bound) = &fm.output_bound {
+            if let (Some(min), Some(max)) = (bound.min, bound.max) {
+                if min >= max {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "fitted_model {:?}: output_bound min ({}) must be \
+                             strictly less than max ({}) (MC2070)",
+                            fm.name, min, max
+                        ),
+                    });
+                }
+            }
+        }
     }
 
     for cm in &parsed.calibration_maps {
@@ -3147,6 +3165,8 @@ fn check_str_type_context_walk(
 //         undeclared parameter.
 // MC2063 / 2064 / 2065 / 2066 / 2067 / 2068 / 2069 are reserved for
 // other Phase 3J items (Indicator measure role, scenario_ref, etc.).
+// MC2070 (Phase 3H.1 / ADR-0017): fitted_model.output_bound.min >=
+//         output_bound.max. Emitted by `check_fitted_model_blocks`.
 // ---------------------------------------------------------------------------
 
 fn check_parameters_block(

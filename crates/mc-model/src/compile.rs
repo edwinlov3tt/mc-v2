@@ -387,6 +387,14 @@ pub fn compile(validated: ValidatedModel) -> Result<CompiledCube, EngineError> {
                 .map(|p| (p.feature.clone(), p.mean, p.std))
                 .collect()
         });
+        // Phase 3H.1 (ADR-0017): copy `output_bound` field-by-field. The
+        // schema-side `ParsedOutputBound` and the kernel-side `OutputBound`
+        // are intentionally separate types; the validator (MC2070) has
+        // already cleared `min < max` so eval can apply them blindly.
+        let output_bound = fm.output_bound.as_ref().map(|b| mc_core::OutputBound {
+            min: b.min,
+            max: b.max,
+        });
         let data = mc_core::FittedModelData {
             method: fm.method.clone(),
             intercept: fm.intercept,
@@ -397,6 +405,7 @@ pub fn compile(validated: ValidatedModel) -> Result<CompiledCube, EngineError> {
                 .collect(),
             residual_std: fm.residual_std,
             standardization,
+            output_bound,
         };
         cube.reference_data
             .fitted_models
