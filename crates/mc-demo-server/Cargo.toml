@@ -1,0 +1,24 @@
+[package]
+name = "mc-demo-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Mosaic demo server — HTTP API + React frontend for the marketing report demo MVP (Phase 6D)"
+
+[dependencies]
+axum = { version = "0.7", features = ["multipart"] }
+tower-http = { version = "0.5", features = ["cors", "fs"] }
+tokio = { version = "1", features = ["full"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+open = "5"
+
+# Mosaic kernel — cube construction + formula engine (linked as library, not subprocess)
+mc-core = { path = "../mc-core" }
+
+[lib]
+name = "mc_demo_server"
+path = "src/lib.rs"

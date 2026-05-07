@@ -94,6 +94,7 @@ fn main() {
             }
         }
         "mcp" => mcp::run(),
+        "start" => run_start(&args[2..]),
         "--help" | "-h" | "help" => print_help(),
         other => {
             eprintln!("unknown command: {other:?}");
@@ -108,11 +109,37 @@ fn fatal(msg: &str) -> ! {
     std::process::exit(2)
 }
 
+fn run_start(args: &[String]) {
+    let mut port: u16 = 8080;
+    let mut static_dir: Option<String> = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--port" => match iter.next() {
+                Some(p) => {
+                    port = p.parse().unwrap_or_else(|_| {
+                        eprintln!("error: invalid port: {p}");
+                        std::process::exit(2);
+                    });
+                }
+                None => fatal("--port requires a number"),
+            },
+            "--static" => match iter.next() {
+                Some(d) => static_dir = Some(d.clone()),
+                None => fatal("--static requires a directory path"),
+            },
+            other => fatal(&format!("unknown argument to `mc start`: {other:?}")),
+        }
+    }
+    mc_demo_server::run(port, static_dir.as_deref());
+}
+
 fn print_help() {
     println!("mc — Mosaic CLI");
     println!();
     println!("USAGE:");
     println!("    mc demo [--model <path>]               # Run the Acme demo");
+    println!("    mc start [--port N] [--static <dir>]   # Start the demo server + open browser");
     println!();
     println!("    mc model validate <path> [--format text|json]");
     println!("    mc model inspect  <path> [--format text|json]");

@@ -1,0 +1,293 @@
+product_name,subproduct_name,table_name,file_name,headers,description,is_required,sort_order
+"STV","Hulu - RON","Monthly Performance","report-hulu-ron-monthly-performance","Date; Impressions; Video Views; Completion Rate; CPM; Spend; Reach; Frequency","",TRUE,0
+"STV","Hulu - Audience Targeted","Monthly Performance","report-hulu-audiencetargeted-monthly-performance","Date; Impressions; Video Views; Completion Rate; CPM; Spend; Audience Reach; Premium Content","",TRUE,0
+"STV","Run of Network","Monthly Performance","report-runofnetwork-monthly-performance","Date; Impressions; Video Views; Completion Rate; CPM; Spend; Reach; Frequency","",TRUE,0
+"STV","Streaming TV OTT","Monthly Performance","report-streamingtvott-monthly-performance","Date; Impressions; Video Views; Completion Rate; CPM; Spend; Reach; Frequency","",TRUE,0
+"STV","Channel Targeted OTT","Monthly Performance","report-channeltargetedott-monthly-performance","Date; Impressions; Video Views; Completion Rate; CPM; Spend; Channel; Content Category","",TRUE,0
+"STV","Advanced Audience Targeting OTT","Monthly Performance","report-stvott-monthly-performance","Date; Impressions; Video Views; Completion Rate; CPM; Spend; Audience Reach; Frequency","",TRUE,0
+"STV","Video","Monthly Performance","report-stv-monthly-performance","Date; Impressions; Video Views; Completion Rate; CPM; Spend; Frequency; Reach","",TRUE,0
+"Blended Tactics","Targeted Video","Monthly Performance","report-targetedvideo-monthly-performance","Date; Impressions; Video Views; Completion Rate; CPM; Spend; 25% Completion; 50% Completion; 75% Completion","",TRUE,0
+"Email Marketing","1:1 Marketing","Monthly Performance","report-emailmarketing-monthly-performance","Date; Impressions; Clicks; CTR; Spend; CPM; Opens; Open Rate; Deliveries; Bounces","",TRUE,0
+"Blended Tactics","Social Display","Monthly Performance","report-socialdisplay-monthly-performance","Date; Impressions; Clicks; CTR; Spend; CPM; Social Interactions; Engagements","",TRUE,0
+"Sponsorship","Station App Sponsorship","Monthly Performance","report-sponsorship-stationapp-monthly-performance","Date; Impressions; CPM; Spend; Station; Market; App Downloads; Active Users","",TRUE,0
+"Blended Tactics","Targeted Native","Monthly Performance","report-targetednative-monthly-performance","Date; Impressions; Clicks; CTR; Spend; CPM; Engagements; Content Views","",TRUE,0
+"Programmatic Audio","Run of Network","Monthly Performance","report-programmaticaudio-ron-monthly-performance","Date; Impressions; CPM; Spend; Audio Completions; Completion Rate; Reach; Frequency","",TRUE,0
+"Email Marketing","B2B (Business Targeting)","Monthly Performance","report-emailmarketing-monthly-performance","Date; Impressions; Clicks; CTR; Spend; CPM; Opens; Open Rate; Deliveries; Bounces","",TRUE,0
+"Sponsorship","Listen Live Sponsorship","Monthly Performance","report-sponsorship-listenlive-monthly-performance","Date; Impressions; CPM; Spend; Station; Market; Live Listeners; Stream Duration","",TRUE,0
+"Sponsorship","Contest Sponsorship","Monthly Performance","report-sponsorship-contest-monthly-performance","Date; Impressions; CPM; Spend; Station; Market; Contest Entries; Participation Rate","",TRUE,0
+"Sponsorship","Content Sponsorship","Monthly Performance","report-sponsorship-content-monthly-performance","Date; Impressions; CPM; Spend; Station; Market; Content Type; Engagement","",TRUE,0
+"Takeovers","Station Site Takeovers","Monthly Performance","report-takeovers-stationsite-monthly-performance","Date; Impressions; Clicks; CTR; CPM; Spend; Station; Market; Takeover Duration","",TRUE,0
+"Addressable Solutions","Addressable Display","Monthly Performance","report-addressabledisplay-monthly-performance","Date; Impressions; Clicks; CTR; Spend; CPM; Conversions; CPA","",TRUE,0
+"Programmatic Audio","Advanced Audience Targeting","Monthly Performance","report-programmaticaudio-aat-monthly-performance","Date; Impressions; CPM; Spend; Audio Completions; Completion Rate; Reach; Frequency","",TRUE,0
+"CPM Display","Mobile Billboard","Monthly Performance","report-localdisplay-mobilebillboard-monthly-performance","Date; Impressions; Clicks; CTR; CPM; Spend; Station; Market; Mobile Reach","",TRUE,0
+"CPM Display","Local Network","Monthly Performance","report-localdisplay-localnetwork-monthly-performance","Date; Impressions; Clicks; CTR; CPM; Spend; Station; Market; Local Reach","",TRUE,0
+"CPM Display","Ignite Network","Monthly Performance","report-localdisplay-ignitenetwork-monthly-performance","Date; Impressions; Clicks; CTR; CPM; Spend; Station; Market; Network Reach","",TRUE,0
+"CPM Display","Amplifier","Monthly Performance","report-localdisplay-amplifier-monthly-performance","Date; Impressions; Clicks; CTR; CPM; Spend; Station; Market; Content Amplification","",TRUE,0
+"CPM Display","Banner Ads","Monthly Performance","report-localdisplay-bannerads-monthly-performance","Date; Impressions; Clicks; CTR; CPM; Spend; Station; Market; Ad Size","",TRUE,0
+"SSM","Sponsored Social Mentions - ThruPlay","Monthly Performance","report-ssm-thruplay-monthly-performance","Date; Impressions; Video Views; ThruPlays; CPV; Spend; Station; Market","",TRUE,0
+"SSM","Sponsored Social Mentions - Awareness","Monthly Performance","report-ssm-awareness-monthly-performance","Date; Impressions; CPM; Spend; Reach; Frequency; Station; Market","",TRUE,0
+"SSM","Sponsored Social Mentions - Link Click","Monthly Performance","report-ssm-linkclick-monthly-performance","Date; Impressions; Clicks; Link Clicks; CTR; CPLC; Spend; Station; Market","",TRUE,0
+"Addressable Solutions","Geofencing with Foot Traffic","Monthly Performance","report-geofencing-monthly-performance","Date; Impressions; Clicks; CTR; Spend; CPM; Conversions; Foot Traffic; Visitation Rate","",TRUE,0
+"Email Marketing","B2C (Consumer Targeting)","Monthly Performance","report-emailmarketing-monthly-performance","Date; Impressions; Clicks; CTR; Spend; CPM; Opens; Open Rate; Deliveries; Bounces","",TRUE,0
+"Ignite Network","Ignite Network - Banner Ads","Monthly Performance","report-ignitenetwork-bannerads-monthly-performance","Date; Impressions; Clicks; CTR; CPM; Spend; Station; Market","",TRUE,0
+"YouTube","YouTube Bumper","Monthly Performance","report-youtube-bumper-monthly-performance","Date; Impressions; CPM; Spend; Reach; Frequency; Brand Lift; Ad Recall","",TRUE,0
+"YouTube","YouTube True View","Monthly Performance","report-youtube-trueview-monthly-performance","Date; Impressions; Views; View Rate; CPV; Spend; Earned Views; Subscribers; Watch Time","",TRUE,0
+"Spark","Spark","Monthly Performance","report-spark-monthly-performance","Date; Impressions; Clicks; CTR; Spend; CPC; Conversions; Quality Score","",TRUE,0
+"SEM","Google Search","Monthly Performance","report-googlesearch-monthly-performance","Date; Impressions; Clicks; CTR; Spend; CPC; Conversions; Conv Rate; Form Submissions; Phone Calls","",TRUE,0
+"SEM","SEM","Monthly Performance","report-sem-monthly-performance","Date; Impressions; Clicks; CTR; Spend; CPC; Conversions; Conv Rate; Form Submissions; Phone Calls","",TRUE,0
+"LinkedIn","LinkedIn - Link Click","Monthly Performance","report-linkedin-linkclick-monthly-performance","Date; Impressions; Clicks; Link Clicks; CTR; CPLC; Spend; Social Actions; Follows","",TRUE,0
+"Pinterest","Pintrest - Awareness","Monthly Performance","report-pinterest-awareness-monthly-performance","Date; Impressions; CPM; Spend; Reach; Frequency; Saves; Repins; Brand Awareness","",TRUE,0
+"Pinterest","Pintrest - Link Click","Monthly Performance","report-pinterest-linkclick-monthly-performance","Date; Impressions; Clicks; Link Clicks; CTR; CPLC; Spend; Saves; Repins","",TRUE,0
+"Twitter","Twitter - Awareness","Monthly Performance","report-twitter-awareness-monthly-performance","Date; Impressions; CPM; Spend; Reach; Frequency; Engagements; Retweets","",TRUE,0
+"Addressable Solutions","Addressable STV","Monthly Performance","report-addressablestv-monthly-performance","Date; Impressions; Completion Rate; CPM; Spend; Video Views; 25% Completion; 50% Completion; 75% Completion","",TRUE,0
+"Digital Endorsements","Endorsement","Monthly Performance","report-digitalendorsements-endorsement-monthly-performance","Date; Impressions; CPM; Spend; Station; Market; Personality; Endorsement Type","",TRUE,0
+"Twitter","Twitter - Link Click","Monthly Performance","report-twitter-linkclick-monthly-performance","Date; Impressions; Clicks; Link Clicks; CTR; CPLC; Spend; Engagements","",TRUE,0
+"TikTok","TikTok - Link Click","Monthly Performance","report-tiktok-linkclick-monthly-performance","Date; Impressions; Clicks; Link Clicks; CTR; CPLC; Spend; Video Views","",TRUE,0
+"TikTok","TikTok - Awareness","Monthly Performance","report-tiktok-awareness-monthly-performance","Date; Impressions; CPM; Spend; Reach; Frequency; Brand Awareness; Video Views","",TRUE,0
+"Snapchat","Snapchat - Swipe Up","Monthly Performance","report-snapchat-swipeup-monthly-performance","Date; Impressions; Swipe Ups; CPSU; Spend; Reach; Frequency","",TRUE,0
+"Snapchat","Snapchat - Aware","Monthly Performance","report-snapchat-aware-monthly-performance","Date; Impressions; CPM; Spend; Reach; Frequency; Brand Awareness","",TRUE,0
+"Meta","Link Click","Monthly Performance","report-meta-linkclick-monthly-performance","Date; Impressions; Clicks; Link Clicks; CTR; CPLC; CPM; Spend; Reach; Frequency","",TRUE,0
+"Meta","Facebook - Lead Gen","Monthly Performance","report-meta-leadgen-monthly-performance","Date; Impressions; Leads; CPL; Spend; Lead Quality Score; Form Opens; Form Completion Rate","",TRUE,0
+"Addressable Solutions","Addressable Video","Monthly Performance","report-addressablevideo-monthly-performance","Date; Impressions; Completion Rate; CPM; Spend; Video Views; 25% Completion; 50% Completion; 75% Completion","",TRUE,0
+"Digital Endorsements","Booth","Monthly Performance","report-digitalendorsements-booth-monthly-performance","Date; Event Name; Event Type; Impressions; CPM; Spend; Station; Market; Attendees","",TRUE,0
+"Meta","Facebook - Post Engagement","Monthly Performance","report-meta-postengagement-monthly-performance","Date; Impressions; Post Engagements; CPPE; Spend; Likes; Comments; Shares; Saves","",TRUE,0
+"Meta","Facebook - ThruPlay","Monthly Performance","report-meta-thruplay-monthly-performance","Date; Impressions; Video Views; ThruPlays; CPV; Spend; 3s Video Views; Video Completion Rate","",TRUE,0
+"Meta","Facebook - Awareness","Monthly Performance","report-meta-awareness-monthly-performance","Date; Impressions; CPM; Spend; Reach; Frequency; Brand Awareness; Ad Recall","",TRUE,0
+"Meta","Facebook - Link Click","Monthly Performance","report-meta-linkclick-monthly-performance","Date; Impressions; Clicks; Link Clicks; CTR; CPLC; CPM; Spend; Reach; Frequency","",TRUE,0
+"STV","YouTube TV - Run of Network","Monthly Performance","report-youtubetv-ron-monthly-performance","Date; Impressions; Video Views; Completion Rate; CPM; Spend; Reach; Frequency","",TRUE,0
+"STV","YouTube TV - Audience Targeted","Monthly Performance","report-youtubetv-audiencetargeted-monthly-performance","Date; Impressions; Video Views; Completion Rate; CPM; Spend; Audience Reach; Frequency","",TRUE,0
+"STV","Polk","Monthly Performance","report-polk-monthly-performance","Date; Impressions; Video Views; Completion Rate; CPM; Spend; Household Reach; Frequency","",TRUE,0
+"Blended Tactics","Targeted Display","Monthly Performance","report-targeteddisplay-monthly-performance","Date; Impressions; Clicks; CTR; Spend; CPM; Conversions; CPA","",TRUE,0
+"Digital Endorsements","Advertorial","Monthly Performance","report-digitalendorsements-advertorial-monthly-performance","Date; Impressions; CPM; Spend; Station; Market; Content Views; Engagement Rate","",TRUE,0
+"Blended Tactics","Targeted Native","Campaign Performance","report-targetednative-campaign-performance","Campaign Name; Impressions; Clicks; CTR; Spend; CPM; Engagements; Content Views","",TRUE,1
+"Email Marketing","1:1 Marketing","Campaign Performance","report-emailmarketing-campaign-performance","Campaign Name; Impressions; Clicks; CTR; Spend; CPM; Opens; Open Rate; Deliveries; Bounces; Unsubscribes","",FALSE,1
+"Email Marketing","B2B (Business Targeting)","Campaign Performance","report-emailmarketing-campaign-performance","Campaign Name; Impressions; Clicks; CTR; Spend; CPM; Opens; Open Rate; Deliveries; Bounces; Unsubscribes","",FALSE,1
+"Email Marketing","B2C (Consumer Targeting)","Campaign Performance","report-emailmarketing-campaign-performance","Campaign Name; Impressions; Clicks; CTR; Spend; CPM; Opens; Open Rate; Deliveries; Bounces; Unsubscribes","",FALSE,1
+"Programmatic Audio","Advanced Audience Targeting","Campaign Performance","report-programmaticaudio-aat-campaign-performance","Campaign Name; Impressions; CPM; Spend; Audio Completions; Completion Rate; Reach","",TRUE,1
+"Programmatic Audio","Run of Network","Campaign Performance","report-programmaticaudio-ron-campaign-performance","Campaign Name; Impressions; CPM; Spend; Audio Completions; Completion Rate; Reach","",TRUE,1
+"Addressable Solutions","Addressable Display","Campaign Performance","report-addressabledisplay-campaign-performance","Campaign Name; Impressions; Clicks; CTR; Spend; CPM; Conversions; CPA; Status","",TRUE,1
+"Addressable Solutions","Geofencing with Foot Traffic","Campaign Type","report-geofencing-campaign-type","Campaign Type; Impressions; Clicks; CTR; Spend; CPM; Conversions; Foot Traffic","",FALSE,1
+"Addressable Solutions","Addressable STV","Campaign Performance","report-addressablestv-campaign-performance","Campaign Name; Impressions; Completion Rate; CPM; Spend; Video Views; Frequency; Reach","",TRUE,1
+"Addressable Solutions","Addressable Video","Campaign Performance","report-addressablevideo-campaign-performance","Campaign Name; Impressions; Completion Rate; CPM; Spend; Video Views; Frequency; Reach","",TRUE,1
+"Blended Tactics","Targeted Display","Campaign Performance","report-targeteddisplay-campaign-performance","Campaign Name; Impressions; Clicks; CTR; Spend; CPM; Conversions; CPA; Status","",TRUE,1
+"Blended Tactics","Social Display","Campaign Performance","report-socialdisplay-campaign-performance","Campaign Name; Impressions; Clicks; CTR; Spend; CPM; Social Interactions; Engagements","",FALSE,1
+"Blended Tactics","Targeted Video","Campaign Performance","report-targetedvideo-campaign-performance","Campaign Name; Impressions; Video Views; Completion Rate; CPM; Spend; Frequency; Reach","",TRUE,1
+"STV","Video","Campaign Performance","report-stv-campaign-performance","Campaign Name; Impressions; Video Views; Completion Rate; CPM; Spend; Frequency; Reach","",TRUE,1
+"STV","Advanced Audience Targeting OTT","Campaign Performance","report-stvott-campaign-performance","Campaign Name; Impressions; Video Views; Completion Rate; CPM; Spend; Audience Reach; Frequency","",TRUE,1
+"STV","Channel Targeted OTT","Campaign Performance","report-channeltargetedott-campaign-performance","Campaign Name; Impressions; Video Views; Completion Rate; CPM; Spend; Channel Mix","",TRUE,1
+"STV","Streaming TV OTT","Campaign Performance","report-streamingtvott-campaign-performance","Campaign Name; Impressions; Video Views; Completion Rate; CPM; Spend; Reach; Frequency","",TRUE,1
+"STV","Run of Network","Campaign Performance","report-runofnetwork-campaign-performance","Campaign Name; Impressions; Video Views; Completion Rate; CPM; Spend; Reach","",FALSE,1
+"STV","Hulu - Audience Targeted","Campaign Performance","report-hulu-audiencetargeted-campaign-performance","Campaign Name; Impressions; Video Views; Completion Rate; CPM; Spend; Audience Reach","",TRUE,1
+"STV","Hulu - RON","Campaign Performance","report-hulu-ron-campaign-performance","Campaign Name; Impressions; Video Views; Completion Rate; CPM; Spend; Reach","",TRUE,1
+"STV","Polk","Campaign Performance","report-polk-campaign-performance","Campaign Name; Impressions; Video Views; Completion Rate; CPM; Spend; Household Reach","",TRUE,1
+"STV","YouTube TV - Audience Targeted","Campaign Performance","report-youtubetv-audiencetargeted-campaign-performance","Campaign Name; Impressions; Video Views; Completion Rate; CPM; Spend; Audience Reach","",TRUE,1
+"STV","YouTube TV - Run of Network","Campaign Performance","report-youtubetv-ron-campaign-performance","Campaign Name; Impressions; Video Views; Completion Rate; CPM; Spend; Reach","",TRUE,1
+"Meta","Facebook - Link Click","Campaign Performance","report-meta-linkclick-campaign-performance","Campaign Name; Impressions; Clicks; Link Clicks; CTR; CPLC; CPM; Spend; Reach","",TRUE,1
+"Meta","Facebook - Awareness","Campaign Performance","report-meta-awareness-campaign-performance","Campaign Name; Impressions; CPM; Spend; Reach; Frequency; Brand Awareness; Ad Recall","",TRUE,1
+"Meta","Facebook - ThruPlay","Campaign Performance","report-meta-thruplay-campaign-performance","Campaign Name; Impressions; Video Views; ThruPlays; CPV; Spend; Video Completion Rate","",TRUE,1
+"Meta","Facebook - Post Engagement","Campaign Performance","report-meta-postengagement-campaign-performance","Campaign Name; Impressions; Post Engagements; CPPE; Spend; Likes; Comments; Shares","",TRUE,1
+"Meta","Facebook - Lead Gen","Campaign Performance","report-meta-leadgen-campaign-performance","Campaign Name; Impressions; Leads; CPL; Spend; Lead Quality Score; Form Completion Rate","",TRUE,1
+"Meta","Link Click","Campaign Performance","report-meta-linkclick-campaign-performance","Campaign Name; Impressions; Clicks; Link Clicks; CTR; CPLC; CPM; Spend; Reach","",TRUE,1
+"Snapchat","Snapchat - Aware","Campaign Performance","report-snapchat-aware-campaign-performance","Campaign Name; Impressions; CPM; Spend; Reach; Frequency; Brand Awareness","",FALSE,1
+"Snapchat","Snapchat - Swipe Up","Campaign Performance","report-snapchat-swipeup-campaign-performance","Campaign Name; Impressions; Swipe Ups; CPSU; Spend; Reach; Frequency","",FALSE,1
+"TikTok","TikTok - Awareness","Campaign Performance","report-tiktok-awareness-campaign-performance","Campaign Name; Impressions; CPM; Spend; Reach; Frequency; Video Views","",FALSE,1
+"TikTok","TikTok - Link Click","Campaign Performance","report-tiktok-linkclick-campaign-performance","Campaign Name; Impressions; Clicks; Link Clicks; CTR; CPLC; Spend; Video Views","",FALSE,1
+"Twitter","Twitter - Link Click","Campaign Performance","report-twitter-linkclick-campaign-performance","Campaign Name; Impressions; Clicks; Link Clicks; CTR; CPLC; Spend; Engagements","",FALSE,1
+"Twitter","Twitter - Awareness","Campaign Performance","report-twitter-awareness-campaign-performance","Campaign Name; Impressions; CPM; Spend; Reach; Frequency; Engagements; Retweets","",FALSE,1
+"Pinterest","Pintrest - Link Click","Campaign Performance","report-pinterest-linkclick-campaign-performance","Campaign Name; Impressions; Clicks; Link Clicks; CTR; CPLC; Spend; Saves; Repins","",FALSE,1
+"Pinterest","Pintrest - Awareness","Campaign Performance","report-pinterest-awareness-campaign-performance","Campaign Name; Impressions; CPM; Spend; Reach; Frequency; Saves; Repins","",FALSE,1
+"LinkedIn","LinkedIn - Link Click","Campaign Performance","report-linkedin-linkclick-campaign-performance","Campaign Name; Impressions; Clicks; Link Clicks; CTR; CPLC; Spend; Social Actions; Follows","",FALSE,1
+"SEM","SEM","Campaign Performance","report-sem-campaign-performance","Campaign Name; Impressions; Clicks; CTR; Spend; CPC; Conversions; Conv Rate; Quality Score; Status","",TRUE,1
+"SEM","Google Search","Campaign Performance","report-googlesearch-campaign-performance","Campaign Name; Impressions; Clicks; CTR; Spend; CPC; Conversions; Conv Rate; Quality Score; Status","",TRUE,1
+"Spark","Spark","Campaign Performance","report-spark-campaign-performance","Campaign Name; Impressions; Clicks; CTR; Spend; CPC; Conversions; Quality Score","",TRUE,1
+"YouTube","YouTube True View","Campaign Performance","report-youtube-trueview-campaign-performance","Campaign Name; Impressions; Views; View Rate; CPV; Spend; Earned Views; Subscribers","",TRUE,1
+"YouTube","YouTube Bumper","Campaign Performance","report-youtube-bumper-campaign-performance","Campaign Name; Impressions; CPM; Spend; Reach; Frequency; Brand Lift; Ad Recall","",TRUE,1
+"Ignite Network","Ignite Network - Banner Ads","Campaign Performance","report-ignitenetwork-bannerads-campaign-performance","Campaign Name; Impressions; Clicks; CTR; CPM; Spend; Station Count","",FALSE,1
+"SSM","Sponsored Social Mentions - Link Click","Campaign Performance","report-ssm-linkclick-campaign-performance","Campaign Name; Impressions; Clicks; Link Clicks; CTR; CPLC; Spend; Station Count","",FALSE,1
+"SSM","Sponsored Social Mentions - Awareness","Campaign Performance","report-ssm-awareness-campaign-performance","Campaign Name; Impressions; CPM; Spend; Reach; Frequency; Station Count","",FALSE,1
+"SSM","Sponsored Social Mentions - ThruPlay","Campaign Performance","report-ssm-thruplay-campaign-performance","Campaign Name; Impressions; Video Views; ThruPlays; CPV; Spend; Station Count","",FALSE,1
+"CPM Display","Banner Ads","Campaign Performance","report-localdisplay-bannerads-campaign-performance","Campaign Name; Impressions; Clicks; CTR; CPM; Spend; Station Count; Market Count","",FALSE,1
+"CPM Display","Amplifier","Campaign Performance","report-localdisplay-amplifier-campaign-performance","Campaign Name; Impressions; Clicks; CTR; CPM; Spend; Station Count; Content Reach","",FALSE,1
+"CPM Display","Ignite Network","Campaign Performance","report-localdisplay-ignitenetwork-campaign-performance","Campaign Name; Impressions; Clicks; CTR; CPM; Spend; Station Count; Network Coverage","",FALSE,1
+"CPM Display","Local Network","Campaign Performance","report-localdisplay-localnetwork-campaign-performance","Campaign Name; Impressions; Clicks; CTR; CPM; Spend; Station Count; Market Coverage","",FALSE,1
+"CPM Display","Mobile Billboard","Campaign Performance","report-localdisplay-mobilebillboard-campaign-performance","Campaign Name; Impressions; Clicks; CTR; CPM; Spend; Station Count; Mobile Coverage","",FALSE,1
+"Takeovers","Station Site Takeovers","Campaign Performance","report-takeovers-stationsite-campaign-performance","Campaign Name; Impressions; Clicks; CTR; CPM; Spend; Station Count; Takeover Impact","",FALSE,1
+"Sponsorship","Content Sponsorship","Campaign Performance","report-sponsorship-content-campaign-performance","Campaign Name; Impressions; CPM; Spend; Station Count; Content Reach; Brand Association","",FALSE,1
+"Sponsorship","Contest Sponsorship","Campaign Performance","report-sponsorship-contest-campaign-performance","Campaign Name; Impressions; CPM; Spend; Station Count; Contest Entries; Brand Engagement","",FALSE,1
+"Sponsorship","Listen Live Sponsorship","Campaign Performance","report-sponsorship-listenlive-campaign-performance","Campaign Name; Impressions; CPM; Spend; Station Count; Total Listeners; Average Listen Time","",FALSE,1
+"Sponsorship","Station App Sponsorship","Campaign Performance","report-sponsorship-stationapp-campaign-performance","Campaign Name; Impressions; CPM; Spend; Station Count; App Downloads; User Engagement","",FALSE,1
+"Digital Endorsements","Advertorial","Campaign Performance","report-digitalendorsements-advertorial-campaign-performance","Campaign Name; Impressions; CPM; Spend; Station Count; Content Views; Brand Integration","",FALSE,1
+"Digital Endorsements","Booth","Campaign Performance","report-digitalendorsements-booth-campaign-performance","Campaign Name; Event Count; Impressions; CPM; Spend; Total Attendees; Brand Interaction","",FALSE,1
+"Digital Endorsements","Endorsement","Campaign Performance","report-digitalendorsements-endorsement-campaign-performance","Campaign Name; Impressions; CPM; Spend; Station Count; Personality Count; Brand Credibility","",FALSE,1
+"Meta","Facebook - Post Engagement","Ad Set Performance","report-meta-postengagement-adset-performance","Ad Set Name; Campaign; Impressions; Post Engagements; CPPE; Spend; Engagement Rate","",FALSE,2
+"Addressable Solutions","Addressable STV","Tactic Performance","report-addressablestv-tactic-performance","Tactic Type; Impressions; Completion Rate; CPM; Spend; Video Views","",FALSE,2
+"SSM","Sponsored Social Mentions - Awareness","Station Performance","report-ssm-awareness-station-performance","Station; Market; Format; Impressions; CPM; Spend; Reach; Frequency","",TRUE,2
+"SSM","Sponsored Social Mentions - Link Click","Station Performance","report-ssm-linkclick-station-performance","Station; Market; Format; Impressions; Clicks; Link Clicks; CTR; CPLC; Spend","",TRUE,2
+"Meta","Facebook - Lead Gen","Ad Set Performance","report-meta-leadgen-adset-performance","Ad Set Name; Campaign; Impressions; Leads; CPL; Spend; Form Opens","",FALSE,2
+"Meta","Link Click","Ad Set Performance","report-meta-linkclick-adset-performance","Ad Set Name; Campaign; Impressions; Clicks; Link Clicks; CTR; CPLC; CPM; Spend","",FALSE,2
+"STV","Streaming TV OTT","Tactic Performance","report-streamingtvott-tactic-performance","Tactic Type; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,2
+"STV","Polk","Tactic Performance","report-polk-tactic-performance","Tactic Type; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,2
+"Addressable Solutions","Addressable Display","Tactic Performance","report-addressabledisplay-tactic-performance","Tactic Type; Impressions; Clicks; CTR; Spend; CPM; Conversions; CPA","",FALSE,2
+"STV","Channel Targeted OTT","Tactic Performance","report-channeltargetedott-tactic-performance","Tactic Type; Channel; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,2
+"STV","Advanced Audience Targeting OTT","Tactic Performance","report-stvott-tactic-performance","Tactic Type; Audience Segment; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,2
+"STV","Hulu - Audience Targeted","Tactic Performance","report-hulu-audiencetargeted-tactic-performance","Tactic Type; Audience Segment; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,2
+"STV","YouTube TV - Audience Targeted","Tactic Performance","report-youtubetv-audiencetargeted-tactic-performance","Tactic Type; Audience Segment; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,2
+"STV","Video","Tactic Performance","report-stv-tactic-performance","Tactic Type; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,2
+"YouTube","YouTube True View","Ad Group Performance","report-youtube-trueview-adgroup-performance","Ad Group; Campaign; Impressions; Views; View Rate; CPV; Spend; Earned Views","",FALSE,2
+"STV","YouTube TV - Run of Network","Tactic Performance","report-youtubetv-ron-tactic-performance","Tactic Type; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,2
+"Blended Tactics","Targeted Video","Tactic Performance","report-targetedvideo-tactic-performance","Tactic Type; Targeting; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,2
+"Programmatic Audio","Run of Network","Tactic Performance","report-programmaticaudio-ron-tactic-performance","Tactic Type; Impressions; CPM; Spend; Audio Completions; Completion Rate","",FALSE,2
+"Addressable Solutions","Geofencing with Foot Traffic","Campaign Performance","report-geofencing-campaign-performance","Campaign Name; Impressions; Clicks; CTR; Spend; CPM; Conversions; Foot Traffic; Status","",FALSE,2
+"Meta","Facebook - Link Click","Ad Set Performance","report-meta-linkclick-adset-performance","Ad Set Name; Campaign; Impressions; Clicks; Link Clicks; CTR; CPLC; CPM; Spend","",TRUE,2
+"STV","Run of Network","Tactic Performance","report-runofnetwork-tactic-performance","Tactic Type; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,2
+"Blended Tactics","Targeted Native","Tactic Performance","report-targetednative-tactic-performance","Tactic Type; Targeting; Impressions; Clicks; CTR; Spend; CPM; Engagements","",FALSE,2
+"Programmatic Audio","Advanced Audience Targeting","Tactic Performance","report-programmaticaudio-aat-tactic-performance","Tactic Type; Audience Segment; Impressions; CPM; Spend; Audio Completions; Completion Rate","",FALSE,2
+"Meta","Facebook - Awareness","Ad Set Performance","report-meta-awareness-adset-performance","Ad Set Name; Campaign; Impressions; CPM; Spend; Reach; Frequency","",FALSE,2
+"Blended Tactics","Targeted Display","Tactic Performance","report-targeteddisplay-tactic-performance","Tactic Type; Targeting; Impressions; Clicks; CTR; Spend; CPM; Conversions; CPA","",TRUE,2
+"Spark","Spark","Ad Group Performance","report-spark-adgroup-performance","Ad Group; Campaign; Impressions; Clicks; CTR; Spend; CPC; Conversions","",FALSE,2
+"SEM","Google Search","Ad Group Performance","report-googlesearch-adgroup-performance","Ad Group; Campaign; Impressions; Clicks; CTR; Spend; CPC; Conversions; Quality Score","",FALSE,2
+"Meta","Facebook - ThruPlay","Ad Set Performance","report-meta-thruplay-adset-performance","Ad Set Name; Campaign; Impressions; Video Views; ThruPlays; CPV; Spend","",FALSE,2
+"YouTube","YouTube Bumper","Ad Group Performance","report-youtube-bumper-adgroup-performance","Ad Group; Campaign; Impressions; CPM; Spend; Reach; Frequency","",FALSE,2
+"SEM","SEM","Ad Group Performance","report-sem-adgroup-performance","Ad Group; Campaign; Impressions; Clicks; CTR; Spend; CPC; Conversions; Quality Score","",FALSE,2
+"Addressable Solutions","Addressable Video","Tactic Performance","report-addressablevideo-tactic-performance","Tactic Type; Impressions; Completion Rate; CPM; Spend; Video Views","",FALSE,2
+"STV","Hulu - RON","Tactic Performance","report-hulu-ron-tactic-performance","Tactic Type; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,2
+"SSM","Sponsored Social Mentions - ThruPlay","Station Performance","report-ssm-thruplay-station-performance","Station; Market; Format; Impressions; Video Views; ThruPlays; CPV; Spend","",TRUE,2
+"Meta","Facebook - Post Engagement","Ad Performance","report-meta-postengagement-ad-performance","Ad Name; Ad Set; Impressions; Post Engagements; CPPE; Spend; Engagement Rate","",FALSE,3
+"SEM","SEM","Keyword Performance","report-sem-keyword-performance","Keyword; Match Type; Ad Group; Impressions; Clicks; CTR; Spend; CPC; Conversions; Quality Score","",TRUE,3
+"Programmatic Audio","Advanced Audience Targeting","Creative Performance","report-programmaticaudio-aat-creative-performance","Creative Name; Audio Length; Impressions; CPM; Spend; Audio Completions; Completion Rate","",FALSE,3
+"STV","YouTube TV - Run of Network","Creative Performance","report-youtubetv-ron-creative-performance","Creative Name; Creative Length; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,3
+"Addressable Solutions","Addressable STV","Creative Performance","report-addressablestv-creative-performance","Creative Name; Creative Length; Impressions; Completion Rate; CPM; Spend; Video Views","",FALSE,3
+"STV","Run of Network","Creative Performance","report-runofnetwork-creative-performance","Creative Name; Creative Length; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,3
+"Blended Tactics","Targeted Video","Creative Performance","report-targetedvideo-creative-performance","Creative ID; Creative Name; Creative Length; Impressions; Video Views; Completion Rate; CPM; Spend","",TRUE,3
+"Meta","Facebook - Awareness","Ad Performance","report-meta-awareness-ad-performance","Ad Name; Ad Set; Impressions; CPM; Spend; Reach; Frequency","",FALSE,3
+"Meta","Facebook - Lead Gen","Ad Performance","report-meta-leadgen-ad-performance","Ad Name; Ad Set; Impressions; Leads; CPL; Spend; Form Opens","",FALSE,3
+"STV","Hulu - RON","Creative Performance","report-hulu-ron-creative-performance","Creative Name; Creative Length; Show Context; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,3
+"Meta","Link Click","Ad Performance","report-meta-linkclick-ad-performance","Ad Name; Ad Set; Impressions; Clicks; Link Clicks; CTR; CPLC; CPM; Spend","",FALSE,3
+"Meta","Facebook - ThruPlay","Ad Performance","report-meta-thruplay-ad-performance","Ad Name; Ad Set; Impressions; Video Views; ThruPlays; CPV; Spend","",FALSE,3
+"Blended Tactics","Targeted Display","Creative Performance","report-targeteddisplay-creative-performance","Creative ID; Creative Name; Impressions; Clicks; CTR; Spend; CPM; Conversions","",FALSE,3
+"STV","Streaming TV OTT","Creative Performance","report-streamingtvott-creative-performance","Creative Name; Creative Length; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,3
+"Programmatic Audio","Run of Network","Creative Performance","report-programmaticaudio-ron-creative-performance","Creative Name; Audio Length; Impressions; CPM; Spend; Audio Completions; Completion Rate","",FALSE,3
+"STV","Channel Targeted OTT","Creative Performance","report-channeltargetedott-creative-performance","Creative Name; Creative Length; Channel; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,3
+"YouTube","YouTube Bumper","Video Performance","report-youtube-bumper-video-performance","Video Title; Video ID; Impressions; CPM; Spend; Reach; Brand Lift; Ad Recall","",FALSE,3
+"Addressable Solutions","Addressable Display","Creative By Name","report-addressabledisplay-creative-by-name","Creative Name; Impressions; Clicks; CTR; Spend; CPM; Conversions","",FALSE,3
+"STV","Polk","Creative Performance","report-polk-creative-performance","Creative Name; Creative Length; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,3
+"Meta","Facebook - Link Click","Ad Performance","report-meta-linkclick-ad-performance","Ad Name; Ad Set; Impressions; Clicks; Link Clicks; CTR; CPLC; CPM; Spend","",FALSE,3
+"SEM","Google Search","Keyword Performance","report-googlesearch-keyword-performance","Keyword; Match Type; Ad Group; Impressions; Clicks; CTR; Spend; CPC; Conversions; Quality Score","",TRUE,3
+"STV","Advanced Audience Targeting OTT","Creative Performance","report-stvott-creative-performance","Creative Name; Creative Length; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,3
+"Blended Tactics","Targeted Native","Creative Performance","report-targetednative-creative-performance","Creative ID; Creative Name; Content Type; Impressions; Clicks; CTR; Spend; CPM","",FALSE,3
+"Addressable Solutions","Addressable Video","Creative By Name","report-addressablevideo-creative-by-name","Creative Name; Creative Length; Impressions; Completion Rate; CPM; Spend; Video Views","",FALSE,3
+"Spark","Spark","Keyword Performance","report-spark-keyword-performance","Keyword; Match Type; Ad Group; Impressions; Clicks; CTR; Spend; CPC; Quality Score","",FALSE,3
+"STV","YouTube TV - Audience Targeted","Creative Performance","report-youtubetv-audiencetargeted-creative-performance","Creative Name; Creative Length; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,3
+"STV","Hulu - Audience Targeted","Creative Performance","report-hulu-audiencetargeted-creative-performance","Creative Name; Creative Length; Show Context; Impressions; Video Views; Completion Rate; CPM; Spend","",TRUE,3
+"YouTube","YouTube True View","Video Performance","report-youtube-trueview-video-performance","Video Title; Video ID; Impressions; Views; View Rate; CPV; Spend; Watch Time; Subscribers","",TRUE,3
+"STV","Video","Creative Performance","report-stv-creative-performance","Creative Name; Creative Length; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,3
+"Addressable Solutions","Geofencing with Foot Traffic","Tactic Performance","report-geofencing-tactic-performance","Tactic Type; Impressions; Clicks; CTR; Spend; CPM; Conversions; Foot Traffic","",FALSE,3
+"STV","Run of Network","Performance by City","report-runofnetwork-performance-by-city","City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,4
+"STV","Hulu - Audience Targeted","Performance by City","report-hulu-audiencetargeted-performance-by-city","City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,4
+"STV","Hulu - RON","Performance by City","report-hulu-ron-performance-by-city","City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,4
+"STV","Polk","Performance by City","report-polk-performance-by-city","City; State; Impressions; Video Views; Completion Rate; CPM; Spend; Household Reach","",FALSE,4
+"YouTube","YouTube Bumper","Geographic Performance","report-youtube-bumper-geographic-performance","Location; Location Type; Impressions; CPM; Spend; Reach","",FALSE,4
+"STV","YouTube TV - Audience Targeted","Performance by City","report-youtubetv-audiencetargeted-performance-by-city","City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,4
+"STV","YouTube TV - Run of Network","Performance by City","report-youtubetv-ron-performance-by-city","City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,4
+"Meta","Facebook - Link Click","Creative Performance","report-meta-linkclick-creative-performance","Creative Name; Creative Type; Impressions; Clicks; Link Clicks; CTR; CPLC; CPM; Spend","",FALSE,4
+"Addressable Solutions","Addressable Video","Creative Previews","report-addressablevideo-creative-previews","Creative Name; Creative URL; Length; Format; Impressions; Completion Rate","",FALSE,4
+"Meta","Facebook - Awareness","Creative Performance","report-meta-awareness-creative-performance","Creative Name; Creative Type; Impressions; CPM; Spend; Reach; Brand Awareness","",FALSE,4
+"Meta","Facebook - ThruPlay","Creative Performance","report-meta-thruplay-creative-performance","Creative Name; Creative Type; Video Length; Impressions; Video Views; ThruPlays; CPV; Spend","",TRUE,4
+"Meta","Facebook - Post Engagement","Creative Performance","report-meta-postengagement-creative-performance","Creative Name; Creative Type; Impressions; Post Engagements; CPPE; Spend; Likes; Comments","",FALSE,4
+"Meta","Facebook - Lead Gen","Creative Performance","report-meta-leadgen-creative-performance","Creative Name; Creative Type; Impressions; Leads; CPL; Spend; Form Completion Rate","",FALSE,4
+"Meta","Link Click","Creative Performance","report-meta-linkclick-creative-performance","Creative Name; Creative Type; Impressions; Clicks; Link Clicks; CTR; CPLC; CPM; Spend","",FALSE,4
+"Addressable Solutions","Addressable STV","Conversion Zone Performance","report-addressablestv-conversion-zone-performance","Conversion Zone; Zone Type; Impressions; Completion Rate; Conversions; CPA","",FALSE,4
+"Programmatic Audio","Run of Network","Performance by City","report-programmaticaudio-ron-performance-by-city","City; State; Impressions; CPM; Spend; Audio Completions; Completion Rate","",FALSE,4
+"Addressable Solutions","Addressable Display","Creative By Size","report-addressabledisplay-creative-by-size","Creative Size; Impressions; Clicks; CTR; Spend; CPM; Conversions","",FALSE,4
+"SEM","SEM","Search Terms","report-sem-search-terms","Search Term; Keyword; Match Type; Impressions; Clicks; CTR; Spend; CPC; Conversions","",FALSE,4
+"Programmatic Audio","Advanced Audience Targeting","Performance by City","report-programmaticaudio-aat-performance-by-city","City; State; Impressions; CPM; Spend; Audio Completions; Completion Rate","",FALSE,4
+"SEM","Google Search","Search Terms","report-googlesearch-search-terms","Search Term; Keyword; Match Type; Impressions; Clicks; CTR; Spend; CPC; Conversions","",FALSE,4
+"Addressable Solutions","Geofencing with Foot Traffic","Creative/Ad Performance","report-geofencing-creative-ad-performance","Creative Name; Ad ID; Impressions; Clicks; CTR; Spend; CPM; Conversions","",FALSE,4
+"Blended Tactics","Targeted Native","Performance by City","report-targetednative-performance-by-city","City; State; Impressions; Clicks; CTR; Spend; Engagements","",FALSE,4
+"Blended Tactics","Targeted Video","Creative Previews","report-targetedvideo-creative-previews","Creative Name; Creative URL; Length; Format; Impressions; Completion Rate","",FALSE,4
+"STV","Video","Performance by City","report-stv-performance-by-city","City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,4
+"STV","Advanced Audience Targeting OTT","Performance by City","report-stvott-performance-by-city","City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,4
+"YouTube","YouTube True View","Geographic Performance","report-youtube-trueview-geographic-performance","Location; Location Type; Impressions; Views; View Rate; CPV; Spend","",FALSE,4
+"STV","Channel Targeted OTT","Performance by City","report-channeltargetedott-performance-by-city","City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,4
+"STV","Streaming TV OTT","Performance by City","report-streamingtvott-performance-by-city","City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,4
+"Blended Tactics","Targeted Display","Creative By Name","report-targeteddisplay-creative-by-name","Creative Name; Impressions; Clicks; CTR; Spend; CPM; Conversions","",FALSE,4
+"Meta","Facebook - Awareness","Demographic Performance","report-meta-awareness-demographic-performance","Age; Gender; Impressions; CPM; Spend; Reach; Brand Awareness","",FALSE,5
+"STV","Channel Targeted OTT","Performance by Zip","report-channeltargetedott-performance-by-zip","Zip Code; City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,5
+"STV","Hulu - RON","Performance by Zip","report-hulu-ron-performance-by-zip","Zip Code; City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,5
+"YouTube","YouTube Bumper","Device Performance","report-youtube-bumper-device-performance","Device; Impressions; CPM; Spend; Reach; Frequency","",FALSE,5
+"Meta","Facebook - Lead Gen","Demographic Performance","report-meta-leadgen-demographic-performance","Age; Gender; Impressions; Leads; CPL; Spend; Lead Quality Score","",FALSE,5
+"Meta","Facebook - Link Click","Demographic Performance","report-meta-linkclick-demographic-performance","Age; Gender; Impressions; Clicks; Link Clicks; CTR; CPLC; CPM; Spend","",FALSE,5
+"STV","Polk","Performance by Zip","report-polk-performance-by-zip","Zip Code; City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,5
+"Blended Tactics","Targeted Native","Performance by Zip","report-targetednative-performance-by-zip","Zip Code; City; State; Impressions; Clicks; CTR; Spend; Engagements","",FALSE,5
+"STV","Hulu - Audience Targeted","Performance by Zip","report-hulu-audiencetargeted-performance-by-zip","Zip Code; City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,5
+"Blended Tactics","Targeted Video","Performance by City","report-targetedvideo-performance-by-city","City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,5
+"Addressable Solutions","Addressable Video","Conversion Zone Performance","report-addressablevideo-conversion-zone-performance","Conversion Zone; Zone Type; Impressions; Completion Rate; Conversions; CPA","",FALSE,5
+"Meta","Facebook - Post Engagement","Demographic Performance","report-meta-postengagement-demographic-performance","Age; Gender; Impressions; Post Engagements; CPPE; Spend; Engagement Rate","",FALSE,5
+"STV","YouTube TV - Run of Network","Performance by Zip","report-youtubetv-ron-performance-by-zip","Zip Code; City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,5
+"STV","Streaming TV OTT","Performance by Zip","report-streamingtvott-performance-by-zip","Zip Code; City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,5
+"Meta","Facebook - ThruPlay","Demographic Performance","report-meta-thruplay-demographic-performance","Age; Gender; Impressions; Video Views; ThruPlays; CPV; Spend","",FALSE,5
+"Blended Tactics","Targeted Display","Creative By Size","report-targeteddisplay-creative-by-size","Creative Size; Impressions; Clicks; CTR; Spend; CPM; Conversions","",FALSE,5
+"SEM","SEM","Geographic Performance","report-sem-geographic-performance","Location; Location Type; Impressions; Clicks; CTR; Spend; CPC; Conversions","",FALSE,5
+"Addressable Solutions","Addressable STV","Performance by City","report-addressablestv-performance-by-city","City; State; Impressions; Completion Rate; CPM; Spend; Reach","",FALSE,5
+"STV","Advanced Audience Targeting OTT","Performance by Zip","report-stvott-performance-by-zip","Zip Code; City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,5
+"Programmatic Audio","Run of Network","Performance by Zip","report-programmaticaudio-ron-performance-by-zip","Zip Code; City; State; Impressions; CPM; Spend; Audio Completions","",FALSE,5
+"YouTube","YouTube True View","Device Performance","report-youtube-trueview-device-performance","Device; Impressions; Views; View Rate; CPV; Spend; Watch Time","",FALSE,5
+"STV","Run of Network","Performance by Zip","report-runofnetwork-performance-by-zip","Zip Code; City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,5
+"STV","YouTube TV - Audience Targeted","Performance by Zip","report-youtubetv-audiencetargeted-performance-by-zip","Zip Code; City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,5
+"Programmatic Audio","Advanced Audience Targeting","Performance by Zip","report-programmaticaudio-aat-performance-by-zip","Zip Code; City; State; Impressions; CPM; Spend; Audio Completions","",FALSE,5
+"SEM","Google Search","Geographic Performance","report-googlesearch-geographic-performance","Location; Location Type; Impressions; Clicks; CTR; Spend; CPC; Conversions","",FALSE,5
+"Addressable Solutions","Addressable Display","Creative Previews","report-addressabledisplay-creative-previews","Creative Name; Creative URL; Size; Format; Impressions; Performance","",FALSE,5
+"STV","Video","Performance by Zip","report-stv-performance-by-zip","Zip Code; City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,5
+"Addressable Solutions","Geofencing with Foot Traffic","Creative By Size","report-geofencing-creative-by-size","Creative Size; Impressions; Clicks; CTR; Spend; CPM; Conversions","",FALSE,5
+"Meta","Link Click","Demographic Performance","report-meta-linkclick-demographic-performance","Age; Gender; Impressions; Clicks; Link Clicks; CTR; CPLC; CPM; Spend","",FALSE,5
+"STV","YouTube TV - Audience Targeted","Device Performance","report-youtubetv-audiencetargeted-device-performance","Device Type; Platform; OS; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,6
+"Meta","Facebook - Post Engagement","Geographic Performance","report-meta-postengagement-geographic-performance","Location; Location Type; Impressions; Post Engagements; CPPE; Spend","",FALSE,6
+"Addressable Solutions","Addressable Display","Conversion Zone Performance","report-addressabledisplay-conversion-zone-performance","Conversion Zone; Zone Type; Impressions; Clicks; Conversions; Conversion Rate; CPA","",FALSE,6
+"STV","Channel Targeted OTT","Device Performance","report-channeltargetedott-device-performance","Device Type; Platform; OS; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,6
+"Meta","Facebook - ThruPlay","Geographic Performance","report-meta-thruplay-geographic-performance","Location; Location Type; Impressions; Video Views; ThruPlays; CPV; Spend","",FALSE,6
+"SEM","SEM","Device Performance","report-sem-device-performance","Device; Impressions; Clicks; CTR; Spend; CPC; Conversions; Conv Rate","",FALSE,6
+"Addressable Solutions","Geofencing with Foot Traffic","Creative Previews","report-geofencing-creative-previews","Creative Name; Creative URL; Size; Format; Impressions; Performance","",FALSE,6
+"STV","Hulu - RON","Device Performance","report-hulu-ron-device-performance","Device Type; Platform; OS; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,6
+"SEM","Google Search","Device Performance","report-googlesearch-device-performance","Device; Impressions; Clicks; CTR; Spend; CPC; Conversions; Conv Rate","",FALSE,6
+"Meta","Facebook - Awareness","Geographic Performance","report-meta-awareness-geographic-performance","Location; Location Type; Impressions; CPM; Spend; Reach","",FALSE,6
+"Meta","Facebook - Link Click","Geographic Performance","report-meta-linkclick-geographic-performance","Location; Location Type; Impressions; Clicks; Link Clicks; CTR; CPLC; CPM; Spend","",FALSE,6
+"STV","Run of Network","Device Performance","report-runofnetwork-device-performance","Device Type; Platform; OS; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,6
+"Blended Tactics","Targeted Native","Device Performance","report-targetednative-device-performance","Device Type; OS; Browser; Impressions; Clicks; CTR; Spend; Engagements","",FALSE,6
+"STV","YouTube TV - Run of Network","Device Performance","report-youtubetv-ron-device-performance","Device Type; Platform; OS; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,6
+"Blended Tactics","Targeted Video","Performance by Zip","report-targetedvideo-performance-by-zip","Zip Code; City; State; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,6
+"Addressable Solutions","Addressable Video","Performance by City","report-addressablevideo-performance-by-city","City; State; Impressions; Completion Rate; CPM; Spend; Reach","",FALSE,6
+"STV","Streaming TV OTT","Device Performance","report-streamingtvott-device-performance","Device Type; Platform; OS; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,6
+"STV","Video","Device Performance","report-stv-device-performance","Device Type; Platform; OS; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,6
+"STV","Polk","Device Performance","report-polk-device-performance","Device Type; Platform; OS; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,6
+"STV","Advanced Audience Targeting OTT","Device Performance","report-stvott-device-performance","Device Type; Platform; OS; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,6
+"Blended Tactics","Targeted Display","Creative Previews","report-targeteddisplay-creative-previews","Creative Name; Creative URL; Size; Format; Impressions; Performance","",FALSE,6
+"STV","Hulu - Audience Targeted","Device Performance","report-hulu-audiencetargeted-device-performance","Device Type; Platform; OS; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,6
+"Meta","Facebook - Lead Gen","Geographic Performance","report-meta-leadgen-geographic-performance","Location; Location Type; Impressions; Leads; CPL; Spend","",FALSE,6
+"Meta","Link Click","Geographic Performance","report-meta-linkclick-geographic-performance","Location; Location Type; Impressions; Clicks; Link Clicks; CTR; CPLC; CPM; Spend","",FALSE,6
+"Addressable Solutions","Addressable STV","Performance by Zip","report-addressablestv-performance-by-zip","Zip Code; City; State; Impressions; Completion Rate; CPM; Spend","",FALSE,6
+"Blended Tactics","Targeted Display","Performance by City","report-targeteddisplay-performance-by-city","City; State; Impressions; Clicks; CTR; Spend; Conversions","",FALSE,7
+"Meta","Facebook - Awareness","Device Performance","report-meta-awareness-device-performance","Device; Platform; Impressions; CPM; Spend; Reach; Frequency","",FALSE,7
+"Meta","Facebook - Post Engagement","Device Performance","report-meta-postengagement-device-performance","Device; Platform; Impressions; Post Engagements; CPPE; Spend; Engagement Rate","",FALSE,7
+"Addressable Solutions","Addressable Video","Performance by Zip","report-addressablevideo-performance-by-zip","Zip Code; City; State; Impressions; Completion Rate; CPM; Spend","",FALSE,7
+"SEM","SEM","Ad Extensions","report-sem-ad-extensions","Extension Type; Extension Text; Impressions; Clicks; CTR; Spend; CPC","",FALSE,7
+"Addressable Solutions","Geofencing with Foot Traffic","Device Performance","report-geofencing-device-performance","Device Type; OS; Impressions; Clicks; CTR; Spend; Conversions; Foot Traffic","",FALSE,7
+"Meta","Facebook - Lead Gen","Device Performance","report-meta-leadgen-device-performance","Device; Platform; Impressions; Leads; CPL; Spend; Form Completion Rate","",FALSE,7
+"Addressable Solutions","Addressable STV","Device Performance","report-addressablestv-device-performance","Device Type; Platform; Impressions; Completion Rate; CPM; Spend; Video Views","",FALSE,7
+"Meta","Facebook - ThruPlay","Device Performance","report-meta-thruplay-device-performance","Device; Platform; Impressions; Video Views; ThruPlays; CPV; Spend","",FALSE,7
+"Blended Tactics","Targeted Video","Device Performance","report-targetedvideo-device-performance","Device Type; OS; Platform; Impressions; Video Views; Completion Rate; CPM; Spend","",FALSE,7
+"Meta","Facebook - Link Click","Device Performance","report-meta-linkclick-device-performance","Device; Platform; Impressions; Clicks; Link Clicks; CTR; CPLC; CPM; Spend","",FALSE,7
+"Addressable Solutions","Addressable Display","Performance by City","report-addressabledisplay-performance-by-city","City; State; Impressions; Clicks; CTR; Spend; Conversions","",FALSE,7
+"SEM","Google Search","Ad Extensions","report-googlesearch-ad-extensions","Extension Type; Extension Text; Impressions; Clicks; CTR; Spend; CPC","",FALSE,7
+"Meta","Link Click","Device Performance","report-meta-linkclick-device-performance","Device; Platform; Impressions; Clicks; Link Clicks; CTR; CPLC; CPM; Spend","",FALSE,7
+"Addressable Solutions","Addressable Video","Device Performance","report-addressablevideo-device-performance","Device Type; Platform; Impressions; Completion Rate; CPM; Spend; Video Views","",FALSE,8
+"Addressable Solutions","Addressable STV","Site/Domain Performance","report-addressablestv-site-domain-performance","Site/Domain; Content Category; Impressions; Completion Rate; CPM; Spend","",FALSE,8
+"Addressable Solutions","Geofencing with Foot Traffic","Performance by City","report-geofencing-performance-by-city","City; State; Impressions; Clicks; CTR; Spend; Conversions; Foot Traffic","",FALSE,8
+"Blended Tactics","Targeted Video","Tracked Pixel Events by Day","report-targetedvideo-tracked-pixel-events-by-day","Date; Event Type; Event Count; Unique Users; Conversion Value","",FALSE,8
+"Blended Tactics","Targeted Display","Performance by Zip","report-targeteddisplay-performance-by-zip","Zip Code; City; State; Impressions; Clicks; CTR; Spend; Conversions","",FALSE,8
+"Addressable Solutions","Addressable Display","Performance by Zip","report-addressabledisplay-performance-by-zip","Zip Code; City; State; Impressions; Clicks; CTR; Spend; Conversions","",FALSE,8
+"Blended Tactics","Targeted Display","Device Performance","report-targeteddisplay-device-performance","Device Type; OS; Browser; Impressions; Clicks; CTR; Spend; Conversions","",FALSE,9
+"Addressable Solutions","Addressable Video","Site/Domain Performance","report-addressablevideo-site-domain-performance","Site/Domain; Content Category; Impressions; Completion Rate; CPM; Spend","",FALSE,9
+"Addressable Solutions","Geofencing with Foot Traffic","Performance by Zip","report-geofencing-performance-by-zip","Zip Code; City; State; Impressions; Clicks; CTR; Spend; Conversions; Foot Traffic","",FALSE,9
+"Blended Tactics","Targeted Display","Tracked Pixel Events by Day","report-targeteddisplay-tracked-pixel-events-by-day","Date; Event Type; Event Count; Unique Users; Conversion Value","",FALSE,10
+"Addressable Solutions","Geofencing with Foot Traffic","Conversion Zone Performance","report-geofencing-conversion-zone-performance","Conversion Zone; Zone Type; Impressions; Clicks; Conversions; Foot Traffic; Visitation Rate","",FALSE,10
+"Addressable Solutions","Geofencing with Foot Traffic","Target Fence Performance","report-geofencing-target-fence-performance","Fence Name; Fence Type; Radius; Impressions; Clicks; Conversions; Foot Traffic; Visitation Rate","",TRUE,11

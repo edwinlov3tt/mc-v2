@@ -8,6 +8,7 @@ members = [
     "crates/mc-recipe",
     "crates/mc-drivers",
     "crates/mc-tessera",
+    "crates/mc-demo-server",
 ]
 
 [workspace.package]
