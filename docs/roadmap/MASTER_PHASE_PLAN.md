@@ -4,7 +4,7 @@
 >
 > Read this before inventing a phase name or starting work that isn't already on the list. If a new phase is needed and it isn't here, add it here first (and link the ADR explaining the decision).
 
-**Last updated:** 2026-05-06 (post-Phase 3J formula authoring deferred items; 874 / 0 / 5 tests; HEAD `4a4ac9c`)
+**Last updated:** 2026-05-06 (post-Phase 3H.1 fitted-model output_bound; 880 / 0 / 5 tests; HEAD `de119dd`)
 **Maintained by:** project lead. New sub-phases require an ADR in [`../decisions/`](../decisions/).
 
 ---
@@ -50,7 +50,8 @@ Productization beyond the first usable product (multi-tenancy, customer-facing a
 | **3H** | Fitted-model evaluation (predict / calibrate / exp / norm_cdf) | **complete** | `phase-3h-fitted-model-evaluation` (`99477ef`) |
 | **3I** | Formula language completion — `is_element`, 9 math primitives (BSM `norm_inv`), multi-key `lookup_tables`, `predict()` arity validation, `avg/min/max/wavg_over` family, `ifs`/`switch`, filter-formula parser unification (per ADR-0015 + Amendment §1) | **complete** (report at [`../reports/phase-3i-completion-report.md`](../reports/phase-3i-completion-report.md)) | `phase-3i-formula-language-completion` (`1265f78`) |
 | **3J** | Formula authoring deferred items — `ScalarValue::Str` first-class in eval (transient-only, never stored), `current_element`, `parameters:` block (constants v1), `Indicator` measure role, `Scope` enum extension (FutureLeaves/PastLeaves/CurrentLeaves), `scenario_ref` + `actual_ref(measure, fallback)`, `extrapolate_last_value` + LOCF (per ADR-0016 + 8 Acceptance Amendments §1-§6 + §11-§13) | **complete** (report at [`../reports/phase-3j-completion-report.md`](../reports/phase-3j-completion-report.md)) | `phase-3j-formula-deferred-items` (`4a4ac9c`) |
-| **3H.1** | Fitted-model amendments — `output_bound: {min: 0}` + adstock/saturation transforms native to `fitted_models:` (parallel to 3J; closes the remaining ADR-0015 deferred queue items) | not started (ADR-0017 to be drafted) | — |
+| **3H.1** | Fitted-model `output_bound` — additive `{min, max}` schema field on `ParsedFittedModel`; clamps `predict()` output after the link function; closes audit M-20 (Amarillo case) per ADR-0017 (small phase, output_bound only — adstock/saturation split to 3H.2) | **complete** (report at [`../reports/phase-3h-1-completion-report.md`](../reports/phase-3h-1-completion-report.md)) | `phase-3h-1-fitted-model-output-bound` (`de119dd`) |
+| **3H.2** | Fitted-model adstock + saturation — native MMM transforms in `fitted_models:` (per ADR-0018 to be drafted; closes the final ADR-0015 deferred queue items; after this phase, the formula-engine deferred queue from ADR-0015 is empty) | not started (ADR-0018 pending) | — |
 | **3J.1–3N** | Further model layer extensions (TBD — computed `parameters:`, scoped parameters, advanced aggregation methods, multi-frequency Time, etc.) | not started | — |
 | **4A** | LLM-assisted authoring — Mosaic Claude Code plugin (skills + agents + commands + MCP server + marketing-mix domain schema) per ADR-0008 | **complete** (report at [`../reports/phase-4a-completion-report.md`](../reports/phase-4a-completion-report.md)) | `phase-4a-mosaic-plugin` (`36af56c`) |
 | **4B** | Python reference adapters under `mosaic-plugin/examples/adapters/` (`anthropic-python/` + `openai-python/` ~150 lines each) | **complete** (report at [`../reports/phase-4b-completion-report.md`](../reports/phase-4b-completion-report.md); both adapters cleared best-of-3 gate — Anthropic 3/3, OpenAI 3/3) | `phase-4b-python-adapters` (`b5b6229`) |
