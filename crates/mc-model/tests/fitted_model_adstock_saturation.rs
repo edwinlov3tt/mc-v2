@@ -1066,6 +1066,259 @@ rules:
     );
 }
 
+// ---------------------------------------------------------------------------
+// Step 5 — email-matchback re-survey + Tide-MMM-shaped integration test.
+// ---------------------------------------------------------------------------
+//
+// **Re-survey finding (paste-target for the completion report):**
+// The current email-matchback Tide MMM (~/Projects/email-matchback/models/
+// tide-mmm.yaml at HEAD) does NOT currently use Phase 3H.2's geometric
+// adstock or Hill/Log saturation. It uses an earlier architecture:
+// pre-compute time-series features `AdSpend_Lag1 = lag(AdSpend, 1)` and
+// `AdSpend_Roll3 = rolling_avg(AdSpend, 3)` as Mosaic-native derived
+// measures, then pass all 6 features (AdSpend, AdSpend_Lag1,
+// AdSpend_Roll3, IsHouston, IsAustin, IsDenver) to predict().
+//
+// The Python `prepare_mmm_inputs.py` (~100 lines) does data shaping
+// (Plan→Actual mirror, carry-forward extension, market-indicator
+// one-hots) — NOT adstock/saturation pre-processing. So the M-14
+// "Python residual" closure cited in ADR-0018 Decision 1 is aspirational
+// rather than a current commitment: this phase ships the CAPABILITY for
+// native geometric adstock + Hill/Log saturation, available to any
+// future MMM that chooses to use it.
+//
+// The Tide MMM could be rewritten on top of 3H.2 by replacing the two
+// derived `lag`/`rolling_avg` measures with a single `transforms:` block
+// declaring geometric adstock on AdSpend. The fitted weights would
+// differ (it's a different model class), but the AUTHORING ergonomics
+// would simplify. That rewrite is out of scope for 3H.2; it lives with
+// the cartridge.
+//
+// The integration test below demonstrates the Tide-MMM-shaped pipeline:
+// adstock + saturation + standardization + output_bound on a multi-
+// feature linear model with one-hot market indicators, exercising every
+// stage of Decision 7's eval order on a realistic shape.
+
+#[test]
+fn test_tide_mmm_adstock_saturation_pipeline() {
+    // Tide-MMM-shaped: 1 spend feature with adstock + Hill saturation +
+    // standardization, plus 1 market indicator (linear pass-through).
+    // Two markets (Houston, Austin) so the indicator is non-trivial.
+    // Six time periods so adstock has a meaningful backward scan.
+    //
+    // Pipeline at (Houston, Period6):
+    //   1. AdSpend = 5000 (constant for simplicity at all periods).
+    //   2. Adstock (rate=0.4, max_lookback=5):
+    //        sum_{k=0..5} (0.4^k * 5000)
+    //        = 5000 * (1 + 0.4 + 0.16 + 0.064 + 0.0256 + 0.01024)
+    //        = 5000 * 1.66 = 8299.something
+    //   3. Hill (alpha=2, gamma=8299): saturation = ~ 0.5 (we built
+    //      gamma to MATCH the steady-state adstocked value at Period6
+    //      so the half-saturation point lands here).
+    //   4. Standardization (mean=0.5, std=0.1) → z-score = (0.5-0.5)/0.1
+    //      = 0 (so the spend term contributes 0 to the linear sum).
+    //   5. IsHouston = 1.0 (no transforms; pass-through).
+    //   6. Linear: intercept(100) + 50000*0 + 30000*1.0 = 130000.
+    //   7. Linear method (no link).
+    //   8. output_bound min=0, max=200000 → 130000 (in-band).
+    //
+    // The arithmetic is deliberately constructed so each stage's
+    // contribution is identifiable in the assertion; if any stage
+    // misorders, the result diverges meaningfully.
+    let geometric_sum = 1.0 + 0.4 + 0.16 + 0.064 + 0.0256 + 0.01024;
+    let adstocked_p6 = 5000.0 * geometric_sum;
+
+    let yaml = format!(
+        r#"
+model_format_version: 1
+metadata:
+  name: "TideMMMShape"
+  description: "Tide-MMM-shaped end-to-end integration test"
+  author: "test"
+  created: "2026-05-06"
+dimensions:
+  - name: "Scenario"
+    kind: "Scenario"
+    elements:
+      - {{ name: "Base", scenario_meta: "Default" }}
+  - name: "Version"
+    kind: "Version"
+    elements:
+      - {{ name: "Working", version_state: "Draft" }}
+  - name: "Time"
+    kind: "Time"
+    elements:
+      - {{ name: "P1" }}
+      - {{ name: "P2" }}
+      - {{ name: "P3" }}
+      - {{ name: "P4" }}
+      - {{ name: "P5" }}
+      - {{ name: "P6" }}
+  - name: "Channel"
+    kind: "Standard"
+    elements:
+      - {{ name: "DirectMail" }}
+  - name: "Market"
+    kind: "Standard"
+    elements:
+      - {{ name: "Houston" }}
+      - {{ name: "Austin" }}
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+measures:
+  - {{ name: "AdSpend",            role: "Input",   data_type: "F64", aggregation: "Sum" }}
+  - {{ name: "IsHouston",          role: "Input",   data_type: "F64", aggregation: "Sum" }}
+  - {{ name: "PredictedRevenue",   role: "Derived", data_type: "F64", aggregation: "Sum" }}
+fitted_models:
+  - name: "tide_mmm_v2"
+    method: "linear"
+    intercept: 100.0
+    coefficients:
+      - {{ feature: "AdSpend",   weight: 50000.0 }}
+      - {{ feature: "IsHouston", weight: 30000.0 }}
+    standardization:
+      method: "zscore"
+      params:
+        - {{ feature: "AdSpend", mean: 0.5, std: 0.1 }}
+    output_bound:
+      min: 0.0
+      max: 200000.0
+    transforms:
+      adstock:
+        - {{ feature: "AdSpend", rate: 0.4, max_lookback: 5 }}
+      saturation:
+        - {{ type: "hill", feature: "AdSpend", alpha: 2.0, gamma: {gamma} }}
+rules:
+  - name: "rule_predicted_revenue"
+    target_measure: "PredictedRevenue"
+    scope: "AllLeaves"
+    body: "predict(\"tide_mmm_v2\", AdSpend, IsHouston)"
+    declared_dependencies: ["AdSpend", "IsHouston"]
+"#,
+        gamma = adstocked_p6
+    );
+
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+
+    // Write AdSpend = 5000 at all 6 periods for both markets, plus
+    // IsHouston = 1 in Houston and 0 in Austin.
+    for market in ["Houston", "Austin"] {
+        for t in ["P1", "P2", "P3", "P4", "P5", "P6"] {
+            cube.write(WritebackRequest {
+                coord: coord(
+                    &compiled.refs,
+                    &[
+                        ("Scenario", "Base"),
+                        ("Version", "Working"),
+                        ("Time", t),
+                        ("Channel", "DirectMail"),
+                        ("Market", market),
+                        ("Measure", "AdSpend"),
+                    ],
+                ),
+                new_value: ScalarValue::F64(5000.0),
+                principal: p,
+                intent: WriteIntent::Set,
+                expected_revision: None,
+                now_unix_seconds: 0,
+            })
+            .unwrap();
+            cube.write(WritebackRequest {
+                coord: coord(
+                    &compiled.refs,
+                    &[
+                        ("Scenario", "Base"),
+                        ("Version", "Working"),
+                        ("Time", t),
+                        ("Channel", "DirectMail"),
+                        ("Market", market),
+                        ("Measure", "IsHouston"),
+                    ],
+                ),
+                new_value: ScalarValue::F64(if market == "Houston" { 1.0 } else { 0.0 }),
+                principal: p,
+                intent: WriteIntent::Set,
+                expected_revision: None,
+                now_unix_seconds: 0,
+            })
+            .unwrap();
+        }
+    }
+
+    // Read PredictedRevenue at (Houston, P6). Pipeline produces:
+    //   adstocked  = 5000 * 1.66 = 8299.x = gamma → Hill = 0.5
+    //   z-score    = (0.5 - 0.5)/0.1 = 0 → AdSpend term = 0
+    //   IsHouston  = 1.0 → IsHouston term = 30000
+    //   Linear sum = 100 + 0 + 30000 = 30100 (in band; no clamp)
+    let pred_houston = read_f64(
+        &mut cube,
+        &compiled.refs,
+        p,
+        &[
+            ("Scenario", "Base"),
+            ("Version", "Working"),
+            ("Time", "P6"),
+            ("Channel", "DirectMail"),
+            ("Market", "Houston"),
+            ("Measure", "PredictedRevenue"),
+        ],
+    );
+    assert_f64_eq(
+        pred_houston,
+        30100.0,
+        "Tide-MMM-shape: Houston P6 prediction = intercept + IsHouston coef",
+    );
+
+    // Read at (Austin, P6) — IsHouston = 0, so the indicator drops out.
+    //   Linear sum = 100 + 0 + 0 = 100 (still > 0 floor).
+    let pred_austin = read_f64(
+        &mut cube,
+        &compiled.refs,
+        p,
+        &[
+            ("Scenario", "Base"),
+            ("Version", "Working"),
+            ("Time", "P6"),
+            ("Channel", "DirectMail"),
+            ("Market", "Austin"),
+            ("Measure", "PredictedRevenue"),
+        ],
+    );
+    assert_f64_eq(
+        pred_austin,
+        100.0,
+        "Tide-MMM-shape: Austin P6 prediction = intercept only",
+    );
+
+    // At Period 1 the adstock backward scan only sees 1 period; the
+    // adstocked value is just 5000. Hill(5000, 2, 8299.x) = 5000^2 / (
+    // 8299.x^2 + 5000^2) = 25M / (~93.9M) ≈ 0.266. After standardization
+    // (0.266 - 0.5)/0.1 ≈ -2.34. AdSpend term = 50000 * -2.34 ≈ -117020.
+    // Linear sum (Austin) ≈ 100 - 117020 + 0 = -116920; output_bound
+    // floor=0 clips to 0.
+    let pred_austin_p1 = read_f64(
+        &mut cube,
+        &compiled.refs,
+        p,
+        &[
+            ("Scenario", "Base"),
+            ("Version", "Working"),
+            ("Time", "P1"),
+            ("Channel", "DirectMail"),
+            ("Market", "Austin"),
+            ("Measure", "PredictedRevenue"),
+        ],
+    );
+    assert_f64_eq(
+        pred_austin_p1,
+        0.0,
+        "Tide-MMM-shape: P1 prediction floored at 0 by output_bound",
+    );
+}
+
 #[test]
 fn test_diagnostic_codes_2071_through_2076_collision_free() {
     // Pre-flight regression sweep — each new code appears only as the
