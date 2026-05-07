@@ -26,6 +26,18 @@ pub fn evaluate_all(
     mc_narrative::evaluate_all(templates, &cube_data, None)
 }
 
+/// Evaluate templates with ledger context (Phase 7A.3 cross-period analysis).
+///
+/// When a ledger is provided, trend templates can fire based on historical data.
+pub fn evaluate_all_with_ledger(
+    templates: &[TemplateDefinition],
+    cubes: &[IngestedCube],
+    ledger: Option<&[mc_narrative::LedgerEntry]>,
+) -> Vec<NarrativeOutput> {
+    let cube_data: Vec<mc_narrative::CubeData> = cubes.iter().map(convert_cube).collect();
+    mc_narrative::evaluate_all(templates, &cube_data, ledger)
+}
+
 /// Convert an `IngestedCube` (demo server type) to `CubeData` (narrative engine type).
 fn convert_cube(cube: &IngestedCube) -> mc_narrative::CubeData {
     let values = cube
