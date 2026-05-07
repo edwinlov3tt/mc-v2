@@ -904,6 +904,13 @@ pub struct ParsedFittedModel {
     /// validator MC2070 rejects `min >= max` when both are present.
     #[serde(default)]
     pub output_bound: Option<ParsedOutputBound>,
+    /// Phase 3H.2 (ADR-0018): optional adstock + saturation transform
+    /// declarations applied to feature values before standardization +
+    /// coefficient multiplication. Per Decision 7's binding pipeline order:
+    /// feature → adstock → saturation → standardization → coefficient.
+    /// Validators MC2071-MC2076 (and MC2077 if reached) cover correctness.
+    #[serde(default)]
+    pub transforms: Option<ParsedTransforms>,
     #[serde(default)]
     pub metadata: Option<ParsedFittedModelMetadata>,
 }
@@ -928,6 +935,59 @@ pub struct ParsedOutputBound {
 pub struct ParsedFittedCoefficient {
     pub feature: String,
     pub weight: f64,
+}
+
+/// Phase 3H.2 (ADR-0018): per-feature adstock + saturation transform block
+/// declared on a fitted model. Both inner lists default to empty so an
+/// empty `transforms: {}` declaration is permissive (Step 1 W4).
+#[derive(Clone, Debug, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedTransforms {
+    #[serde(default)]
+    pub adstock: Vec<ParsedAdstockSpec>,
+    #[serde(default)]
+    pub saturation: Vec<ParsedSaturationSpec>,
+}
+
+/// Phase 3H.2: geometric adstock spec for one feature. Per ADR-0018
+/// Decision 2, both `rate` and `max_lookback` are required (no sensible
+/// defaults). Validators MC2075/MC2076 cover bounds; MC2071 covers
+/// `feature` membership in `coefficients`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedAdstockSpec {
+    pub feature: String,
+    pub rate: f64,
+    pub max_lookback: u32,
+}
+
+/// Phase 3H.2: per-feature saturation spec. Tagged-enum with
+/// `#[serde(tag = "type")]` so unknown saturation types fire a serde
+/// deserialization error at parse time (Step 1 W2; supersedes MC2077
+/// when serde catches first).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ParsedSaturationSpec {
+    Hill {
+        feature: String,
+        alpha: f64,
+        gamma: f64,
+    },
+    Log {
+        feature: String,
+        scale: f64,
+    },
+}
+
+impl ParsedSaturationSpec {
+    /// Feature name on the spec (helper for validators that don't care
+    /// about variant-specific parameters).
+    pub fn feature_name(&self) -> &str {
+        match self {
+            ParsedSaturationSpec::Hill { feature, .. } => feature,
+            ParsedSaturationSpec::Log { feature, .. } => feature,
+        }
+    }
 }
 
 /// Standardization configuration (z-score normalization).

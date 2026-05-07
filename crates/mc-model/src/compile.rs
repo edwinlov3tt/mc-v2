@@ -395,6 +395,42 @@ pub fn compile(validated: ValidatedModel) -> Result<CompiledCube, EngineError> {
             min: b.min,
             max: b.max,
         });
+        // Phase 3H.2 (ADR-0018): copy `transforms` field-by-field from the
+        // schema-side `ParsedTransforms` to the kernel-side `Transforms`.
+        // Validators MC2071-MC2076 have already cleared bounds + name
+        // memberships against `coefficients` so eval can apply blindly.
+        let transforms = fm.transforms.as_ref().map(|t| mc_core::Transforms {
+            adstock: t
+                .adstock
+                .iter()
+                .map(|a| mc_core::AdstockSpec {
+                    feature: a.feature.clone(),
+                    rate: a.rate,
+                    max_lookback: a.max_lookback,
+                })
+                .collect(),
+            saturation: t
+                .saturation
+                .iter()
+                .map(|s| match s {
+                    crate::schema::ParsedSaturationSpec::Hill {
+                        feature,
+                        alpha,
+                        gamma,
+                    } => mc_core::SaturationSpec::Hill {
+                        feature: feature.clone(),
+                        alpha: *alpha,
+                        gamma: *gamma,
+                    },
+                    crate::schema::ParsedSaturationSpec::Log { feature, scale } => {
+                        mc_core::SaturationSpec::Log {
+                            feature: feature.clone(),
+                            scale: *scale,
+                        }
+                    }
+                })
+                .collect(),
+        });
         let data = mc_core::FittedModelData {
             method: fm.method.clone(),
             intercept: fm.intercept,
@@ -406,6 +442,7 @@ pub fn compile(validated: ValidatedModel) -> Result<CompiledCube, EngineError> {
             residual_std: fm.residual_std,
             standardization,
             output_bound,
+            transforms,
         };
         cube.reference_data
             .fitted_models

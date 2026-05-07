@@ -2143,6 +2143,108 @@ fn check_fitted_model_blocks(parsed: &ParsedModel, errors: &mut Vec<ValidationEr
                 }
             }
         }
+
+        // Phase 3H.2 (ADR-0018): adstock + saturation transform validators.
+        // MC2071 — adstock feature not in coefficients
+        // MC2072 — Hill saturation alpha <= 0 or gamma <= 0
+        // MC2073 — Log saturation scale <= 0
+        // MC2074 — saturation feature not in coefficients
+        // MC2075 — adstock rate outside [0.0, 1.0]
+        // MC2076 — adstock max_lookback == 0
+        // (MC2077 — unknown saturation `type:` — caught by serde at parse
+        //  time as a syntax error; not emitted by this validator. The code
+        //  stays reserved in ADR-0018 audit trail per the empirical decision
+        //  on Step 2 W1.)
+        if let Some(transforms) = &fm.transforms {
+            let coeff_features: BTreeSet<&str> =
+                fm.coefficients.iter().map(|c| c.feature.as_str()).collect();
+
+            for adstock in &transforms.adstock {
+                // MC2071: feature membership in coefficients
+                if !coeff_features.contains(adstock.feature.as_str()) {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "fitted_model {:?}: transforms.adstock feature {:?} is not in \
+                             coefficients list (MC2071)",
+                            fm.name, adstock.feature
+                        ),
+                    });
+                }
+                // MC2075: rate outside [0, 1]. NaN flunks both comparisons,
+                // so the explicit reject-on-not-in-range rejects NaN as
+                // well (serde_yaml does not reject NaN here because YAML
+                // f64s allow .nan). The `is_nan()` arm is what makes
+                // NaN rejection explicit (clippy::neg_cmp_op_on_partial_ord).
+                if adstock.rate.is_nan() || adstock.rate < 0.0 || adstock.rate > 1.0 {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "fitted_model {:?}: transforms.adstock for {:?} has rate {} \
+                             outside [0.0, 1.0] (MC2075)",
+                            fm.name, adstock.feature, adstock.rate
+                        ),
+                    });
+                }
+                // MC2076: max_lookback must be > 0. (u32 type already
+                // rejects negatives at parse time.)
+                if adstock.max_lookback == 0 {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "fitted_model {:?}: transforms.adstock for {:?} has \
+                             max_lookback = 0 (must be > 0) (MC2076)",
+                            fm.name, adstock.feature
+                        ),
+                    });
+                }
+            }
+
+            for sat in &transforms.saturation {
+                // MC2074: feature membership in coefficients
+                if !coeff_features.contains(sat.feature_name()) {
+                    errors.push(ValidationError::Schema {
+                        message: format!(
+                            "fitted_model {:?}: transforms.saturation feature {:?} is \
+                             not in coefficients list (MC2074)",
+                            fm.name,
+                            sat.feature_name()
+                        ),
+                    });
+                }
+                match sat {
+                    crate::schema::ParsedSaturationSpec::Hill {
+                        feature,
+                        alpha,
+                        gamma,
+                    } => {
+                        // MC2072: Hill alpha and gamma must be > 0. NaN
+                        // flunks `>= 0.0`, so we reject NaN explicitly
+                        // and then check the strict-positive bound.
+                        if alpha.is_nan() || gamma.is_nan() || *alpha <= 0.0 || *gamma <= 0.0 {
+                            errors.push(ValidationError::Schema {
+                                message: format!(
+                                    "fitted_model {:?}: transforms.saturation hill for {:?} \
+                                     requires alpha > 0 and gamma > 0 (got alpha = {}, \
+                                     gamma = {}) (MC2072)",
+                                    fm.name, feature, alpha, gamma
+                                ),
+                            });
+                        }
+                    }
+                    crate::schema::ParsedSaturationSpec::Log { feature, scale } => {
+                        // MC2073: Log scale must be > 0. NaN rejected
+                        // explicitly (clippy::neg_cmp_op_on_partial_ord).
+                        if scale.is_nan() || *scale <= 0.0 {
+                            errors.push(ValidationError::Schema {
+                                message: format!(
+                                    "fitted_model {:?}: transforms.saturation log for {:?} \
+                                     requires scale > 0 (got scale = {}) (MC2073)",
+                                    fm.name, feature, scale
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+        }
     }
 
     for cm in &parsed.calibration_maps {
@@ -3167,6 +3269,23 @@ fn check_str_type_context_walk(
 // other Phase 3J items (Indicator measure role, scenario_ref, etc.).
 // MC2070 (Phase 3H.1 / ADR-0017): fitted_model.output_bound.min >=
 //         output_bound.max. Emitted by `check_fitted_model_blocks`.
+// MC2071 (Phase 3H.2 / ADR-0018): transforms.adstock declares a feature
+//         that is not in the model's coefficients list.
+// MC2072 (Phase 3H.2 / ADR-0018): Hill saturation has alpha <= 0 or
+//         gamma <= 0 (or NaN).
+// MC2073 (Phase 3H.2 / ADR-0018): Log saturation has scale <= 0 (or NaN).
+// MC2074 (Phase 3H.2 / ADR-0018): transforms.saturation declares a
+//         feature that is not in the model's coefficients list.
+// MC2075 (Phase 3H.2 / ADR-0018): adstock rate is outside [0.0, 1.0]
+//         (or NaN).
+// MC2076 (Phase 3H.2 / ADR-0018): adstock max_lookback is 0 (must be
+//         strictly > 0).
+// MC2077 (Phase 3H.2 / ADR-0018): RESERVED for unknown saturation `type:`
+//         in YAML. Empirically caught by serde_yaml at parse time as a
+//         `ParseError::Syntax` (unknown variant); no validate-time emitter
+//         in v1. Kept reserved per the diagnostic-code-retirement-is-
+//         forever rule (process-notes §3) so the code can never be
+//         repurposed.
 // ---------------------------------------------------------------------------
 
 fn check_parameters_block(
