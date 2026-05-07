@@ -105,9 +105,44 @@ POST /api/upload (multipart zip)
   -> return JSON with timing data
 ```
 
+## Interpretation Ledger (Phase 7A.2)
+
+Every upload automatically writes structured narrative entries to
+`.mosaic/analysis-ledger.jsonl` (append-only JSONL). This creates a
+durable history for cross-period analysis and benchmark aggregation.
+
+### CLI usage
+
+```bash
+# Generate narratives + save to ledger
+mc model narrate model.yaml --save-ledger
+
+# Query the ledger
+mc model query-ledger . --severity warning
+mc model query-ledger . --repeated 3 --since 2026-01
+mc model query-ledger . --template clicks_down --format json
+
+# Export for analysis
+mc model ledger-export . --format csv > analysis.csv
+mc model ledger-export . --format jsonl --since 2026-03
+```
+
+### Privacy boundary
+
+Ledger entries contain whatever dimension names and measure values your
+model declares. If your model uses real advertiser names as dimension
+elements, those appear in the ledger. Configure dimension elements
+accordingly if ledger privacy is a concern.
+
+- No automatic PII detection in v1 (Phase 7A.4 scope).
+- Benchmark contribution is opt-in only (planning doc Q8).
+- Entries are immutable once written — the query layer handles schema
+  version differences across model changes.
+
 ## Files
 
 - `crates/mc-demo-server/` — Rust server (axum + mc-core)
+- `crates/mc-narrative/src/ledger.rs` — Ledger schema, write/read paths, query filters
 - `demo/frontend/` — React frontend (Vite + Tailwind)
 - `demo/registry/performance_tables.csv` — tactic registry
 - `demo/sample-data/` — sample CSVs from Scotts RV / Targeted Display
