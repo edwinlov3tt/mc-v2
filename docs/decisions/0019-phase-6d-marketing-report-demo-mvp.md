@@ -1,6 +1,6 @@
 # ADR-0019: Phase 6D — Marketing Report Demo MVP
 
-**Status:** Proposed
+**Status:** Accepted (PM-accepted same day; demo forcing function — leadership presentation)
 **Date:** 2026-05-07
 **Deciders:** project owner
 **Phase:** 6D (per [`../roadmap/MASTER_PHASE_PLAN.md`](../roadmap/MASTER_PHASE_PLAN.md))
