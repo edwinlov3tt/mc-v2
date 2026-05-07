@@ -2900,7 +2900,11 @@ pub enum SaturationSpec {
 
 impl SaturationSpec {
     /// Feature name on the spec (helper used by eval lookup).
-    pub fn feature_name(&self) -> &str {
+    /// Per Hard Rule 7: `pub(crate)` rather than `pub fn` — Phase 3H.2
+    /// ships zero new public functions in mc-core. Variant fields are
+    /// themselves `pub`, so external callers can still pattern-match
+    /// directly to extract the feature name.
+    pub(crate) fn feature_name(&self) -> &str {
         match self {
             SaturationSpec::Hill { feature, .. } => feature,
             SaturationSpec::Log { feature, .. } => feature,
