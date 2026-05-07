@@ -9,6 +9,7 @@ members = [
     "crates/mc-drivers",
     "crates/mc-tessera",
     "crates/mc-demo-server",
+    "crates/mc-narrative",
 ]
 
 [workspace.package]

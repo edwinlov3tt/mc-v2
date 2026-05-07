@@ -20,6 +20,8 @@ serde_yaml = "0.9.34"
 
 # Mosaic kernel — cube construction + formula engine (linked as library, not subprocess)
 mc-core = { path = "../mc-core" }
+# Mosaic narrative engine — YAML-driven deterministic report generation (Phase 7A.1)
+mc-narrative = { path = "../mc-narrative" }
 
 [lib]
 name = "mc_demo_server"

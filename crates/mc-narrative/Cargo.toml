@@ -1,0 +1,16 @@
+[package]
+name = "mc-narrative"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Mosaic narrative template engine — YAML-driven deterministic report generation (Phase 7A.1)"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9.34"
+thiserror = { workspace = true }
+
+[dev-dependencies]
