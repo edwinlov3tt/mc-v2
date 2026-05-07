@@ -1,0 +1,336 @@
+# Phase 7A.3 Handoff — Cross-Period Analysis
+
+> **Audience:** the Claude Code instance that implements Phase 7A.3.
+> **You inherit `main` at `9f0610b` (970 / 0 / 5 tests). You'll work
+> on the branch `phase-7a-3/cross-period-analysis`.**
+>
+> **This phase adds the "this is the third consecutive month..."
+> capability.** Phase 7A.2 shipped the interpretation ledger — every
+> `mc model narrate --save-ledger` call writes structured JSONL
+> entries. Phase 7A.3 teaches the narrative engine to READ the ledger
+> during template evaluation, enabling trend detection across
+> reporting periods. This is the capability that turns Mosaic from
+> "monthly snapshot" into "institutional memory."
+>
+> **The binding design is in [`docs/decisions/0020-phase-7a-narrative-engine-plan.md`](../decisions/0020-phase-7a-narrative-engine-plan.md)
+> §"Phase 7A.3 — Cross-Period Analysis".**
+
+---
+
+## The one paragraph you must internalize
+
+Today's narrative templates evaluate against a SINGLE reporting
+period's cube data. Cross-period templates evaluate against the
+cube data PLUS the ledger's historical entries. When a template
+says `ledger_count("clicks_down_yoy", 6) >= 3`, the engine reads
+the ledger, counts how many of the last 6 periods had a
+"clicks_down_yoy" entry for the same scope, and if the count is
+≥ 3, fires a trend narrative: "Paid Search clicks have declined
+for 3 consecutive months." The ledger is the memory; the template
+is the rule; the engine is deterministic. No LLM looks at history
+— deterministic pattern matching against structured evidence.
+
+---
+
+## What gets built (4 sessions estimated)
+
+### Session 1 (~3-4h): Ledger query functions in the evaluator
+
+**Goal:** The narrative evaluator can call ledger-query functions
+during template evaluation.
+
+**Deliverables:**
+
+1. **Ledger query functions in `mc-narrative/src/evaluator.rs`:**
+
+   The evaluator already handles `count_where`, `any_where`, etc.
+   Add a new family of functions that query the ledger:
+
+   ```
+   ledger_count(template_id, lookback_periods) → number
+   ledger_has(template_id, lookback_periods) → boolean (1.0/0.0)
+   ledger_streak(template_id) → number (consecutive periods ending at current)
+   ledger_first_period(template_id, lookback_periods) → string
+   ledger_last_period(template_id, lookback_periods) → string
+   ledger_evidence(template_id, field_name, periods_ago) → number
+   ```
+
+   These are narrative-layer functions (NOT mc-core formula
+   functions). They live in the evaluator alongside `count_where`.
+
+2. **Ledger access during evaluation:**
+
+   Currently `evaluate_all` takes `&[CubeData]`. Add an optional
+   `ledger: Option<&[LedgerEntry]>` parameter. When present, the
+   ledger query functions have data to search. When absent (no
+   ledger loaded), they return 0/false/Null (templates with ledger
+   predicates silently skip).
+
+   ```rust
+   pub fn evaluate_all(
+       templates: &[TemplateDefinition],
+       cubes: &[CubeData],
+       ledger: Option<&[LedgerEntry]>,  // NEW
+   ) -> Vec<NarrativeOutput>
+   ```
+
+3. **Scope matching:** ledger queries filter by scope. A template
+   evaluating at scope `{ channel: "Targeted Display", market: "Rockford" }`
+   only matches ledger entries with the same scope values. The
+   `current_scope` is derived from the cube being evaluated.
+
+4. **Period ordering:** ledger entries have `report_period` strings
+   (e.g., "2026-04"). "Lookback N periods" means the N most recent
+   periods before the current one, sorted lexicographically. The
+   `--repeated` logic from 7A.2's `query-ledger` verb already
+   handles this; reuse it.
+
+**Decision Matrix:**
+
+| Wall | Binding decision |
+|---|---|
+| How does the evaluator detect a ledger function call? | **Function name prefix.** The evaluator already dispatches on function names (`count_where`, `any_where`). Add `ledger_count`, `ledger_has`, `ledger_streak`, etc. to the dispatch table. |
+| What's the "current period"? | **From the cube's Time dimension.** The latest (highest-sorted) Time element in the cube is the "current" period. Ledger queries look backward from there. |
+| What if no ledger is loaded? | **Ledger functions return 0 / false / empty string.** Templates with ledger predicates in `when:` silently don't fire. This is correct — "no history available" means "can't detect trends." |
+| Should ledger queries be cached per-evaluation? | **Yes.** Read the ledger once at the start of `evaluate_all`, build a `HashMap<(template_id, scope), Vec<LedgerEntry>>` index, and look up from there. Don't re-read the file per function call. |
+| Cycle prevention — can a cross-period template match its OWN prior entries? | **Yes, with depth limit 1.** A trend template that fires creates a ledger entry on the next `--save-ledger` run. The next evaluation sees that entry. This is natural recursion (the trend compounds). Depth limit prevents infinite loops: a ledger function only reads entries generated by OTHER template evaluations (or prior runs of the same template, but not the current run). |
+
+**Regression tests (6 minimum):**
+1. `test_ledger_count_returns_matching_entry_count`
+2. `test_ledger_streak_counts_consecutive_periods`
+3. `test_ledger_streak_resets_on_gap`
+4. `test_ledger_has_returns_boolean`
+5. `test_ledger_evidence_reads_specific_field`
+6. `test_ledger_query_with_no_ledger_returns_zero`
+
+---
+
+### Session 2 (~3-4h): Trend template YAML + `mc model narrate-trends`
+
+**Goal:** Ship trend templates that fire from ledger data. New CLI verb.
+
+**Deliverables:**
+
+1. **New template file** — `demo/narratives/trend-templates.yaml`:
+
+   ```yaml
+   narrative_format_version: 1
+
+   templates:
+     - id: persistent_decline
+       family: [trend]
+       severity: critical
+       table_types: ["Monthly Performance"]
+       when: "ledger_streak('impressions_mom_decline') >= 3"
+       template: >
+         {tactic_name} impressions have declined for
+         {streak_count} consecutive months, falling from
+         {first_value:,.0f} to {current_value:,.0f} — a
+         cumulative {total_decline:.0f}% decrease. This
+         persistent trend warrants immediate investigation.
+       bindings:
+         streak_count: "ledger_streak('impressions_mom_decline')"
+         first_value: "ledger_evidence('impressions_mom', 'prev_value', streak_count)"
+         current_value: "current.Impressions"
+         total_decline: "(current.Impressions - first_value) / first_value * 100"
+
+     - id: recurring_warning
+       family: [trend]
+       severity: warning
+       table_types: ["Monthly Performance"]
+       when: "ledger_count('device_underperformance', 3) >= 2"
+       template: >
+         Device underperformance has been flagged in
+         {occurrence_count} of the last 3 reporting periods.
+         This is a recurring issue, not a one-time anomaly.
+       bindings:
+         occurrence_count: "ledger_count('device_underperformance', 3)"
+
+     - id: conversion_alarm_persistent
+       family: [trend]
+       severity: critical
+       table_types: ["Campaign Performance", "Monthly Performance"]
+       when: "ledger_streak('conversion_alarm') >= 2"
+       template: >
+         ⚠️ PERSISTENT: Zero conversions have been recorded for
+         {streak_count} consecutive reporting periods across
+         {total_impressions:,.0f} cumulative impressions.
+         Conversion tracking is likely misconfigured — this is
+         not a performance issue, it is a measurement issue.
+       bindings:
+         streak_count: "ledger_streak('conversion_alarm')"
+         total_impressions: "sum.Impressions"
+       deduplicate: true
+
+     - id: improvement_trend
+       family: [trend]
+       severity: success
+       table_types: ["Monthly Performance"]
+       when: "ledger_streak('uniform_momentum') >= 2"
+       template: >
+         All key metrics have improved for {streak_count}
+         consecutive months. The campaign is on a sustained
+         upward trajectory.
+       bindings:
+         streak_count: "ledger_streak('uniform_momentum')"
+
+     - id: new_issue_first_occurrence
+       family: [trend]
+       severity: info
+       table_types: ["Monthly Performance"]
+       when: >
+         ledger_has('device_underperformance', 1) == 0
+         AND min_over(CTR, Device) < campaign_avg.CTR * 0.25
+       template: >
+         ℹ️ First-time flag: {worst_device} underperformance
+         detected this period. Monitoring — if this recurs
+         next month, it will be escalated to a recurring warning.
+       bindings:
+         worst_device: "min_by.Device.CTR.name"
+   ```
+
+2. **New CLI verb** — `mc model narrate-trends`:
+   ```
+   mc model narrate-trends <model-dir> [--last <n>-periods] [--format json|text|markdown]
+   ```
+   - Loads the ledger from `.mosaic/analysis-ledger.jsonl`
+   - Loads trend templates from the narratives directory
+   - Evaluates trend templates with ledger context
+   - Outputs trend-specific narratives
+
+   Implementation: this is essentially `mc model narrate` but
+   with the ledger loaded and passed to `evaluate_all`. Could be
+   a flag on `narrate` (`--include-trends`) or a separate verb.
+   **PM preference: separate verb.** Clearer semantics; the user
+   explicitly asks for trend analysis.
+
+3. **Wire demo server** — load trend templates alongside regular
+   templates. On upload, if a ledger exists, pass it to evaluation.
+   Trend narratives appear in the report alongside per-period ones
+   (in a separate "Trends" section).
+
+**Decision Matrix:**
+
+| Wall | Binding decision |
+|---|---|
+| Separate verb or flag on narrate? | **Separate verb** (`mc model narrate-trends`). The mental model: `narrate` = "what's happening NOW"; `narrate-trends` = "what's been happening OVER TIME." |
+| What if the ledger has only 1 period? | **No trend templates fire** (all have `ledger_streak >= 2` or `ledger_count >= 2`). The "first occurrence" template (`new_issue_first_occurrence`) fires on the current data using `ledger_has == 0` (no prior history). |
+| Should trend templates live in the same YAML file as regular templates? | **Separate file** (`demo/narratives/trend-templates.yaml`). The `family: [trend]` tag distinguishes them. `narrate` loads regular templates; `narrate-trends` loads both. |
+| How are trend narratives displayed in the demo UI? | **Separate section** below per-period narratives, labeled "📈 Trends & Patterns." |
+
+---
+
+### Session 3 (~2-3h): `--mock-ledger` for testing + golden ledger fixtures
+
+**Goal:** Make trend templates testable without real multi-period data.
+
+**Deliverables:**
+
+1. **`--mock-ledger` flag on `mc model narrate-trends`:**
+   ```
+   mc model narrate-trends model-dir/ --mock-ledger test-ledger.jsonl
+   ```
+   Loads the specified JSONL file instead of `.mosaic/analysis-ledger.jsonl`.
+   For testing: create synthetic ledger files with known entries
+   across known periods, then assert trend templates fire correctly.
+
+2. **Golden ledger fixtures** in `demo/test-fixtures/`:
+   - `3-month-decline.jsonl` — 3 months of `impressions_mom_decline` entries
+   - `2-month-device-warning.jsonl` — 2 months of `device_underperformance`
+   - `persistent-zero-conversions.jsonl` — 3 months of `conversion_alarm`
+   - `sustained-improvement.jsonl` — 2 months of `uniform_momentum`
+
+3. **Regression tests** using the golden fixtures:
+   - `test_persistent_decline_fires_on_3_month_ledger`
+   - `test_recurring_warning_fires_on_2_of_3_months`
+   - `test_conversion_alarm_persistent_fires_on_streak`
+   - `test_improvement_trend_fires_on_2_month_momentum`
+   - `test_first_occurrence_fires_when_no_history`
+   - `test_no_trends_fire_with_empty_ledger`
+
+---
+
+### Session 4 (~2-3h): MC7030-MC7032 + performance + demo integration
+
+**Goal:** Ship-ready with diagnostics, performance verification, and
+the demo wired end-to-end.
+
+**Deliverables:**
+
+1. **MC7030-MC7032 diagnostic codes** (per planning doc):
+   - MC7030: `ledger_query()` cycle detected (a trend template's
+     output references itself in the same evaluation — should be
+     impossible with the depth-1 limit but defense-in-depth)
+   - MC7031: `ledger_query()` lookback exceeds available ledger
+     depth (warning, not error — fires when you ask for
+     `ledger_count(x, 12)` but only have 3 months of data)
+   - MC7032: Cross-period template references a template_id that
+     doesn't exist in the regular template set (typo detection)
+
+2. **Performance check:** ledger queries must complete in < 5ms
+   median, < 50ms P99. The cached-index approach (Session 1) should
+   handle this. Verify with a synthetic 1000-entry ledger.
+
+3. **Demo integration:**
+   - Demo server loads trend templates alongside regular templates
+   - If `.mosaic/analysis-ledger.jsonl` exists in the workspace,
+     trend analysis runs automatically
+   - Frontend shows "📈 Trends" section when trend narratives exist
+   - Terminal timing shows `ledger_query_ms` in the breakdown
+
+4. **Pre-flight code sweep:**
+   ```bash
+   for code in MC7030 MC7031 MC7032; do
+     grep -rn "$code" crates/ | wc -l
+   done
+   ```
+
+---
+
+## Hard Rules (binding)
+
+1. **`mc-core`, `mc-model`, `mc-fixtures`, `mc-recipe`, `mc-drivers`, `mc-tessera` all locked.**
+2. **Ledger query functions live in `mc-narrative/src/evaluator.rs`** (not mc-core). They're narrative-layer functions, not kernel functions.
+3. **Trend templates are YAML** (same format as regular templates; `family: [trend]` tag distinguishes). No hardcoded Rust trend logic.
+4. **`evaluate_all` signature changes** (adds `ledger: Option<&[LedgerEntry]>`). Callers that don't have a ledger pass `None`; existing behavior unchanged.
+5. **The demo server and `mc model narrate` still work without a ledger** (trend templates silently don't fire; regular templates unaffected).
+6. **Per-session commits (Rule 11).** 4 commits minimum.
+
+---
+
+## Acceptance Gates (lean)
+
+- [ ] `cargo fmt --check --all` exits 0.
+- [ ] `cargo clippy --all-targets --workspace -- -D warnings` exits 0.
+- [ ] `cargo build --release --workspace` zero warnings.
+- [ ] `cargo test --workspace` passes (970 → expect ~+12 = ~982).
+- [ ] `mc model narrate-trends` with a synthetic ledger produces trend narratives.
+- [ ] `persistent_decline` template fires when ledger has 3+ months of decline entries.
+- [ ] `first_occurrence` template fires when ledger has zero history for a finding.
+- [ ] Regular `mc model narrate` still works without a ledger (zero regressions).
+- [ ] MC7030-MC7032 codes swept FREE + shipped.
+- [ ] Ledger query performance < 5ms on a 1000-entry synthetic ledger.
+- [ ] Locked surfaces: zero diff.
+
+---
+
+## SPEC QUESTION candidates
+
+- Session 1: How to resolve "current period" when the cube has
+  multiple Time elements (e.g., Jul + Aug). Is it always the
+  latest, or should the user specify `--period`?
+  (PM default: latest Time element in the cube.)
+- Session 1: Should `ledger_evidence` return Null if the field
+  doesn't exist in the evidence, or error? (PM default: Null —
+  skip the template gracefully.)
+- Session 2: Should `narrate-trends` auto-load the regular
+  templates too (and merge regular + trend output), or only
+  trend templates? (PM default: both — a full trend report
+  includes the current-period analysis + the cross-period insights.)
+
+---
+
+*End of handoff. Phase 7A.3 is where Mosaic stops being a snapshot
+tool and starts having memory. After this ships, the system can say
+"this has been happening for 3 months" — deterministically, from
+structured evidence, without an LLM looking at history.*
