@@ -899,8 +899,27 @@ pub struct ParsedFittedModel {
     pub standardization: Option<ParsedStandardizationConfig>,
     #[serde(default)]
     pub residual_std: Option<f64>,
+    /// Phase 3H.1: optional output clamp applied after the link function.
+    /// Per ADR-0017 Decision 2: either or both of `min`/`max` may be set;
+    /// validator MC2070 rejects `min >= max` when both are present.
+    #[serde(default)]
+    pub output_bound: Option<ParsedOutputBound>,
     #[serde(default)]
     pub metadata: Option<ParsedFittedModelMetadata>,
+}
+
+/// Phase 3H.1: output clamp configuration on a fitted model. Both fields
+/// optional; one-sided clamps are valid (e.g., `min: 0` for non-negativity
+/// only). Per ADR-0017 Decision 4: if both are set, MC2070 fires when
+/// `min >= max`. NaN/infinite values are rejected by `serde_yaml` at parse
+/// time.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ParsedOutputBound {
+    #[serde(default)]
+    pub min: Option<f64>,
+    #[serde(default)]
+    pub max: Option<f64>,
 }
 
 /// One coefficient in a fitted model.
