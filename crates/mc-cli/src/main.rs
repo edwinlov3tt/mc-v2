@@ -25,6 +25,7 @@ use mc_model::{
 mod diff;
 mod loader;
 mod mcp;
+mod narrate;
 mod query;
 mod sweep;
 mod tessera;
@@ -70,6 +71,10 @@ fn main() {
                     },
                     "write" => match write::parse(&args[3..]) {
                         Ok(cmd) => std::process::exit(write::run(cmd)),
+                        Err(e) => fatal(&e),
+                    },
+                    "narrate" => match narrate::parse(&args[3..]) {
+                        Ok(cmd) => std::process::exit(narrate::run(cmd)),
                         Err(e) => fatal(&e),
                     },
                     _ => {} // Fall through to legacy parse
@@ -165,6 +170,7 @@ fn print_help() {
         "    mc model diff   <path> --left <filter> --right <filter> [--format text|json|csv]"
     );
     println!("    mc model write  <path> --coord <coord> --value <n> [--dry-run] [--format ...]");
+    println!("    mc model narrate <path> [--templates <dir>] [--format text|json|markdown]");
     println!();
     println!("    mc tessera apply      <recipe.yaml>            [--format text|json]");
     println!("    mc tessera dry-run    <recipe.yaml>            [--format text|json]");

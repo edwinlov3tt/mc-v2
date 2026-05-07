@@ -259,6 +259,15 @@ fn handle_tools_list() -> JsonValue {
             ],
         ),
         tool_descriptor(
+            "mosaic.model.narrate",
+            "Generate narrative report from YAML templates evaluated against a populated cube. Returns structured findings with severity, evidence, and rendered text.",
+            &[
+                ("path", "string", "Path to a Mosaic YAML model.", true),
+                ("templates", "string", "Path to narratives directory. Defaults to ./narratives/ relative to model.", false),
+                ("format", "string", "Output format: 'json' (default) or 'text' or 'markdown'.", false),
+            ],
+        ),
+        tool_descriptor(
             "mosaic.tessera.transform",
             "Convert raw data (file or URL) to model-compatible format using a recipe. Simple GET for URLs.",
             &[
@@ -325,6 +334,7 @@ fn handle_tools_call(params: &JsonValue) -> Result<JsonValue, (i64, String)> {
         "mosaic.model.sweep" => tool_sweep(&args),
         "mosaic.model.diff" => tool_diff(&args),
         "mosaic.model.write" => tool_write(&args),
+        "mosaic.model.narrate" => tool_narrate(&args),
         "mosaic.tessera.transform" => tool_transform(&args),
         other => return Err((-32601, format!("unknown tool: {other}"))),
     };
@@ -830,6 +840,28 @@ fn tool_write(args: &JsonValue) -> ToolOutcome {
     run_cli_verb_json(|| {
         let cmd = crate::write::parse(&cli_args)?;
         Ok(crate::write::run_captured(cmd))
+    })
+}
+
+fn tool_narrate(args: &JsonValue) -> ToolOutcome {
+    let path = match args.get("path").and_then(JsonValue::as_str_owned) {
+        Some(p) => p,
+        None => return error_outcome("missing required argument: path"),
+    };
+    let mut cli_args = vec![path];
+    if let Some(templates) = args.get("templates").and_then(JsonValue::as_str_owned) {
+        cli_args.push("--templates".into());
+        cli_args.push(templates);
+    }
+    let format = args
+        .get("format")
+        .and_then(JsonValue::as_str_owned)
+        .unwrap_or_else(|| "json".into());
+    cli_args.push("--format".into());
+    cli_args.push(format);
+    run_cli_verb_json(|| {
+        let cmd = crate::narrate::parse(&cli_args)?;
+        Ok(crate::narrate::run_captured(cmd))
     })
 }
 

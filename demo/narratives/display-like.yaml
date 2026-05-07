@@ -45,6 +45,7 @@ templates:
     severity: info
     table_types: ["Monthly Performance"]
     sort_order: -10  # fires first
+    deduplicate: true
     when: "true"
     template: >
       This analysis is based on {period_count} reporting
@@ -62,6 +63,7 @@ templates:
     family: [display-like]
     severity: warning
     table_types: ["Performance by City", "Performance by Zip"]
+    deduplicate: true
     when: "count_where(Impressions < 500, geo_dimension) > 0"
     template: >
       {count} geographic area{plural} had fewer than 500
@@ -242,6 +244,7 @@ templates:
     family: [display-like]
     severity: warning
     table_types: ["Performance by City", "Performance by Zip"]
+    deduplicate: true
     when: "any_where(Clicks == 0 AND Impressions > 50, geo_dimension)"
     template: >
       {area_name} received {impressions:,.0f} impressions with
@@ -273,6 +276,7 @@ templates:
     family: [display-like, video-like, search-like, social-like]
     severity: critical
     table_types: ["Campaign Performance", "Monthly Performance"]
+    deduplicate: true
     when: "sum.Conversions == 0 AND sum.Impressions > 1000"
     template: >
       Zero conversions recorded across {total_impressions:,.0f}

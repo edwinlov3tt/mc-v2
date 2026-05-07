@@ -26,6 +26,8 @@ serde_json = "1"
 ureq = { workspace = true }
 # Phase 6D: demo server for `mc start`.
 mc-demo-server = { path = "../mc-demo-server" }
+# Phase 7A.1: narrative engine for `mc model narrate`.
+mc-narrative = { path = "../mc-narrative" }
 
 [[bin]]
 name = "mc"
