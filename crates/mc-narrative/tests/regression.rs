@@ -1096,3 +1096,235 @@ fn test_validate_catches_duplicate_id() {
         errors
     );
 }
+
+// ─── Phase 7A.3: Cross-period trend template tests ────────────────────
+
+/// Find the test-fixtures directory.
+fn fixtures_dir() -> String {
+    for path in &["demo/test-fixtures", "../../demo/test-fixtures"] {
+        if std::path::Path::new(path).exists() {
+            return path.to_string();
+        }
+    }
+    panic!("cannot find demo/test-fixtures directory");
+}
+
+/// Load a golden ledger fixture.
+fn load_fixture(name: &str) -> Vec<mc_narrative::LedgerEntry> {
+    let path = format!("{}/{}", fixtures_dir(), name);
+    mc_narrative::ledger::read_ledger(std::path::Path::new(&path))
+        .unwrap_or_else(|e| panic!("failed to load fixture {name}: {e}"))
+}
+
+/// Build a minimal Monthly Performance cube for trend evaluation.
+fn trend_test_cube() -> CubeData {
+    CubeData {
+        table_name: "Monthly Performance".into(),
+        subproduct: "Targeted Display".into(),
+        source_file: "test.csv".into(),
+        dimension_name: Some("Time".into()),
+        values: BTreeMap::from([
+            (
+                "Impressions".into(),
+                vec![CellEntry {
+                    category: "Apr_2026".into(),
+                    value: 38000.0,
+                }],
+            ),
+            (
+                "Clicks".into(),
+                vec![CellEntry {
+                    category: "Apr_2026".into(),
+                    value: 950.0,
+                }],
+            ),
+            (
+                "CTR".into(),
+                vec![CellEntry {
+                    category: "Apr_2026".into(),
+                    value: 2.5,
+                }],
+            ),
+        ]),
+    }
+}
+
+#[test]
+fn test_persistent_decline_fires_on_3_month_ledger() {
+    let templates = load_templates();
+    let ledger = load_fixture("3-month-decline.jsonl");
+    let cubes = vec![trend_test_cube()];
+
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&ledger));
+
+    let trend_narratives: Vec<_> = narratives
+        .iter()
+        .filter(|n| n.template_id == "persistent_decline")
+        .collect();
+    assert!(
+        !trend_narratives.is_empty(),
+        "persistent_decline should fire with 3-month ledger streak; got {:?}",
+        narratives
+            .iter()
+            .map(|n| &n.template_id)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_recurring_warning_fires_on_2_of_3_months() {
+    let templates = load_templates();
+    let ledger = load_fixture("2-month-device-warning.jsonl");
+    let cubes = vec![trend_test_cube()];
+
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&ledger));
+
+    let trend_narratives: Vec<_> = narratives
+        .iter()
+        .filter(|n| n.template_id == "recurring_warning")
+        .collect();
+    assert!(
+        !trend_narratives.is_empty(),
+        "recurring_warning should fire when device_underperformance found in 2 of last 3 periods; got {:?}",
+        narratives.iter().map(|n| &n.template_id).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_conversion_alarm_persistent_fires_on_streak() {
+    let templates = load_templates();
+    let ledger = load_fixture("persistent-zero-conversions.jsonl");
+    let cubes = vec![trend_test_cube()];
+
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&ledger));
+
+    let trend_narratives: Vec<_> = narratives
+        .iter()
+        .filter(|n| n.template_id == "conversion_alarm_persistent")
+        .collect();
+    assert!(
+        !trend_narratives.is_empty(),
+        "conversion_alarm_persistent should fire with 3-month streak; got {:?}",
+        narratives
+            .iter()
+            .map(|n| &n.template_id)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_improvement_trend_fires_on_2_month_momentum() {
+    let templates = load_templates();
+    let ledger = load_fixture("sustained-improvement.jsonl");
+    let cubes = vec![trend_test_cube()];
+
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&ledger));
+
+    let trend_narratives: Vec<_> = narratives
+        .iter()
+        .filter(|n| n.template_id == "improvement_trend")
+        .collect();
+    assert!(
+        !trend_narratives.is_empty(),
+        "improvement_trend should fire with 2-month momentum streak; got {:?}",
+        narratives
+            .iter()
+            .map(|n| &n.template_id)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_first_occurrence_fires_when_no_history() {
+    let templates = load_templates();
+    // Empty ledger = no history. But we need the cube to have device
+    // underperformance conditions for `new_issue_first_occurrence` to fire.
+    // This template requires: ledger_has('device_underperformance', 1) == 0
+    // AND any_where(CTR < campaign_avg.CTR * 0.25, Device)
+    // We need a Device-dimensioned cube for this.
+    let cube = CubeData {
+        table_name: "Monthly Performance".into(),
+        subproduct: "Targeted Display".into(),
+        source_file: "test.csv".into(),
+        dimension_name: Some("Device".into()),
+        values: BTreeMap::from([
+            (
+                "CTR".into(),
+                vec![
+                    CellEntry {
+                        category: "Desktop".into(),
+                        value: 3.2,
+                    },
+                    CellEntry {
+                        category: "Mobile".into(),
+                        value: 0.4, // < 3.2 * 0.25 = 0.8 → underperforming
+                    },
+                    CellEntry {
+                        category: "Tablet".into(),
+                        value: 2.8,
+                    },
+                ],
+            ),
+            (
+                "Impressions".into(),
+                vec![
+                    CellEntry {
+                        category: "Desktop".into(),
+                        value: 30000.0,
+                    },
+                    CellEntry {
+                        category: "Mobile".into(),
+                        value: 15000.0,
+                    },
+                    CellEntry {
+                        category: "Tablet".into(),
+                        value: 5000.0,
+                    },
+                ],
+            ),
+        ]),
+    };
+
+    // Empty ledger: no prior device_underperformance entries.
+    let empty_ledger: Vec<mc_narrative::LedgerEntry> = Vec::new();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], Some(&empty_ledger));
+
+    let trend_narratives: Vec<_> = narratives
+        .iter()
+        .filter(|n| n.template_id == "new_issue_first_occurrence")
+        .collect();
+    assert!(
+        !trend_narratives.is_empty(),
+        "new_issue_first_occurrence should fire when no prior history and device underperforms; got {:?}",
+        narratives.iter().map(|n| &n.template_id).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_no_trends_fire_with_empty_ledger() {
+    let templates = load_templates();
+    let empty_ledger: Vec<mc_narrative::LedgerEntry> = Vec::new();
+    let cubes = vec![trend_test_cube()];
+
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&empty_ledger));
+
+    // The trend templates that use ledger_streak >= N should NOT fire.
+    let trend_ids = [
+        "persistent_decline",
+        "recurring_warning",
+        "conversion_alarm_persistent",
+        "improvement_trend",
+    ];
+    let trend_fired: Vec<_> = narratives
+        .iter()
+        .filter(|n| trend_ids.contains(&n.template_id.as_str()))
+        .collect();
+    assert!(
+        trend_fired.is_empty(),
+        "no trend templates should fire with empty ledger; but got: {:?}",
+        trend_fired
+            .iter()
+            .map(|n| &n.template_id)
+            .collect::<Vec<_>>()
+    );
+}
