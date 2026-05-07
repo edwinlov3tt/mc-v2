@@ -780,6 +780,121 @@ fn test_log_saturation_clamps_negative_to_zero() {
 }
 
 #[test]
+fn test_adstock_rate_one_full_carryover() {
+    // Audit K.3 — rate = 1.0 means rate^k = 1 for all k, so adstock
+    // becomes the cumulative sum of feature values across the
+    // max_lookback window. With feature = 100 at all 4 periods and
+    // max_lookback = 3, P4 = 100 + 100 + 100 + 100 = 400.
+    let yaml = build_single_feature_adstock_cube(
+        r#"    transforms:
+      adstock:
+        - { feature: "tv_spend", rate: 1.0, max_lookback: 3 }
+"#,
+    );
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    for t in ["P1", "P2", "P3", "P4"] {
+        write_f64(&mut cube, &compiled.refs, p, &spend_coord(t), 100.0);
+    }
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P4"));
+    assert_f64_eq(
+        val,
+        400.0,
+        "rate=1.0 → cumulative sum across max_lookback window",
+    );
+}
+
+#[test]
+fn test_full_pipeline_all_five_transforms_active() {
+    // Audit K.1 — exercise the full Decision 7 binding pipeline with
+    // ALL 5 transforms active at once: adstock + Hill saturation +
+    // standardization + logistic link + output_bound. This is the
+    // shape a non-trivial MMM with bounded probability output uses.
+    //
+    // Spend = 5000 at all 4 periods; rate = 0.5, max_lookback = 3.
+    //   adstocked[P4] = 5000 * (1 + 0.5 + 0.25 + 0.125) = 9375
+    //   hill(9375, 2, 9375) = 0.5 (half-saturation point by construction)
+    //   standardize(0.5, mean=0.5, std=1) = 0
+    //   linear = intercept(2.0) + 100 * 0 = 2.0
+    //   logistic = 1 / (1 + exp(-2.0)) ≈ 0.8807970779778823
+    //   output_bound max=0.85 → clipped to 0.85
+    let yaml = r#"
+model_format_version: 1
+metadata:
+  name: "AllFivePipeline"
+  description: "test"
+  author: "test"
+  created: "2026-05-06"
+dimensions:
+  - name: "Scenario"
+    kind: "Scenario"
+    elements:
+      - { name: "Base", scenario_meta: "Default" }
+  - name: "Version"
+    kind: "Version"
+    elements:
+      - { name: "Working", version_state: "Draft" }
+  - name: "Time"
+    kind: "Time"
+    elements:
+      - { name: "P1" }
+      - { name: "P2" }
+      - { name: "P3" }
+      - { name: "P4" }
+  - name: "Channel"
+    kind: "Standard"
+    elements:
+      - { name: "Web" }
+  - name: "Market"
+    kind: "Standard"
+    elements:
+      - { name: "US" }
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+measures:
+  - { name: "tv_spend", role: "Input",   data_type: "F64", aggregation: "Sum" }
+  - { name: "Result",  role: "Derived", data_type: "F64", aggregation: "Sum" }
+fitted_models:
+  - name: "model"
+    method: "logistic"
+    intercept: 2.0
+    coefficients:
+      - { feature: "tv_spend", weight: 100.0 }
+    standardization:
+      method: "zscore"
+      params:
+        - { feature: "tv_spend", mean: 0.5, std: 1.0 }
+    output_bound:
+      max: 0.85
+    transforms:
+      adstock:
+        - { feature: "tv_spend", rate: 0.5, max_lookback: 3 }
+      saturation:
+        - { type: "hill", feature: "tv_spend", alpha: 2.0, gamma: 9375.0 }
+rules:
+  - name: "rule_result"
+    target_measure: "Result"
+    scope: "AllLeaves"
+    body: "predict(\"model\", tv_spend)"
+    declared_dependencies: ["tv_spend"]
+"#;
+    let compiled = build_test_cube(yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    for t in ["P1", "P2", "P3", "P4"] {
+        write_f64(&mut cube, &compiled.refs, p, &spend_coord(t), 5000.0);
+    }
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P4"));
+    assert_f64_eq(
+        val,
+        0.85,
+        "all 5 transforms active: logistic(2.0) ≈ 0.881 → output_bound clips to 0.85",
+    );
+}
+
+#[test]
 fn test_full_pipeline_adstock_then_saturation() {
     // Decision 7 — adstock applies first, then saturation. With four
     // periods of spend = 1000, rate = 0.5, max_lookback = 3, the

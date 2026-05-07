@@ -149,6 +149,8 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 28 filtered out
 ### Per-cluster commit log
 ```
 $ git log 92c2a96..HEAD --oneline
+6fb50aa fix(3H.2): demote SaturationSpec::feature_name to pub(crate)   [audit fix]
+ba00840 docs: phase 3H.2 completion report
 5335182 test(3H.2): tide-MMM-shaped pipeline + email-matchback re-survey
 e660a64 test(3H.2): hill + log saturation + integrated pipeline regressions
 bd5614d feat(3H.2): adstock backward-scan + saturation eval (integrated pipeline)
@@ -156,7 +158,7 @@ bd5614d feat(3H.2): adstock backward-scan + saturation eval (integrated pipeline
 133305c feat(3H.2): transforms schema + compile + types
 ```
 
-5 commits on the branch, per-cluster. The handoff's suggested 5-commit shape was a guideline; cluster Eval (steps 3+4) bundled adstock + saturation eval into the same eval-site commit because they share the PredictModel arm in `cube.rs::resolve_cross_coord_read` and had to ship atomically to avoid a mid-cluster broken state. Step 4's regression tests landed in their own commit so the per-step test density is still attributable.
+7 commits on the branch (5 implementation + 1 docs + 1 audit-fix), per-cluster. The handoff's suggested 5-commit shape was a guideline; cluster Eval (steps 3+4) bundled adstock + saturation eval into the same eval-site commit because they share the PredictModel arm in `cube.rs::resolve_cross_coord_read` and had to ship atomically to avoid a mid-cluster broken state. Step 4's regression tests landed in their own commit so the per-step test density is still attributable. The audit-fix commit (`6fb50aa`) demoted `SaturationSpec::feature_name` from `pub fn` to `pub(crate) fn` after the post-implementation Section C self-audit caught a Hard Rule 7 deviation.
 
 ### Locked-surfaces grep
 ```
@@ -184,7 +186,7 @@ MC2077: 5
 
 All occurrences are intentional (emitter strings + catalogue entries + the new `transforms` schema doc-comments referencing them). No prior-phase emitter accidentally produces a 207x code.
 
-### New public mc-core types (the 4 transform-related types as fields on FittedModelData)
+### New public mc-core types (transform-related types as fields on FittedModelData)
 ```
 $ git diff 92c2a96 -- crates/mc-core/src/lib.rs
 +    AdstockSpec, CalibrationMapData, Cube, CubeBuilder, FittedModelData, OutputBound,
@@ -195,7 +197,16 @@ $ git diff 92c2a96 -- crates/mc-core/src/lib.rs
 3 new public types added: `Transforms` (struct), `AdstockSpec` (struct), `SaturationSpec` (enum with `Hill` and `Log` variants — the variants count as the "fourth" type from the handoff's perspective; `SaturationType` was unified into the enum's tag). **Zero new public functions in mc-core.** Helper functions (`apply_adstock` private method on `Cube`, `apply_hill_saturation` and `apply_log_saturation` free `pub(crate)` fns) are not exposed.
 
 ### Cross-coord dep-graph debt note (Amendment §11 confirmation)
-The eval site's doc comment at `crates/mc-core/src/cube.rs:1577` (the `apply_adstock` helper) explicitly references **ADR-0018 Decision 8 + Amendment §11**, names the cumulative tracking obligation ("the fourth+ ADR to inherit this debt"), and points at `docs/research-notes/cross-coord-dep-graph.md` for the architectural questions. The fix-it phase is targeted "within the next 2 phase cycles after 3H.2" per the Amendment.
+The eval site's doc comment at `crates/mc-core/src/cube.rs::Cube::apply_adstock` explicitly references **ADR-0018 Decision 8 + Amendment §11**, names the cumulative tracking obligation ("the fourth+ ADR to inherit this debt"), and points at `docs/research-notes/cross-coord-dep-graph.md` for the architectural questions. The fix-it phase is targeted "within the next 2 phase cycles after 3H.2" per the Amendment.
+
+### Decision 3 (Null-as-zero) documentation verification
+Per the handoff's Hard Rule 8 binding requirement: the `apply_adstock` doc comment surfaces Decision 3 LOUDLY. The doc comment includes:
+- A dedicated "Decision 3 — load-bearing exception (Mosaic Null discipline)" section with multi-line emphasis.
+- The phrase "the **ONLY** exception to Mosaic's Null-propagation discipline shipped in Phase 3" so future readers cannot miss it.
+- The MMM-convention rationale ("Null cell at a prior period semantically means 'no campaign / no spend that period,' which contributes 0 to adstock").
+- An explicit "Future readers: this is not a bug" line.
+
+A junior developer scanning the function definition will see the Decision 3 section within the first 15 lines of doc comment, before any implementation detail.
 
 ---
 
@@ -214,7 +225,14 @@ None of these are adstock or saturation. The "carry-forward" is forecast-period 
 
 **Finding 3 — ADR-0018 Decision 1's "M-14 Python residual closure" is aspirational.** The ~80 lines of Python adstock+saturation pre-processing called out as the closure target do not exist in the current email-matchback codebase. Phase 3H.2 ships the CAPABILITY for native geometric adstock + Hill/Log saturation; the Tide MMM's hypothetical rewrite onto 3H.2 is cartridge-side work, not phase-side.
 
-**Finding 4 — the new capability is correctly modelled by the integration test.** The `test_tide_mmm_adstock_saturation_pipeline` regression demonstrates the end-to-end pipeline (adstock → saturation → standardization → coefficient → sum + intercept → link → output_bound) on a Tide-MMM-shaped fixture. A future cartridge author rewriting the Tide MMM on top of 3H.2 would replace the `lag()` + `rolling_avg()` derived measures with a single `transforms:` block, refit the model, and gain a more compact YAML with the adstock + saturation parameters surfaced as data rather than as Mosaic rules.
+**Finding 4 — the new capability is correctly modelled by the integration test.** The `test_tide_mmm_adstock_saturation_pipeline` regression demonstrates the end-to-end pipeline (adstock → saturation → standardization → coefficient → sum + intercept → link → output_bound) on a Tide-MMM-shaped FIXTURE — a representative cube + transforms block authored INSIDE the test, not against the live Tide MMM YAML at `~/Projects/email-matchback/models/tide-mmm.yaml`. The test documents what's POSSIBLE with 3H.2's transforms; the live cartridge was not modified (a real cartridge migration would require email-matchback team buy-in).
+
+**Finding 5 — explicit framing of the M-14 closure status.**
+
+- **3H.2 ENABLES the M-14 capability for general MMM authors.** Any future fitted-model author can declare native geometric adstock + Hill/Log saturation in their YAML's `transforms:` block and skip Python pre-processing for those transforms.
+- **The existing Tide MMM cartridge has NOT been migrated to use it.** Migration is cartridge-side work, not Mosaic-side work; whether it happens depends on the email-matchback team's choice to refit the model with the geometric-adstock + Hill/Log architecture (a different fitting regime from the current `lag(AdSpend, 1)` + `rolling_avg(AdSpend, 3)` setup).
+- **No claim of "M-14 closed for the Tide MMM" is made.** What's accurate: "M-14 capability shipped; available to any MMM that adopts it."
+- **Future-work follow-up:** the PM may want to file a tracker note in MASTER_PHASE_PLAN.md or a research-note (e.g. "M-14 closure is enabled but not migrated for existing cartridges"). Not blocking 3H.2 merge; just useful context for whoever decides whether the Tide MMM rewrite is worth doing.
 
 ---
 
