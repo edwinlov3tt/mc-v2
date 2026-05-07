@@ -5,6 +5,7 @@
 //! CSV against the registry, and returns detection results.
 
 use crate::ingest::IdGen;
+use crate::narrative::TemplateDefinition;
 use crate::registry::{DetectionResult, Registry};
 use crate::timing::PipelineTimer;
 use crate::workspace::{self, TacticGroup, WorkspaceSummary};
@@ -14,6 +15,7 @@ use std::io::Cursor;
 /// Shared application state passed to handlers.
 pub struct AppState {
     pub registry: Registry,
+    pub templates: Vec<TemplateDefinition>,
 }
 
 /// Response from POST /api/upload.
@@ -202,7 +204,11 @@ pub fn count_unique_tactics(detections: &[DetectionResult]) -> usize {
 }
 
 /// Process a full upload: extract zip → detect → build response.
-pub fn process_upload(registry: &Registry, bytes: &[u8]) -> Result<UploadResponse, String> {
+pub fn process_upload(
+    registry: &Registry,
+    templates: &[TemplateDefinition],
+    bytes: &[u8],
+) -> Result<UploadResponse, String> {
     let mut timer = PipelineTimer::start();
 
     // Extract zip in memory (Decision 11 optimization #1)
@@ -215,7 +221,7 @@ pub fn process_upload(registry: &Registry, bytes: &[u8]) -> Result<UploadRespons
     // Build tactic groups: route CSVs by product/subproduct, ingest
     // cubes, evaluate per-tactic narratives (Session 4).
     let mut ids = IdGen::new();
-    let tactics = workspace::build_tactic_groups(&csvs, &detections, &mut ids);
+    let tactics = workspace::build_tactic_groups(&csvs, &detections, &mut ids, templates);
     timer.mark_compile_done();
 
     // Populate is part of ingest (same step for the demo).

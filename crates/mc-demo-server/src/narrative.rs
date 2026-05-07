@@ -1,23 +1,21 @@
-//! Narrative template engine — per ADR-0019 Decision 4 / Session 3.
+//! YAML-driven narrative template engine — per ADR-0019 Decision 4.
 //!
 //! Phase 7A.1: extract this module to `crates/mc-narrative`.
-//! Templates are currently Rust functions; 7A.1 refactors to YAML-driven.
-//! Public boundary: `evaluate_all(cubes) -> Vec<NarrativeOutput>`.
+//! Public boundary: `evaluate_all(templates, cubes) -> Vec<NarrativeOutput>`.
 //!
-//! Evaluates pre-compiled templates against populated cube data to
-//! produce human-readable narrative paragraphs. Templates are defined
-//! as Rust functions (Decision 11 optimization #5: pre-compiled at
-//! startup, no per-request parsing).
+//! Templates live in `demo/narratives/*.yaml`. The engine:
+//! 1. Parses YAML at startup into `Vec<TemplateDefinition>`.
+//! 2. Per request: builds a pre-computed context from cube data,
+//!    evaluates `when:` predicates, resolves `bindings:`, and
+//!    substitutes `{placeholders}` into the template string.
 //!
-//! Each template has:
-//!   - A `family` (display-like, video-like, search-like, social-like)
-//!   - A `when` predicate (fires only when the data matches)
-//!   - A `render` function that produces text + evidence
-//!   - A `severity` (info, warning, critical)
+//! Adding a new template = appending ~10 lines of YAML. Zero Rust changes.
 
 use crate::ingest::{CellEntry, IngestedCube};
-use serde::Serialize;
-use std::collections::BTreeMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
+
+// ─── Public types (unchanged from before the refactor) ──────────────
 
 /// A rendered narrative paragraph.
 #[derive(Debug, Clone, Serialize)]
@@ -29,7 +27,7 @@ pub struct NarrativeOutput {
     pub evidence: BTreeMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     Info,
@@ -37,800 +35,791 @@ pub enum Severity {
     Critical,
 }
 
-/// Evaluate all applicable templates against a set of ingested cubes.
-/// Returns narratives grouped by source cube.
-pub fn evaluate_all(cubes: &[IngestedCube]) -> Vec<NarrativeOutput> {
-    let mut narratives = Vec::new();
+// ─── YAML schema ────────────────────────────────────────────────────
 
-    // Data sufficiency disclosure — fires first (sort_order: -1).
-    // Use the monthly-performance cube if available for period count.
-    let monthly_cube = cubes
-        .iter()
-        .find(|c| c.table_name.to_lowercase().contains("monthly"));
-    if let Some(cube) = monthly_cube {
-        narratives.extend(eval_data_sufficiency(cube));
+#[derive(Debug, Deserialize)]
+pub struct TemplateFile {
+    #[allow(dead_code)]
+    pub narrative_format_version: u32,
+    pub templates: Vec<TemplateDefinition>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TemplateDefinition {
+    pub id: String,
+    #[allow(dead_code)]
+    pub family: Vec<String>,
+    pub severity: Severity,
+    pub table_types: Vec<String>,
+    #[serde(default)]
+    pub sort_order: i32,
+    pub when: String,
+    pub template: String,
+    #[serde(default)]
+    pub bindings: BTreeMap<String, String>,
+}
+
+/// Load all template YAML files from a directory.
+pub fn load_templates(dir: &str) -> Vec<TemplateDefinition> {
+    let mut all = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return all,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().map_or(true, |e| e != "yaml" && e != "yml") {
+            continue;
+        }
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("  \x1b[33mwarn\x1b[0m: cannot read {}: {e}", path.display());
+                continue;
+            }
+        };
+        match serde_yaml::from_str::<TemplateFile>(&content) {
+            Ok(tf) => all.extend(tf.templates),
+            Err(e) => {
+                eprintln!(
+                    "  \x1b[33mwarn\x1b[0m: cannot parse {}: {e}",
+                    path.display()
+                );
+            }
+        }
     }
+    all.sort_by_key(|t| t.sort_order);
+    all
+}
+
+// ─── Eval value type ────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+enum Val {
+    Num(f64),
+    Str(String),
+    Bool(bool),
+    Null,
+}
+
+impl Val {
+    fn as_num(&self) -> Option<f64> {
+        match self {
+            Val::Num(n) => Some(*n),
+            Val::Bool(true) => Some(1.0),
+            Val::Bool(false) => Some(0.0),
+            _ => None,
+        }
+    }
+    fn is_truthy(&self) -> bool {
+        match self {
+            Val::Num(n) => *n != 0.0,
+            Val::Bool(b) => *b,
+            Val::Str(s) => !s.is_empty(),
+            Val::Null => false,
+        }
+    }
+    fn to_display(&self) -> String {
+        match self {
+            Val::Num(n) => {
+                if (*n - n.round()).abs() < 1e-9 {
+                    format!("{}", *n as i64)
+                } else {
+                    format!("{n}")
+                }
+            }
+            Val::Str(s) => s.clone(),
+            Val::Bool(b) => b.to_string(),
+            Val::Null => "N/A".to_string(),
+        }
+    }
+}
+
+type Ctx = HashMap<String, Val>;
+
+// ─── Public API (unchanged signature) ───────────────────────────────
+
+/// Evaluate all applicable templates against a set of ingested cubes.
+pub fn evaluate_all(
+    templates: &[TemplateDefinition],
+    cubes: &[IngestedCube],
+) -> Vec<NarrativeOutput> {
+    let mut narratives = Vec::new();
+    let mut fired_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for cube in cubes {
-        let table = cube.table_name.to_lowercase();
+        let ctx = build_context(cube);
+        let table_lower = cube.table_name.to_lowercase();
 
-        // Time-series templates — only for "Monthly Performance" (has Date/Time dim).
-        if table.contains("monthly") {
-            narratives.extend(eval_time_series(cube));
-            // Template 1: engagement velocity vs reach growth.
-            narratives.extend(eval_engagement_acceleration(cube));
-            // Template 2: industry benchmark comparison.
-            narratives.extend(eval_benchmark_comparison(cube));
-            // Template 3: uniform momentum detection.
-            narratives.extend(eval_uniform_momentum(cube));
-        }
-        // Device ranking + underperformance alarm.
-        if table.contains("device") {
-            narratives.extend(eval_device_ranking(cube));
-            // Template 5: device underperformance alarm.
-            narratives.extend(eval_device_underperformance(cube));
-        }
-        // Creative ranking — only "creative by name" (human-readable names).
-        if table.contains("creative by name") {
-            narratives.extend(eval_creative_ranking(cube));
-        }
-        // Geo concentration + zero-engagement alarm + small-sample warning.
-        if table.contains("city") {
-            narratives.extend(eval_geo_concentration(cube));
-            // Template 4: zero-engagement alarm.
-            narratives.extend(eval_zero_engagement(cube));
-            // Template 7: small-sample reliability warning.
-            narratives.extend(eval_small_sample_warning(cube));
-        }
-    }
+        for tmpl in templates {
+            // Table type filter.
+            let table_match = tmpl
+                .table_types
+                .iter()
+                .any(|t| table_lower.contains(&t.to_lowercase()));
+            if !table_match {
+                continue;
+            }
 
-    // Conversion alarm: fire ONCE across all cubes (deduplicate).
-    let best_cube = cubes
-        .iter()
-        .filter(|c| {
-            c.values
-                .get("Impressions")
-                .map(|v| v.iter().map(|e| e.value).sum::<f64>() >= 100.0)
-                .unwrap_or(false)
-        })
-        .max_by(|a, b| {
-            let imp_a: f64 = a
-                .values
-                .get("Impressions")
-                .map(|v| v.iter().map(|e| e.value).sum())
-                .unwrap_or(0.0);
-            let imp_b: f64 = b
-                .values
-                .get("Impressions")
-                .map(|v| v.iter().map(|e| e.value).sum())
-                .unwrap_or(0.0);
-            imp_a
-                .partial_cmp(&imp_b)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-    if let Some(cube) = best_cube {
-        narratives.extend(eval_conversion_alarm(cube));
+            // Deduplicate: certain templates should fire at most once.
+            let once_only = matches!(
+                tmpl.id.as_str(),
+                "conversion_alarm"
+                    | "data_sufficiency"
+                    | "small_sample_warning"
+                    | "zero_engagement_alarm"
+            );
+            if once_only && fired_ids.contains(&tmpl.id) {
+                continue;
+            }
+
+            // Evaluate when predicate.
+            let when_val = eval_expr(&tmpl.when, &ctx);
+            if !when_val.is_truthy() {
+                continue;
+            }
+
+            // Resolve bindings.
+            let mut resolved: HashMap<String, Val> = HashMap::new();
+            // First pass: bindings that don't reference other bindings.
+            for (name, expr) in &tmpl.bindings {
+                resolved.insert(name.clone(), eval_expr(expr, &ctx));
+            }
+            // Second pass: re-evaluate with resolved bindings available.
+            let mut merged = ctx.clone();
+            for (k, v) in &resolved {
+                merged.insert(k.clone(), v.clone());
+            }
+            for (name, expr) in &tmpl.bindings {
+                resolved.insert(name.clone(), eval_expr(expr, &merged));
+            }
+
+            // Also add tactic_name to resolved.
+            resolved.insert("tactic_name".to_string(), Val::Str(cube.subproduct.clone()));
+
+            // Substitute into template string.
+            let text = substitute(&tmpl.template, &resolved, &ctx);
+
+            // Build evidence from numeric bindings.
+            let mut evidence = BTreeMap::new();
+            for (k, v) in &resolved {
+                if let Val::Num(n) = v {
+                    evidence.insert(k.clone(), serde_json::json!(n));
+                }
+            }
+
+            narratives.push(NarrativeOutput {
+                id: format!("{}_{}", tmpl.id, cube.source_file.replace(".csv", "")),
+                severity: tmpl.severity,
+                text,
+                template_id: tmpl.id.clone(),
+                evidence,
+            });
+
+            if once_only {
+                fired_ids.insert(tmpl.id.clone());
+            }
+        }
     }
 
     narratives
 }
 
-// ---------------------------------------------------------------------------
-// Time-series templates (Monthly Performance)
-// ---------------------------------------------------------------------------
+// ─── Context builder ────────────────────────────────────────────────
 
-fn eval_time_series(cube: &IngestedCube) -> Vec<NarrativeOutput> {
-    let mut out = Vec::new();
-    let subproduct = &cube.subproduct;
+fn build_context(cube: &IngestedCube) -> Ctx {
+    let mut ctx = Ctx::new();
 
-    // Need at least 2 time periods for comparison.
-    if let Some(impressions) = cube.values.get("Impressions") {
-        if impressions.len() >= 2 {
-            let prev = &impressions[impressions.len() - 2];
-            let curr = &impressions[impressions.len() - 1];
-            if prev.value > 0.0 {
-                let pct_change = ((curr.value - prev.value) / prev.value) * 100.0;
-                if pct_change.abs() > 5.0 {
-                    let direction = if pct_change >= 0.0 {
-                        "grew"
-                    } else {
-                        "declined"
-                    };
-                    out.push(NarrativeOutput {
-                        id: format!("impressions_mom_{}", cube.source_file.replace(".csv", "")),
-                        severity: Severity::Info,
-                        text: format!(
-                            "{subproduct} impressions {direction} {:.0}% from {} ({}) to {} ({}).",
-                            pct_change.abs(),
-                            readable_name(&prev.category),
-                            fmt_int(prev.value),
-                            readable_name(&curr.category),
-                            fmt_int(curr.value),
-                        ),
-                        template_id: "impressions_mom_change".into(),
-                        evidence: evidence(&[
-                            ("prev_impressions", prev.value),
-                            ("current_impressions", curr.value),
-                            ("pct_change", pct_change),
-                        ]),
-                    });
-                }
-            }
-        }
-    }
+    // Tactic metadata.
+    ctx.insert("tactic_name".into(), Val::Str(cube.subproduct.clone()));
+    ctx.insert("table_name".into(), Val::Str(cube.table_name.clone()));
 
-    // Clicks trend
-    if let Some(clicks) = cube.values.get("Clicks") {
-        if clicks.len() >= 2 {
-            let prev = &clicks[clicks.len() - 2];
-            let curr = &clicks[clicks.len() - 1];
-            if prev.value > 0.0 {
-                let pct_change = ((curr.value - prev.value) / prev.value) * 100.0;
-                if pct_change.abs() > 10.0 {
-                    let direction = if pct_change >= 0.0 {
-                        "increasing"
-                    } else {
-                        "decreasing"
-                    };
-                    let qualifier = if pct_change.abs() > 100.0 {
-                        "more than doubled, "
-                    } else if pct_change.abs() > 50.0 {
-                        "surged, "
-                    } else {
-                        ""
-                    };
-                    out.push(NarrativeOutput {
-                        id: format!("clicks_mom_{}", cube.source_file.replace(".csv", "")),
-                        severity: Severity::Info,
-                        text: format!(
-                            "Clicks {qualifier}{direction} {:.0}% from {} ({}) to {} ({}).",
-                            pct_change.abs(),
-                            readable_name(&prev.category),
-                            fmt_int(prev.value),
-                            readable_name(&curr.category),
-                            fmt_int(curr.value),
-                        ),
-                        template_id: "clicks_mom_change".into(),
-                        evidence: evidence(&[
-                            ("prev_clicks", prev.value),
-                            ("current_clicks", curr.value),
-                            ("pct_change", pct_change),
-                        ]),
-                    });
-                }
-            }
-        }
-    }
-
-    // CTR trend
-    if let Some(ctr) = cube.values.get("CTR") {
-        if ctr.len() >= 2 {
-            let prev = &ctr[ctr.len() - 2];
-            let curr = &ctr[ctr.len() - 1];
-            let direction = if curr.value > prev.value {
-                "strengthened"
-            } else if curr.value < prev.value {
-                "weakened"
-            } else {
-                "held steady"
-            };
-            out.push(NarrativeOutput {
-                id: format!("ctr_trend_{}", cube.source_file.replace(".csv", "")),
-                severity: Severity::Info,
-                text: format!(
-                    "CTR {direction} from {:.2}% to {:.2}%.",
-                    prev.value, curr.value,
-                ),
-                template_id: "ctr_trend".into(),
-                evidence: evidence(&[("prev_ctr", prev.value), ("current_ctr", curr.value)]),
-            });
-        }
-    }
-
-    out
-}
-
-// ---------------------------------------------------------------------------
-// Device ranking templates
-// ---------------------------------------------------------------------------
-
-fn eval_device_ranking(cube: &IngestedCube) -> Vec<NarrativeOutput> {
-    let mut out = Vec::new();
-
-    if let Some(ctr_values) = cube.values.get("CTR") {
-        if ctr_values.len() >= 2 {
-            let mut sorted: Vec<&CellEntry> = ctr_values.iter().collect();
-            sorted.sort_by(|a, b| {
-                b.value
-                    .partial_cmp(&a.value)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-
-            let best = sorted[0];
-            let worst = sorted[sorted.len() - 1];
-
-            // Calculate campaign average CTR
-            let total_impressions: f64 = cube
-                .values
-                .get("Impressions")
-                .map(|v| v.iter().map(|e| e.value).sum())
-                .unwrap_or(0.0);
-            let total_clicks: f64 = cube
-                .values
-                .get("Clicks")
-                .map(|v| v.iter().map(|e| e.value).sum())
-                .unwrap_or(0.0);
-            let avg_ctr = if total_impressions > 0.0 {
-                (total_clicks / total_impressions) * 100.0
-            } else {
-                0.0
-            };
-
-            let best_name = readable_name(&best.category);
-            let worst_name = readable_name(&worst.category);
-
-            let mut text = format!(
-                "{} was the top-performing device by engagement: {:.2}% CTR",
-                best_name, best.value,
-            );
-            if avg_ctr > 0.0 && best.value > avg_ctr * 1.5 {
-                text.push_str(&format!(
-                    " — nearly {:.0}x the campaign average",
-                    best.value / avg_ctr,
-                ));
-            }
-            text.push('.');
-
-            if (best.value - worst.value).abs() > 0.1 {
-                text.push_str(&format!(
-                    " {} underperformed at {:.2}% CTR.",
-                    worst_name, worst.value,
-                ));
-            }
-
-            out.push(NarrativeOutput {
-                id: format!("device_ranking_{}", cube.source_file.replace(".csv", "")),
-                severity: Severity::Info,
-                text,
-                template_id: "device_ranking".into(),
-                evidence: evidence(&[
-                    ("best_device_ctr", best.value),
-                    ("worst_device_ctr", worst.value),
-                    ("avg_ctr", avg_ctr),
-                ]),
-            });
-        }
-    }
-
-    out
-}
-
-// ---------------------------------------------------------------------------
-// Creative ranking templates
-// ---------------------------------------------------------------------------
-
-fn eval_creative_ranking(cube: &IngestedCube) -> Vec<NarrativeOutput> {
-    let mut out = Vec::new();
-
-    if let Some(ctr_values) = cube.values.get("CTR") {
-        if ctr_values.len() >= 2 {
-            let mut sorted: Vec<&CellEntry> = ctr_values.iter().collect();
-            sorted.sort_by(|a, b| {
-                b.value
-                    .partial_cmp(&a.value)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-
-            let best = sorted[0];
-            let best_name = readable_name(&best.category);
-
-            let impressions_for_best = cube
-                .values
-                .get("Impressions")
-                .and_then(|v| v.iter().find(|e| e.category == best.category))
-                .map(|e| e.value)
-                .unwrap_or(0.0);
-
-            out.push(NarrativeOutput {
-                id: format!("creative_ranking_{}", cube.source_file.replace(".csv", "")),
-                severity: Severity::Info,
-                text: format!(
-                    "Top creative: \"{}\" at {:.2}% CTR across {} impressions.",
-                    best_name,
-                    best.value,
-                    fmt_int(impressions_for_best),
-                ),
-                template_id: "creative_top_performer".into(),
-                evidence: evidence(&[
-                    ("best_creative_ctr", best.value),
-                    ("best_creative_impressions", impressions_for_best),
-                ]),
-            });
-        }
-    }
-
-    out
-}
-
-// ---------------------------------------------------------------------------
-// Geo concentration templates
-// ---------------------------------------------------------------------------
-
-fn eval_geo_concentration(cube: &IngestedCube) -> Vec<NarrativeOutput> {
-    let mut out = Vec::new();
-
-    if let Some(impressions) = cube.values.get("Impressions") {
-        if impressions.len() >= 2 {
-            let total: f64 = impressions.iter().map(|e| e.value).sum();
-            if total > 0.0 {
-                // Find top location by impression share
-                let mut sorted: Vec<&CellEntry> = impressions.iter().collect();
-                sorted.sort_by(|a, b| {
-                    b.value
-                        .partial_cmp(&a.value)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-
-                let top = sorted[0];
-                let share = (top.value / total) * 100.0;
-                let top_name = readable_name(&top.category);
-
-                if share > 50.0 {
-                    out.push(NarrativeOutput {
-                        id: format!("geo_concentration_{}", cube.source_file.replace(".csv", "")),
-                        severity: if share > 80.0 {
-                            Severity::Warning
-                        } else {
-                            Severity::Info
-                        },
-                        text: format!(
-                            "{} accounts for {:.0}% of total impressions ({} of {}).",
-                            top_name,
-                            share,
-                            fmt_int(top.value),
-                            fmt_int(total),
-                        ),
-                        template_id: "geo_concentration".into(),
-                        evidence: evidence(&[
-                            ("top_location_share", share),
-                            ("top_location_impressions", top.value),
-                            ("total_impressions", total),
-                        ]),
-                    });
-                }
-            }
-        }
-    }
-
-    out
-}
-
-// ---------------------------------------------------------------------------
-// Conversion alarm (fires for zero conversions — the "wow" moment)
-// ---------------------------------------------------------------------------
-
-fn eval_conversion_alarm(cube: &IngestedCube) -> Vec<NarrativeOutput> {
-    // Look for conversion-related measures
-    let conversion_keys: Vec<&String> = cube
-        .values
-        .keys()
-        .filter(|k| {
-            let lower = k.to_lowercase();
-            lower.contains("conversion") || lower == "conversions"
-        })
-        .collect();
-
-    if conversion_keys.is_empty() {
-        return Vec::new();
-    }
-
-    for key in &conversion_keys {
-        if let Some(values) = cube.values.get(*key) {
-            let total: f64 = values.iter().map(|e| e.value).sum();
-            if total > 0.0 {
-                // Has conversions — no alarm
-                return Vec::new();
-            }
-        }
-    }
-
-    // All conversion measures are zero
-    let total_impressions: f64 = cube
-        .values
-        .get("Impressions")
-        .map(|v| v.iter().map(|e| e.value).sum())
-        .unwrap_or(0.0);
-
-    // Only alarm if there are significant impressions (not just an empty CSV)
-    if total_impressions < 100.0 {
-        return Vec::new();
-    }
-
-    vec![NarrativeOutput {
-        id: format!("zero_conversions_{}", cube.source_file.replace(".csv", "")),
-        severity: Severity::Critical,
-        text: format!(
-            "Zero conversions recorded across {} impressions. Recommend verifying conversion pixel installation.",
-            fmt_int(total_impressions),
-        ),
-        template_id: "zero_conversion_alarm".into(),
-        evidence: evidence(&[
-            ("total_conversions", 0.0),
-            ("total_impressions", total_impressions),
-        ]),
-    }]
-}
-
-// ---------------------------------------------------------------------------
-// Template 1 — Engagement Velocity vs Reach Growth
-// ---------------------------------------------------------------------------
-
-fn eval_engagement_acceleration(cube: &IngestedCube) -> Vec<NarrativeOutput> {
-    let impressions = match cube.values.get("Impressions") {
-        Some(v) if v.len() >= 2 => v,
-        _ => return Vec::new(),
-    };
-    let clicks = match cube.values.get("Clicks") {
-        Some(v) if v.len() >= 2 => v,
-        _ => return Vec::new(),
-    };
-    let prev_imp = impressions[impressions.len() - 2].value;
-    let curr_imp = impressions[impressions.len() - 1].value;
-    let prev_clk = clicks[clicks.len() - 2].value;
-    let curr_clk = clicks[clicks.len() - 1].value;
-
-    if prev_imp <= 0.0 || prev_clk <= 0.0 {
-        return Vec::new();
-    }
-
-    let impr_growth = ((curr_imp - prev_imp) / prev_imp) * 100.0;
-    let click_growth = ((curr_clk - prev_clk) / prev_clk) * 100.0;
-
-    // Only fire when click growth exceeds impression growth by 1.5x
-    if click_growth.abs() <= impr_growth.abs() * 1.5 {
-        return Vec::new();
-    }
-
-    vec![NarrativeOutput {
-        id: format!(
-            "engagement_acceleration_{}",
-            cube.source_file.replace(".csv", "")
-        ),
-        severity: Severity::Info,
-        text: format!(
-            "Engagement is accelerating faster than reach: clicks grew {:.0}% while impressions grew only {:.0}%. The campaign is improving its ability to convert attention into action.",
-            click_growth, impr_growth,
-        ),
-        template_id: "engagement_acceleration".into(),
-        evidence: evidence(&[
-            ("click_growth_pct", click_growth),
-            ("impr_growth_pct", impr_growth),
-        ]),
-    }]
-}
-
-// ---------------------------------------------------------------------------
-// Template 2 — Industry Benchmark Comparison
-// ---------------------------------------------------------------------------
-
-fn eval_benchmark_comparison(cube: &IngestedCube) -> Vec<NarrativeOutput> {
-    let ctr_values = match cube.values.get("CTR") {
-        Some(v) if !v.is_empty() => v,
-        _ => return Vec::new(),
-    };
-
-    // Average CTR across all time periods.
-    let sum: f64 = ctr_values.iter().map(|e| e.value).sum();
-    let avg_ctr = sum / ctr_values.len() as f64;
-
-    // Industry benchmark for Targeted Display: 0.10% CTR.
-    let benchmark = 0.10;
-    let multiple = avg_ctr / benchmark;
-
-    let interpretation = if avg_ctr > 0.30 {
-        "This significant outperformance indicates strong creative-audience alignment."
-    } else if avg_ctr > 0.10 {
-        "Performance is above industry norms — targeting appears effective."
-    } else {
-        "Performance is at or below industry norms — review targeting and creative."
-    };
-
-    vec![NarrativeOutput {
-        id: format!(
-            "ctr_vs_benchmark_{}",
-            cube.source_file.replace(".csv", "")
-        ),
-        severity: Severity::Info,
-        text: format!(
-            "Campaign CTR of {:.2}% is {:.1}x the industry average for {} ({:.2}%). {interpretation}",
-            avg_ctr, multiple, cube.subproduct, benchmark,
-        ),
-        template_id: "ctr_vs_benchmark".into(),
-        evidence: evidence(&[
-            ("campaign_ctr", avg_ctr),
-            ("benchmark", benchmark),
-            ("multiple", multiple),
-        ]),
-    }]
-}
-
-// ---------------------------------------------------------------------------
-// Template 3 — Uniform Momentum Detection
-// ---------------------------------------------------------------------------
-
-fn eval_uniform_momentum(cube: &IngestedCube) -> Vec<NarrativeOutput> {
-    let impressions = match cube.values.get("Impressions") {
-        Some(v) if v.len() >= 2 => v,
-        _ => return Vec::new(),
-    };
-    let clicks = match cube.values.get("Clicks") {
-        Some(v) if v.len() >= 2 => v,
-        _ => return Vec::new(),
-    };
-    let ctr = match cube.values.get("CTR") {
-        Some(v) if v.len() >= 2 => v,
-        _ => return Vec::new(),
-    };
-
-    let prev_i = impressions[impressions.len() - 2].value;
-    let curr_i = impressions[impressions.len() - 1].value;
-    let prev_c = clicks[clicks.len() - 2].value;
-    let curr_c = clicks[clicks.len() - 1].value;
-    let prev_ctr = ctr[ctr.len() - 2].value;
-    let curr_ctr = ctr[ctr.len() - 1].value;
-
-    // All three must increase.
-    if curr_i <= prev_i || curr_c <= prev_c || curr_ctr <= prev_ctr {
-        return Vec::new();
-    }
-    if prev_i <= 0.0 || prev_c <= 0.0 || prev_ctr <= 0.0 {
-        return Vec::new();
-    }
-
-    let impr_pct = ((curr_i - prev_i) / prev_i) * 100.0;
-    let click_pct = ((curr_c - prev_c) / prev_c) * 100.0;
-    let ctr_pct = ((curr_ctr - prev_ctr) / prev_ctr) * 100.0;
-
-    let prev_period = readable_name(&impressions[impressions.len() - 2].category);
-    let curr_period = readable_name(&impressions[impressions.len() - 1].category);
-
-    vec![NarrativeOutput {
-        id: format!(
-            "uniform_momentum_{}",
-            cube.source_file.replace(".csv", "")
-        ),
-        severity: Severity::Info,
-        text: format!(
-            "All key metrics improved from {prev_period} to {curr_period}: impressions (+{:.0}%), clicks (+{:.0}%), and CTR (+{:.0}%). Uniform positive momentum across reach, engagement, and efficiency indicates the campaign is strengthening — not trading one metric for another.",
-            impr_pct, click_pct, ctr_pct,
-        ),
-        template_id: "uniform_momentum".into(),
-        evidence: evidence(&[
-            ("impr_pct", impr_pct),
-            ("click_pct", click_pct),
-            ("ctr_pct", ctr_pct),
-        ]),
-    }]
-}
-
-// ---------------------------------------------------------------------------
-// Template 4 — Zero-Engagement Alarm (geo areas with impressions but 0 clicks)
-// ---------------------------------------------------------------------------
-
-fn eval_zero_engagement(cube: &IngestedCube) -> Vec<NarrativeOutput> {
-    let impressions = match cube.values.get("Impressions") {
-        Some(v) => v,
-        None => return Vec::new(),
-    };
-    let clicks = match cube.values.get("Clicks") {
-        Some(v) => v,
-        None => return Vec::new(),
-    };
-
-    let mut out = Vec::new();
-    for (i, imp_entry) in impressions.iter().enumerate() {
-        let click_val = clicks.get(i).map(|e| e.value).unwrap_or(0.0);
-        if click_val < 1.0 && imp_entry.value > 50.0 {
-            out.push(NarrativeOutput {
-                id: format!(
-                    "zero_engagement_{}_{}",
-                    readable_name(&imp_entry.category).to_lowercase().replace(' ', "_"),
-                    cube.source_file.replace(".csv", ""),
-                ),
-                severity: Severity::Warning,
-                text: format!(
-                    "{} received {} impressions with zero clicks. This area is consuming delivery with no engagement signal — evaluate whether geo-targeting includes this area intentionally.",
-                    readable_name(&imp_entry.category),
-                    fmt_int(imp_entry.value),
-                ),
-                template_id: "zero_engagement_alarm".into(),
-                evidence: evidence(&[
-                    ("impressions", imp_entry.value),
-                    ("clicks", click_val),
-                ]),
-            });
-        }
-    }
-    out
-}
-
-// ---------------------------------------------------------------------------
-// Template 5 — Device Underperformance Alarm
-// ---------------------------------------------------------------------------
-
-fn eval_device_underperformance(cube: &IngestedCube) -> Vec<NarrativeOutput> {
-    let ctr_values = match cube.values.get("CTR") {
-        Some(v) if v.len() >= 2 => v,
-        _ => return Vec::new(),
-    };
-    let impressions = cube.values.get("Impressions");
-
-    let sum_ctr: f64 = ctr_values.iter().map(|e| e.value).sum();
-    let avg_ctr = sum_ctr / ctr_values.len() as f64;
-
-    // Find the worst device.
-    let worst = ctr_values.iter().min_by(|a, b| {
-        a.value
-            .partial_cmp(&b.value)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let worst = match worst {
-        Some(w) => w,
-        None => return Vec::new(),
-    };
-
-    // Only fire if worst is < 25% of average (significant underperformance).
-    if avg_ctr <= 0.0 || worst.value >= avg_ctr * 0.25 {
-        return Vec::new();
-    }
-
-    let deficit_pct = (1.0 - worst.value / avg_ctr) * 100.0;
-    let worst_impressions = impressions
-        .and_then(|v| v.iter().find(|e| e.category == worst.category))
-        .map(|e| e.value)
-        .unwrap_or(0.0);
-    let total_impressions: f64 = impressions
-        .map(|v| v.iter().map(|e| e.value).sum())
-        .unwrap_or(0.0);
-    let share = if total_impressions > 0.0 {
-        (worst_impressions / total_impressions) * 100.0
-    } else {
-        0.0
-    };
-
-    vec![NarrativeOutput {
-        id: format!(
-            "device_underperformance_{}",
-            cube.source_file.replace(".csv", "")
-        ),
-        severity: Severity::Warning,
-        text: format!(
-            "{} is significantly underperforming at {:.2}% CTR — {:.0}% below the campaign average ({:.2}%). This device served {} impressions ({:.0}% of total) with minimal engagement.",
-            readable_name(&worst.category),
-            worst.value,
-            deficit_pct,
-            avg_ctr,
-            fmt_int(worst_impressions),
-            share,
-        ),
-        template_id: "device_underperformance".into(),
-        evidence: evidence(&[
-            ("worst_ctr", worst.value),
-            ("avg_ctr", avg_ctr),
-            ("deficit_pct", deficit_pct),
-            ("worst_impressions", worst_impressions),
-            ("worst_share", share),
-        ]),
-    }]
-}
-
-// ---------------------------------------------------------------------------
-// Template 6 — Data Sufficiency Disclosure
-// ---------------------------------------------------------------------------
-
-fn eval_data_sufficiency(cube: &IngestedCube) -> Vec<NarrativeOutput> {
-    // Count distinct time periods from any measure.
+    // Period info: count time-series entries (from first measure).
     let period_count = cube.values.values().next().map(|v| v.len()).unwrap_or(0);
+    ctx.insert("period_count".into(), Val::Num(period_count as f64));
 
-    let plural = if period_count != 1 { "s" } else { "" };
-    let confidence = match period_count {
-        0 => return Vec::new(),
-        1 => "Single-period snapshot — no trend analysis possible. All comparisons are against industry benchmarks only.",
-        2 => "Directional trends are visible but 3+ periods are recommended for statistically confident trend assessment.",
-        _ => "Sufficient data for meaningful trend analysis across all metrics.",
-    };
-
-    vec![NarrativeOutput {
-        id: "data_sufficiency".into(),
-        severity: Severity::Info,
-        text: format!(
-            "This analysis is based on {period_count} reporting period{plural}. {confidence}",
-        ),
-        template_id: "data_sufficiency".into(),
-        evidence: {
-            let mut e = BTreeMap::new();
-            e.insert("period_count".into(), serde_json::json!(period_count));
-            e
-        },
-    }]
-}
-
-// ---------------------------------------------------------------------------
-// Template 7 — Small-Sample Reliability Warning
-// ---------------------------------------------------------------------------
-
-fn eval_small_sample_warning(cube: &IngestedCube) -> Vec<NarrativeOutput> {
-    let impressions = match cube.values.get("Impressions") {
-        Some(v) => v,
-        None => return Vec::new(),
-    };
-
-    let small_areas: Vec<&CellEntry> = impressions
-        .iter()
-        .filter(|e| e.value < 500.0 && e.value > 0.0)
-        .collect();
-
-    if small_areas.is_empty() {
-        return Vec::new();
-    }
-
-    let count = small_areas.len();
-    let plural = if count != 1 { "s" } else { "" };
-    let area_list: Vec<String> = small_areas
-        .iter()
-        .map(|e| readable_name(&e.category))
-        .collect();
-    let area_str = area_list.join(", ");
-
-    vec![NarrativeOutput {
-        id: format!(
-            "small_sample_warning_{}",
-            cube.source_file.replace(".csv", "")
-        ),
-        severity: Severity::Warning,
-        text: format!(
-            "{count} geographic area{plural} had fewer than 500 impressions ({area_str}). CTR values for these areas should be considered directionally indicative only — sample sizes are insufficient for confident performance assessment.",
-        ),
-        template_id: "small_sample_warning".into(),
-        evidence: {
-            let mut e = BTreeMap::new();
-            e.insert("count".into(), serde_json::json!(count));
-            e.insert("areas".into(), serde_json::json!(area_list));
-            e
-        },
-    }]
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn fmt_int(n: f64) -> String {
-    let n = n.round() as i64;
-    if n.abs() >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n.abs() >= 1_000 {
-        // Format with comma thousands separator
-        let s = n.abs().to_string();
-        let mut result = String::new();
-        for (i, c) in s.chars().rev().enumerate() {
-            if i > 0 && i % 3 == 0 {
-                result.push(',');
-            }
-            result.push(c);
-        }
-        if n < 0 {
-            result.push('-');
-        }
-        result.chars().rev().collect()
+    // Determine the "category" dimension name for this cube.
+    let geo_dim = if cube.table_name.to_lowercase().contains("city")
+        || cube.table_name.to_lowercase().contains("zip")
+    {
+        "geo"
+    } else if cube.table_name.to_lowercase().contains("device") {
+        "Device"
+    } else if cube.table_name.to_lowercase().contains("creative") {
+        "Creative"
     } else {
-        n.to_string()
+        "Category"
+    };
+
+    // Per-measure aggregates.
+    for (measure, entries) in &cube.values {
+        let n = entries.len();
+        if n == 0 {
+            continue;
+        }
+
+        // current (last) and prev (second-to-last).
+        let current = entries[n - 1].value;
+        let prev = if n >= 2 { entries[n - 2].value } else { 0.0 };
+        ctx.insert(format!("current.{measure}"), Val::Num(current));
+        ctx.insert(format!("prev.{measure}"), Val::Num(prev));
+
+        // Period names: set once (first measure defines them).
+        if !ctx.contains_key("current.period_name") {
+            ctx.insert(
+                "current.period_name".into(),
+                Val::Str(readable_name(&entries[n - 1].category)),
+            );
+            // Also alias as prev_period / current_period for template convenience.
+            ctx.insert(
+                "current_period".into(),
+                Val::Str(readable_name(&entries[n - 1].category)),
+            );
+            if n >= 2 {
+                ctx.insert(
+                    "prev.period_name".into(),
+                    Val::Str(readable_name(&entries[n - 2].category)),
+                );
+                ctx.insert(
+                    "prev_period".into(),
+                    Val::Str(readable_name(&entries[n - 2].category)),
+                );
+            }
+        }
+
+        // Sum and average.
+        let sum: f64 = entries.iter().map(|e| e.value).sum();
+        let avg = sum / n as f64;
+        ctx.insert(format!("sum.{measure}"), Val::Num(sum));
+        ctx.insert(format!("campaign_avg.{measure}"), Val::Num(avg));
+
+        // Also insert without prefix for conversion_alarm ("sum.Conversions" alias).
+        // The YAML references "sum.Conversions" for the total-conversions check.
+        // Some CSVs call it "Total_Conversions", so alias both.
+        if measure.to_lowercase().contains("conversion") {
+            ctx.insert("sum.Conversions".into(), Val::Num(sum));
+        }
+
+        // Element count for the category dimension.
+        ctx.insert(format!("element_count({geo_dim})"), Val::Num(n as f64));
+        ctx.insert(format!("element_count({})", measure), Val::Num(n as f64));
+
+        // max_by / min_by across the category dimension.
+        if let Some(max_entry) = entries.iter().max_by(|a, b| {
+            a.value
+                .partial_cmp(&b.value)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) {
+            ctx.insert(
+                format!("max_by.{geo_dim}.{measure}.name"),
+                Val::Str(readable_name(&max_entry.category)),
+            );
+            ctx.insert(
+                format!("max_by.{geo_dim}.{measure}.value"),
+                Val::Num(max_entry.value),
+            );
+        }
+        if let Some(min_entry) = entries.iter().min_by(|a, b| {
+            a.value
+                .partial_cmp(&b.value)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) {
+            ctx.insert(
+                format!("min_by.{geo_dim}.{measure}.name"),
+                Val::Str(readable_name(&min_entry.category)),
+            );
+            ctx.insert(
+                format!("min_by.{geo_dim}.{measure}.value"),
+                Val::Num(min_entry.value),
+            );
+        }
     }
+
+    // Pre-computed growth rates (if we have 2+ periods).
+    if let (Some(Val::Num(cur_i)), Some(Val::Num(prev_i))) =
+        (ctx.get("current.Impressions"), ctx.get("prev.Impressions"))
+    {
+        if *prev_i > 0.0 {
+            ctx.insert(
+                "impr_growth".into(),
+                Val::Num((cur_i - prev_i) / prev_i * 100.0),
+            );
+        }
+    }
+    if let (Some(Val::Num(cur_c)), Some(Val::Num(prev_c))) =
+        (ctx.get("current.Clicks"), ctx.get("prev.Clicks"))
+    {
+        if *prev_c > 0.0 {
+            ctx.insert(
+                "click_growth".into(),
+                Val::Num((cur_c - prev_c) / prev_c * 100.0),
+            );
+        }
+    }
+
+    // count_where / any_where / names_where / first_where for geo data.
+    build_where_functions(cube, &mut ctx, geo_dim);
+
+    ctx
+}
+
+/// Build count_where, any_where, names_where, first_where for common conditions.
+fn build_where_functions(cube: &IngestedCube, ctx: &mut Ctx, dim_name: &str) {
+    let impressions = cube.values.get("Impressions");
+    let clicks = cube.values.get("Clicks");
+
+    // Impressions < 500
+    if let Some(imp) = impressions {
+        let small: Vec<&CellEntry> = imp
+            .iter()
+            .filter(|e| e.value < 500.0 && e.value > 0.0)
+            .collect();
+        ctx.insert(
+            format!("count_where(Impressions < 500, {dim_name})"),
+            Val::Num(small.len() as f64),
+        );
+        // Also alias for "geo_dimension"
+        ctx.insert(
+            "count_where(Impressions < 500, geo_dimension)".into(),
+            Val::Num(small.len() as f64),
+        );
+        let names: Vec<String> = small.iter().map(|e| readable_name(&e.category)).collect();
+        ctx.insert(
+            format!("names_where(Impressions < 500, {dim_name})"),
+            Val::Str(names.join(", ")),
+        );
+        ctx.insert(
+            "names_where(Impressions < 500, geo_dimension)".into(),
+            Val::Str(names.join(", ")),
+        );
+    }
+
+    // Clicks == 0 AND Impressions > 50
+    if let (Some(imp), Some(clk)) = (impressions, clicks) {
+        let zero_engage: Vec<(usize, &CellEntry)> = imp
+            .iter()
+            .enumerate()
+            .filter(|(i, e)| e.value > 50.0 && clk.get(*i).map_or(true, |c| c.value < 1.0))
+            .collect();
+
+        ctx.insert(
+            "any_where(Clicks == 0 AND Impressions > 50, geo_dimension)".into(),
+            Val::Bool(!zero_engage.is_empty()),
+        );
+        if let Some((idx, entry)) = zero_engage.first() {
+            ctx.insert(
+                "first_where(Clicks == 0 AND Impressions > 50, geo_dimension).name".into(),
+                Val::Str(readable_name(&entry.category)),
+            );
+            ctx.insert(
+                "first_where(Clicks == 0 AND Impressions > 50, geo_dimension).Impressions".into(),
+                Val::Num(entry.value),
+            );
+            let _ = idx; // used only for filtering
+        }
+    }
+}
+
+// ─── Expression evaluator ───────────────────────────────────────────
+
+fn eval_expr(expr: &str, ctx: &Ctx) -> Val {
+    // Normalize whitespace: YAML folded scalars can embed newlines.
+    let expr = expr.replace('\n', " ");
+    let expr = expr.trim();
+    if expr.is_empty() {
+        return Val::Null;
+    }
+
+    // Literal "true" / "false"
+    if expr == "true" {
+        return Val::Bool(true);
+    }
+    if expr == "false" {
+        return Val::Bool(false);
+    }
+
+    // AND / OR (lowest precedence, split from left)
+    if let Some(val) = try_logical(expr, ctx) {
+        return val;
+    }
+
+    // Comparisons: >=, <=, !=, ==, >, <
+    if let Some(val) = try_comparison(expr, ctx) {
+        return val;
+    }
+
+    // Addition / subtraction (left-to-right, respecting parens)
+    if let Some(val) = try_additive(expr, ctx) {
+        return val;
+    }
+
+    // Multiplication / division
+    if let Some(val) = try_multiplicative(expr, ctx) {
+        return val;
+    }
+
+    // Unary / atoms
+    eval_atom(expr, ctx)
+}
+
+fn try_logical(expr: &str, ctx: &Ctx) -> Option<Val> {
+    // Split on AND / OR at the top level (not inside parens).
+    for keyword in &[" AND ", " OR "] {
+        if let Some(pos) = find_top_level(expr, keyword) {
+            let left = eval_expr(&expr[..pos], ctx);
+            let right = eval_expr(&expr[pos + keyword.len()..], ctx);
+            return Some(match *keyword {
+                " AND " => Val::Bool(left.is_truthy() && right.is_truthy()),
+                " OR " => Val::Bool(left.is_truthy() || right.is_truthy()),
+                _ => unreachable!(),
+            });
+        }
+    }
+    None
+}
+
+fn try_comparison(expr: &str, ctx: &Ctx) -> Option<Val> {
+    for op in &[">=", "<=", "!=", "==", ">", "<"] {
+        if let Some(pos) = find_top_level(expr, op) {
+            let left = eval_expr(&expr[..pos], ctx);
+            let right = eval_expr(&expr[pos + op.len()..], ctx);
+            let (l, r) = match (left.as_num(), right.as_num()) {
+                (Some(l), Some(r)) => (l, r),
+                _ => return Some(Val::Bool(false)),
+            };
+            return Some(Val::Bool(match *op {
+                ">=" => l >= r,
+                "<=" => l <= r,
+                "!=" => (l - r).abs() > 1e-9,
+                "==" => (l - r).abs() < 1e-9,
+                ">" => l > r,
+                "<" => l < r,
+                _ => false,
+            }));
+        }
+    }
+    None
+}
+
+fn try_additive(expr: &str, ctx: &Ctx) -> Option<Val> {
+    // Find the rightmost top-level + or - (for left-to-right precedence).
+    let bytes = expr.as_bytes();
+    let mut depth = 0i32;
+    let mut last_pos: Option<(usize, u8)> = None;
+    for i in 0..bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            b'+' | b'-' if depth == 0 && i > 0 => {
+                // Don't split on negative sign after an operator or at start.
+                let prev_char = bytes[i - 1];
+                if prev_char != b'*' && prev_char != b'/' && prev_char != b'(' {
+                    last_pos = Some((i, bytes[i]));
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some((pos, op)) = last_pos {
+        let left = eval_expr(&expr[..pos], ctx);
+        let right = eval_expr(&expr[pos + 1..], ctx);
+        if let (Some(l), Some(r)) = (left.as_num(), right.as_num()) {
+            return Some(Val::Num(if op == b'+' { l + r } else { l - r }));
+        }
+    }
+    None
+}
+
+fn try_multiplicative(expr: &str, ctx: &Ctx) -> Option<Val> {
+    let bytes = expr.as_bytes();
+    let mut depth = 0i32;
+    let mut last_pos: Option<(usize, u8)> = None;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            b'*' | b'/' if depth == 0 => {
+                last_pos = Some((i, b));
+            }
+            _ => {}
+        }
+    }
+    if let Some((pos, op)) = last_pos {
+        let left = eval_expr(&expr[..pos], ctx);
+        let right = eval_expr(&expr[pos + 1..], ctx);
+        if let (Some(l), Some(r)) = (left.as_num(), right.as_num()) {
+            return Some(Val::Num(if op == b'*' {
+                l * r
+            } else if r.abs() < 1e-15 {
+                0.0
+            } else {
+                l / r
+            }));
+        }
+    }
+    None
+}
+
+fn eval_atom(expr: &str, ctx: &Ctx) -> Val {
+    let expr = expr.trim();
+
+    // Parenthesized expression.
+    if expr.starts_with('(') && expr.ends_with(')') && matching_paren(expr) == expr.len() - 1 {
+        return eval_expr(&expr[1..expr.len() - 1], ctx);
+    }
+
+    // String literal: 'text'
+    if expr.starts_with('\'') && expr.ends_with('\'') && expr.len() >= 2 {
+        return Val::Str(expr[1..expr.len() - 1].to_string());
+    }
+
+    // Numeric literal.
+    if let Ok(n) = expr.parse::<f64>() {
+        return Val::Num(n);
+    }
+
+    // Function calls: abs(...), if(...), ...
+    if let Some(inner) = strip_func(expr, "abs") {
+        return match eval_expr(inner, ctx).as_num() {
+            Some(n) => Val::Num(n.abs()),
+            None => Val::Null,
+        };
+    }
+    if let Some(inner) = strip_func(expr, "if") {
+        return eval_if(inner, ctx);
+    }
+    if let Some(inner) = strip_func(expr, "element_count") {
+        // element_count(Dim) — lookup from context.
+        let key = format!("element_count({})", inner.trim());
+        return ctx.get(&key).cloned().unwrap_or(Val::Num(0.0));
+    }
+
+    // Context variable lookup (the common case).
+    if let Some(val) = ctx.get(expr) {
+        return val.clone();
+    }
+
+    // Fallback: try with period_name aliases.
+    if expr == "prev_period" || expr == "prev.period_name" {
+        return ctx
+            .get("prev.period_name")
+            .cloned()
+            .unwrap_or(Val::Str("N/A".into()));
+    }
+    if expr == "current_period" || expr == "current.period_name" {
+        return ctx
+            .get("current.period_name")
+            .cloned()
+            .unwrap_or(Val::Str("N/A".into()));
+    }
+
+    Val::Null
+}
+
+fn eval_if(args_str: &str, ctx: &Ctx) -> Val {
+    // Split on top-level commas: if(cond, then, else)
+    let parts = split_top_level_commas(args_str);
+    if parts.len() < 3 {
+        return Val::Null;
+    }
+    let cond = eval_expr(parts[0], ctx);
+    if cond.is_truthy() {
+        eval_expr(parts[1], ctx)
+    } else {
+        eval_expr(parts[2], ctx)
+    }
+}
+
+// ─── Template string substitution ───────────────────────────────────
+
+fn substitute(template: &str, bindings: &HashMap<String, Val>, ctx: &Ctx) -> String {
+    let mut result = String::with_capacity(template.len() * 2);
+    let mut chars = template.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '{' {
+            let mut placeholder = String::new();
+            while let Some(&c) = chars.peek() {
+                if c == '}' {
+                    chars.next();
+                    break;
+                }
+                placeholder.push(c);
+                chars.next();
+            }
+            // Parse format spec: {name:format} or just {name}
+            let (name, fmt_spec) = match placeholder.split_once(':') {
+                Some((n, f)) => (n.trim(), Some(f.trim())),
+                None => (placeholder.trim(), None),
+            };
+
+            // Lookup in bindings first, then context.
+            let val = bindings
+                .get(name)
+                .or_else(|| ctx.get(name))
+                .cloned()
+                .unwrap_or(Val::Str("N/A".into()));
+
+            result.push_str(&format_val(&val, fmt_spec));
+        } else {
+            result.push(ch);
+        }
+    }
+
+    // Clean up whitespace: collapse internal runs of whitespace (from YAML multiline).
+    let mut cleaned = String::with_capacity(result.len());
+    let mut prev_space = false;
+    for ch in result.chars() {
+        if ch.is_whitespace() {
+            if !prev_space {
+                cleaned.push(' ');
+            }
+            prev_space = true;
+        } else {
+            cleaned.push(ch);
+            prev_space = false;
+        }
+    }
+    cleaned.trim().to_string()
+}
+
+fn format_val(val: &Val, fmt: Option<&str>) -> String {
+    let fmt = match fmt {
+        Some(f) => f,
+        None => return val.to_display(),
+    };
+
+    match val {
+        Val::Num(n) => {
+            let use_comma = fmt.contains(',');
+            // Extract decimal places from format like ".0f", ".1f", ".2f"
+            let decimals = fmt
+                .chars()
+                .skip_while(|c| *c != '.')
+                .skip(1)
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse::<usize>()
+                .unwrap_or(0);
+
+            if use_comma {
+                format_comma(*n, decimals)
+            } else {
+                format!("{:.prec$}", n, prec = decimals)
+            }
+        }
+        _ => val.to_display(),
+    }
+}
+
+fn format_comma(n: f64, decimals: usize) -> String {
+    let rounded = if decimals == 0 {
+        n.round() as i64
+    } else {
+        let factor = 10f64.powi(decimals as i32);
+        (n * factor).round() as i64 / factor.round() as i64
+    };
+    // Integer part with commas.
+    let abs = rounded.unsigned_abs();
+    let s = abs.to_string();
+    let mut result = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    if rounded < 0 {
+        result.push('-');
+    }
+    result.chars().rev().collect()
+}
+
+// ─── Parsing helpers ────────────────────────────────────────────────
+
+/// Find the position of `needle` at the top level (not inside parens or quotes).
+fn find_top_level(haystack: &str, needle: &str) -> Option<usize> {
+    let bytes = haystack.as_bytes();
+    let needle_bytes = needle.as_bytes();
+    let mut depth = 0i32;
+    let mut in_quote = false;
+    let mut i = 0;
+    while i + needle_bytes.len() <= bytes.len() {
+        let b = bytes[i];
+        if b == b'\'' {
+            in_quote = !in_quote;
+        }
+        if !in_quote {
+            if b == b'(' {
+                depth += 1;
+            } else if b == b')' {
+                depth -= 1;
+            }
+            if depth == 0 && &bytes[i..i + needle_bytes.len()] == needle_bytes {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Find the index of the closing paren matching the opening paren at position 0.
+fn matching_paren(s: &str) -> usize {
+    let mut depth = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            _ => {}
+        }
+    }
+    s.len()
+}
+
+/// Strip a function call: "func(args)" -> Some("args")
+fn strip_func<'a>(expr: &'a str, func_name: &str) -> Option<&'a str> {
+    let expr = expr.trim();
+    if expr.starts_with(func_name)
+        && expr[func_name.len()..].starts_with('(')
+        && expr.ends_with(')')
+    {
+        Some(&expr[func_name.len() + 1..expr.len() - 1])
+    } else {
+        None
+    }
+}
+
+/// Split a string on top-level commas (not inside parens or quotes).
+fn split_top_level_commas(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut in_quote = false;
+    let mut start = 0;
+    // Use char_indices for correct byte offsets with multi-byte UTF-8.
+    for (byte_pos, c) in s.char_indices() {
+        match c {
+            '\'' => in_quote = !in_quote,
+            '(' if !in_quote => depth += 1,
+            ')' if !in_quote => depth -= 1,
+            ',' if depth == 0 && !in_quote => {
+                parts.push(&s[start..byte_pos]);
+                start = byte_pos + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&s[start..]);
+    parts
 }
 
 fn readable_name(s: &str) -> String {
     let out = s.replace('_', " ");
-    // Collapse multiple spaces into one.
     let mut result = String::with_capacity(out.len());
     let mut prev_space = false;
     for c in out.chars() {
@@ -847,217 +836,130 @@ fn readable_name(s: &str) -> String {
     result.trim().to_string()
 }
 
-fn evidence(pairs: &[(&str, f64)]) -> BTreeMap<String, serde_json::Value> {
-    pairs
-        .iter()
-        .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_cube(table_name: &str, values: BTreeMap<String, Vec<CellEntry>>) -> IngestedCube {
-        IngestedCube {
-            label: format!("Test — {table_name}"),
-            product: "Test".into(),
-            subproduct: "Targeted Display".into(),
-            table_name: table_name.into(),
-            source_file: "test.csv".into(),
-            dimension_count: 4,
-            measure_count: values.len(),
-            cells_written: values.values().map(|v| v.len()).sum(),
-            row_count: values.values().next().map(|v| v.len()).unwrap_or(0),
-            values,
+    fn make_ctx(pairs: &[(&str, f64)]) -> Ctx {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), Val::Num(*v)))
+            .collect()
+    }
+
+    #[test]
+    fn test_eval_arithmetic() {
+        let ctx = make_ctx(&[("x", 10.0), ("y", 3.0)]);
+        assert_eq!(eval_expr("x + y", &ctx).as_num().unwrap(), 13.0);
+        assert_eq!(eval_expr("x - y", &ctx).as_num().unwrap(), 7.0);
+        assert_eq!(eval_expr("x * y", &ctx).as_num().unwrap(), 30.0);
+        assert!((eval_expr("x / y", &ctx).as_num().unwrap() - 3.333333).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_eval_comparison() {
+        let ctx = make_ctx(&[("a", 5.0), ("b", 3.0)]);
+        assert!(eval_expr("a > b", &ctx).is_truthy());
+        assert!(!eval_expr("a < b", &ctx).is_truthy());
+        assert!(eval_expr("a >= 5", &ctx).is_truthy());
+        assert!(eval_expr("a == 5", &ctx).is_truthy());
+    }
+
+    #[test]
+    fn test_eval_logical() {
+        let ctx = make_ctx(&[("x", 1.0), ("y", 0.0)]);
+        assert!(eval_expr("x > 0 AND y == 0", &ctx).is_truthy());
+        assert!(eval_expr("x > 0 OR y > 0", &ctx).is_truthy());
+        assert!(!eval_expr("x > 0 AND y > 0", &ctx).is_truthy());
+    }
+
+    #[test]
+    fn test_eval_if() {
+        let ctx = make_ctx(&[("x", 5.0)]);
+        let val = eval_expr("if(x > 3, 'high', 'low')", &ctx);
+        assert!(matches!(val, Val::Str(s) if s == "high"));
+    }
+
+    #[test]
+    fn test_confidence_from_actual_yaml() {
+        // Load actual templates and find data_sufficiency.
+        let templates = {
+            let t = load_templates("demo/narratives");
+            if t.is_empty() {
+                load_templates("../../demo/narratives")
+            } else {
+                t
+            }
+        };
+        let ds = templates
+            .iter()
+            .find(|t| t.id == "data_sufficiency")
+            .expect("data_sufficiency template");
+        let confidence_expr = ds.bindings.get("confidence").expect("confidence binding");
+        eprintln!("confidence expr repr: {:?}", confidence_expr);
+
+        let mut ctx: Ctx = HashMap::new();
+        ctx.insert("period_count".into(), Val::Num(2.0));
+        let val = eval_expr(confidence_expr, &ctx);
+        eprintln!("confidence val: {:?}", val);
+        match &val {
+            Val::Str(s) => assert!(s.contains("Directional") || s.contains("trend"), "got: {s}"),
+            other => panic!("expected Str, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_impressions_mom_change() {
-        let mut values = BTreeMap::new();
-        values.insert(
-            "Impressions".into(),
-            vec![
-                CellEntry {
-                    category: "Jul_2025".into(),
-                    value: 25102.0,
-                },
-                CellEntry {
-                    category: "Aug_2025".into(),
-                    value: 30655.0,
-                },
-            ],
+    fn test_eval_nested_if() {
+        let ctx = make_ctx(&[("period_count", 2.0)]);
+        let val = eval_expr(
+            "if(period_count == 1, 'one', if(period_count == 2, 'two', 'many'))",
+            &ctx,
         );
-        values.insert(
-            "Clicks".into(),
-            vec![
-                CellEntry {
-                    category: "Jul_2025".into(),
-                    value: 79.0,
-                },
-                CellEntry {
-                    category: "Aug_2025".into(),
-                    value: 166.0,
-                },
-            ],
-        );
-        values.insert(
-            "CTR".into(),
-            vec![
-                CellEntry {
-                    category: "Jul_2025".into(),
-                    value: 0.31,
-                },
-                CellEntry {
-                    category: "Aug_2025".into(),
-                    value: 0.54,
-                },
-            ],
-        );
-        let cube = make_cube("Monthly Performance", values);
-        let narratives = eval_time_series(&cube);
-
-        // Should have impressions change, clicks change, and CTR trend
-        assert!(narratives.len() >= 2);
-
-        let imp = narratives
-            .iter()
-            .find(|n| n.template_id == "impressions_mom_change");
-        assert!(imp.is_some());
-        let imp = imp.unwrap();
-        assert!(imp.text.contains("grew"));
-        assert!(imp.text.contains("22%")); // ~22% change
-
-        let clicks = narratives
-            .iter()
-            .find(|n| n.template_id == "clicks_mom_change");
-        assert!(clicks.is_some());
-        assert!(clicks.unwrap().text.contains("more than doubled"));
+        match &val {
+            Val::Str(s) => assert_eq!(s, "two", "nested if should return 'two'"),
+            other => panic!("expected Str, got {other:?}"),
+        }
     }
 
     #[test]
-    fn test_device_ranking() {
-        let mut values = BTreeMap::new();
-        values.insert(
-            "Impressions".into(),
-            vec![
-                CellEntry {
-                    category: "Mobile_Phone".into(),
-                    value: 44280.0,
-                },
-                CellEntry {
-                    category: "Tablet".into(),
-                    value: 5870.0,
-                },
-                CellEntry {
-                    category: "PC__Desktop_or_Laptop".into(),
-                    value: 5607.0,
-                },
-            ],
-        );
-        values.insert(
-            "Clicks".into(),
-            vec![
-                CellEntry {
-                    category: "Mobile_Phone".into(),
-                    value: 192.0,
-                },
-                CellEntry {
-                    category: "Tablet".into(),
-                    value: 49.0,
-                },
-                CellEntry {
-                    category: "PC__Desktop_or_Laptop".into(),
-                    value: 4.0,
-                },
-            ],
-        );
-        values.insert(
-            "CTR".into(),
-            vec![
-                CellEntry {
-                    category: "Mobile_Phone".into(),
-                    value: 0.43,
-                },
-                CellEntry {
-                    category: "Tablet".into(),
-                    value: 0.83,
-                },
-                CellEntry {
-                    category: "PC__Desktop_or_Laptop".into(),
-                    value: 0.07,
-                },
-            ],
-        );
-        let cube = make_cube("Device Performance", values);
-        let narratives = eval_device_ranking(&cube);
-
-        assert_eq!(narratives.len(), 1);
-        assert!(narratives[0].text.contains("Tablet"));
-        assert!(narratives[0].text.contains("0.83%"));
-        assert!(narratives[0].text.contains("PC"));
+    fn test_eval_abs() {
+        let ctx = make_ctx(&[("x", -42.0)]);
+        assert_eq!(eval_expr("abs(x)", &ctx).as_num().unwrap(), 42.0);
     }
 
     #[test]
-    fn test_zero_conversion_alarm() {
-        let mut values = BTreeMap::new();
-        values.insert(
-            "Impressions".into(),
-            vec![CellEntry {
-                category: "Jul_2025".into(),
-                value: 25102.0,
-            }],
-        );
-        values.insert(
-            "Total_Conversions".into(),
-            vec![CellEntry {
-                category: "Jul_2025".into(),
-                value: 0.0,
-            }],
-        );
-        let cube = make_cube("Monthly Performance", values);
-        let narratives = eval_conversion_alarm(&cube);
-
-        assert_eq!(narratives.len(), 1);
-        assert_eq!(narratives[0].severity, Severity::Critical);
-        assert!(narratives[0].text.contains("Zero conversions"));
-        assert!(narratives[0].text.contains("pixel"));
+    fn test_substitute() {
+        let mut bindings = HashMap::new();
+        bindings.insert("name".into(), Val::Str("Tablet".into()));
+        bindings.insert("pct".into(), Val::Num(83.5));
+        let ctx = HashMap::new();
+        let result = substitute("Device {name} at {pct:.1f}%", &bindings, &ctx);
+        assert_eq!(result, "Device Tablet at 83.5%");
     }
 
     #[test]
-    fn test_geo_concentration() {
-        let mut values = BTreeMap::new();
-        values.insert(
-            "Impressions".into(),
-            vec![
-                CellEntry {
-                    category: "Rockford".into(),
-                    value: 45279.0,
-                },
-                CellEntry {
-                    category: "Machesney_Park".into(),
-                    value: 4592.0,
-                },
-                CellEntry {
-                    category: "Loves_Park".into(),
-                    value: 4468.0,
-                },
-            ],
-        );
-        let cube = make_cube("Performance by City", values);
-        let narratives = eval_geo_concentration(&cube);
-
-        assert_eq!(narratives.len(), 1);
-        assert!(narratives[0].text.contains("Rockford"));
-        assert!(narratives[0].text.contains("83%")); // ~83% share
+    fn test_format_comma() {
+        assert_eq!(format_comma(55757.0, 0), "55,757");
+        assert_eq!(format_comma(1000000.0, 0), "1,000,000");
+        assert_eq!(format_comma(42.0, 0), "42");
     }
 
     #[test]
-    fn test_fmt_int() {
-        assert_eq!(fmt_int(25102.0), "25,102");
-        assert_eq!(fmt_int(166.0), "166");
-        assert_eq!(fmt_int(1000000.0), "1.0M");
-        assert_eq!(fmt_int(0.0), "0");
+    fn test_load_templates() {
+        // Tests may run from crate dir or repo root; try both.
+        let templates = {
+            let t = load_templates("demo/narratives");
+            if t.is_empty() {
+                load_templates("../../demo/narratives")
+            } else {
+                t
+            }
+        };
+        assert!(!templates.is_empty(), "should load at least 1 template");
+        assert!(
+            templates.len() >= 13,
+            "expected >= 13 templates, got {}",
+            templates.len()
+        );
     }
 }

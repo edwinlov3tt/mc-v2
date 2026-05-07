@@ -5,7 +5,7 @@
 //! cross-tactic summary.
 
 use crate::ingest::{self, IdGen, IngestedCube};
-use crate::narrative::{self, NarrativeOutput, Severity};
+use crate::narrative::{self, NarrativeOutput, Severity, TemplateDefinition};
 use crate::registry::DetectionResult;
 use crate::upload::ParsedCsv;
 use serde::Serialize;
@@ -37,6 +37,7 @@ pub fn build_tactic_groups(
     csvs: &[ParsedCsv],
     detections: &[DetectionResult],
     ids: &mut IdGen,
+    templates: &[TemplateDefinition],
 ) -> Vec<TacticGroup> {
     // Group by (product, subproduct).
     let mut groups: BTreeMap<(String, String), Vec<(usize, &ParsedCsv)>> = BTreeMap::new();
@@ -73,7 +74,7 @@ pub fn build_tactic_groups(
         }
 
         // Evaluate narratives for this tactic's cubes.
-        let narratives = narrative::evaluate_all(&cubes);
+        let narratives = narrative::evaluate_all(templates, &cubes);
 
         tactic_groups.push(TacticGroup {
             product: product.clone(),

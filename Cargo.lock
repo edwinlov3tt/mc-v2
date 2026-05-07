@@ -1374,6 +1374,7 @@ dependencies = [
  "open",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tokio",
  "tower-http",
  "zip",

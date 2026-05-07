@@ -43,7 +43,18 @@ pub async fn start(port: u16, static_dir: Option<&str>) {
         }
     };
 
-    let state = Arc::new(AppState { registry });
+    // Pre-compile narrative templates at startup (Decision 11 optimization #5).
+    let narratives_path = find_narratives_path();
+    let templates = crate::narrative::load_templates(&narratives_path);
+    println!(
+        "  {GREEN}Templates loaded:{RESET} {BOLD}{}{RESET} narrative templates",
+        templates.len()
+    );
+
+    let state = Arc::new(AppState {
+        registry,
+        templates,
+    });
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -133,7 +144,7 @@ async fn handle_upload(
 
     let bytes = file_bytes.ok_or((StatusCode::BAD_REQUEST, "no file uploaded".to_string()))?;
 
-    let response = upload::process_upload(&state.registry, &bytes)
+    let response = upload::process_upload(&state.registry, &state.templates, &bytes)
         .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
 
     Ok(Json(response))
@@ -152,5 +163,20 @@ fn find_registry_path() -> String {
         }
     }
     // Default — may fail at load time with a helpful error.
+    candidates[0].to_string()
+}
+
+/// Find the narratives directory, checking several likely locations.
+fn find_narratives_path() -> String {
+    let candidates = [
+        "demo/narratives",
+        "../demo/narratives",
+        "../../demo/narratives",
+    ];
+    for path in &candidates {
+        if std::path::Path::new(path).is_dir() {
+            return path.to_string();
+        }
+    }
     candidates[0].to_string()
 }
