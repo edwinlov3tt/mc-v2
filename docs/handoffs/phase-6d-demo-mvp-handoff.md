@@ -64,9 +64,10 @@ User clicks "Show Payload" → sees the raw JSON with evidence objects, template
    - `demo/sample-data/` — copy the `.demo-data/` CSVs for testing
 2. New `crates/mc-demo-server/` crate:
    - `Cargo.toml` with deps: `axum`, `tower-http`, `tokio`, `zip`, `serde_json`, `open`, `crossterm`
-   - `src/main.rs` — `mc start` entry point (print banner → start server → open browser)
+   - `src/main.rs` — `mc start` entry point (print banner → start server → open browser). **Pre-warm registry at startup** (Decision 11 optimization #3) — parse `performance_tables.csv` into `HashMap` BEFORE accepting requests.
    - `src/registry.rs` — parse `performance_tables.csv` into a `HashMap<String, TacticSpec>`
-   - `src/upload.rs` — `POST /api/upload` handler (extract zip → match filenames against registry → return detection results)
+   - `src/timing.rs` — `PipelineTimer` struct that wraps `std::time::Instant` per stage; prints the breakdown table to stdout (Decision 11 CLI timing display); serializes into the JSON response's `timing` object.
+   - `src/upload.rs` — `POST /api/upload` handler (extract zip **in-memory via `Cursor`** per Decision 11 optimization #1 → match filenames against registry → return detection results). **Every upload prints the timing breakdown to the terminal.**
 3. React frontend:
    - Upload page with drag-drop zone
    - Detection results display (table of: filename → product → sub-product → table_type → header match confidence)
@@ -252,10 +253,13 @@ crates/mc-demo-server/
 - [ ] Uploading a zip with 3+ CSVs from the sample data triggers correct tactic detection against the registry.
 - [ ] Each detected tactic produces at least 3 narrative paragraphs.
 - [ ] The conversion-tracking alarm fires for zero-conversion tactics.
-- [ ] The "Show Payload" view displays structured JSON with evidence objects.
-- [ ] Processing completes in < 2 seconds for the sample data set.
+- [ ] The "Show Payload" view displays structured JSON with evidence objects + `processing_time_ms` + `timing` breakdown.
+- [ ] **Backend processing completes in < 200ms** for the sample data set (per ADR-0019 Decision 11 performance contract).
+- [ ] **The terminal running `mc start` displays the timing breakdown** for every upload: per-stage ms + total `Done Xms` line.
+- [ ] **The frontend displays "Processed in Xms"** badge on the report page (reads from `processing_time_ms` in the JSON response).
 - [ ] The demo works offline (no LLM calls, no network requests beyond localhost).
 - [ ] `cargo test --workspace` still passes 912/0/5 (no regressions in existing crates).
+- [ ] All 5 Decision 11 optimizations are implemented: in-memory zip, skip YAML round-trip, pre-warm registry, reuse cubes, pre-compile templates.
 
 ---
 

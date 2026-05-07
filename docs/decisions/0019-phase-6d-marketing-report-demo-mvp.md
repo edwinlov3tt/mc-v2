@@ -187,7 +187,56 @@ Phase 6D is a PROOF, not a replacement for the proper phases:
 
 After the demo, each proper phase builds production-grade infrastructure. The demo MVP is the forcing function that proves the concept and gets leadership buy-in.
 
-### Decision 10: Process flow — ADR-first per Rule 1
+### Decision 11: Performance contract — sub-200ms backend processing with CLI timing display
+
+**Binding target:** the full backend pipeline (zip extraction → tactic detection → cube compilation + population → narrative template evaluation → JSON serialization) completes in **< 200ms** for the sample dataset (~50 rows across 11 CSVs). User-perceived latency (including browser render) < 100ms additional.
+
+**CLI timing display (binding):** every upload processed by the demo server prints a timing line to the terminal:
+
+```
+[2026-05-07 09:15:03] POST /api/upload — Scotts RV (11 CSVs, 4 tactics)
+  Registry match:    1.2ms
+  Cube compile:      8.4ms
+  Cube populate:     3.1ms
+  Narrative eval:    0.8ms
+  Serialize:         0.4ms
+  ─────────────────────────
+  Done               14.1ms
+```
+
+Implementation: wrap each pipeline stage in `std::time::Instant::now()` + `.elapsed()`. Print to stdout (the terminal where `mc start` is running). The total `Done Xms` line is the demo punchline — leadership sees the processing time in the terminal while the report appears in the browser.
+
+**The JSON response also includes timing:**
+
+```json
+{
+  "schema_version": "1.0",
+  "processing_time_ms": 14.1,
+  "timing": {
+    "registry_match_ms": 1.2,
+    "cube_compile_ms": 8.4,
+    "cube_populate_ms": 3.1,
+    "narrative_eval_ms": 0.8,
+    "serialize_ms": 0.4
+  },
+  "tactics": [ ... ],
+  "narratives": [ ... ]
+}
+```
+
+The frontend displays `processing_time_ms` as a badge on the report page: "Processed in 14ms" — next to the narrative output.
+
+**5 baked-in optimizations (binding — not afterthoughts):**
+
+1. **In-memory zip extraction.** Use `zip::ZipArchive::new(Cursor::new(bytes))` — no temp files written to disk. Saves ~10ms of filesystem I/O.
+2. **Skip the YAML round-trip.** Construct `ParsedModel` directly in Rust from the registry + CSV data — don't generate YAML strings and re-parse them. Saves ~5ms of parse overhead.
+3. **Pre-warm the registry at `mc start` time.** Parse `performance_tables.csv` into a `HashMap<String, TacticSpec>` once at server startup, before the first request. Registry lookup is then a single hash-map get (~100ns).
+4. **Reuse cube instances across templates.** One cube per tactic, populated once; all narrative templates evaluate against the same cube. Don't re-populate per template.
+5. **Pre-compile narrative templates at startup.** Parse the narrative YAML files + compile `when:` predicates to `Expr` ASTs at server startup. Per-request work is eval only (~1µs per expression).
+
+**Why this matters for the demo:** speed is the proof that there's no LLM behind the curtain. An LLM generating the same output takes 3-8 seconds. Mosaic does it in 14ms. The terminal timing display makes this undeniable — leadership sees the number in real-time.
+
+### Decision 12: Process flow — ADR-first per Rule 1
 
 Per process-notes Rule 1 self-test:
 1. Kernel change? No (demo server links against mc-core as a library; no mc-core modifications).
