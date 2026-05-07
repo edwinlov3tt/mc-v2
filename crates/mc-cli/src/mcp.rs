@@ -268,6 +268,18 @@ fn handle_tools_list() -> JsonValue {
             ],
         ),
         tool_descriptor(
+            "mosaic.ledger.query",
+            "Query the interpretation ledger for narrative entries. Supports filtering by severity, template, period, scope, and consecutive-period repetition.",
+            &[
+                ("model_dir", "string", "Path to the model directory containing .mosaic/analysis-ledger.jsonl.", true),
+                ("severity", "string", "Filter by severity: info, success, warning, critical.", false),
+                ("template", "string", "Filter by template_id.", false),
+                ("since", "string", "Filter by report_period >= since (e.g., '2026-01').", false),
+                ("scope", "string", "Filter by scope key=value (e.g., 'channel=Paid_Search').", false),
+                ("repeated", "integer", "Find entries where the same template fired in N+ consecutive periods.", false),
+            ],
+        ),
+        tool_descriptor(
             "mosaic.tessera.transform",
             "Convert raw data (file or URL) to model-compatible format using a recipe. Simple GET for URLs.",
             &[
@@ -335,6 +347,7 @@ fn handle_tools_call(params: &JsonValue) -> Result<JsonValue, (i64, String)> {
         "mosaic.model.diff" => tool_diff(&args),
         "mosaic.model.write" => tool_write(&args),
         "mosaic.model.narrate" => tool_narrate(&args),
+        "mosaic.ledger.query" => tool_ledger_query(&args),
         "mosaic.tessera.transform" => tool_transform(&args),
         other => return Err((-32601, format!("unknown tool: {other}"))),
     };
@@ -862,6 +875,40 @@ fn tool_narrate(args: &JsonValue) -> ToolOutcome {
     run_cli_verb_json(|| {
         let cmd = crate::narrate::parse(&cli_args)?;
         Ok(crate::narrate::run_captured(cmd))
+    })
+}
+
+fn tool_ledger_query(args: &JsonValue) -> ToolOutcome {
+    let model_dir = match args.get("model_dir").and_then(JsonValue::as_str_owned) {
+        Some(d) => d,
+        None => return error_outcome("missing required argument: model_dir"),
+    };
+    let mut cli_args = vec![model_dir];
+    if let Some(sev) = args.get("severity").and_then(JsonValue::as_str_owned) {
+        cli_args.push("--severity".into());
+        cli_args.push(sev);
+    }
+    if let Some(tmpl) = args.get("template").and_then(JsonValue::as_str_owned) {
+        cli_args.push("--template".into());
+        cli_args.push(tmpl);
+    }
+    if let Some(since) = args.get("since").and_then(JsonValue::as_str_owned) {
+        cli_args.push("--since".into());
+        cli_args.push(since);
+    }
+    if let Some(scope) = args.get("scope").and_then(JsonValue::as_str_owned) {
+        cli_args.push("--scope".into());
+        cli_args.push(scope);
+    }
+    if let Some(n) = args.get("repeated").and_then(JsonValue::as_integer_coerced) {
+        cli_args.push("--repeated".into());
+        cli_args.push(n.to_string());
+    }
+    cli_args.push("--format".into());
+    cli_args.push("json".into());
+    run_cli_verb_json(|| {
+        let cmd = crate::query_ledger::parse(&cli_args)?;
+        Ok(crate::query_ledger::run_captured(cmd))
     })
 }
 

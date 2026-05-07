@@ -11,8 +11,10 @@
 
 use crate::loader::load_model;
 use mc_core::{DimensionKind, PrincipalId, ScalarValue};
+use mc_narrative::ledger;
 use mc_narrative::{CellEntry, CubeData, NarrativeOutput, Severity};
 use std::collections::BTreeMap;
+use std::path::Path;
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -22,6 +24,8 @@ pub struct NarrateCommand {
     pub path: String,
     pub format: NarrateFormat,
     pub templates_dir: Option<String>,
+    /// Phase 7A.2: when true, write ledger entries to .mosaic/analysis-ledger.jsonl.
+    pub save_ledger: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,6 +42,7 @@ pub fn parse(args: &[String]) -> Result<NarrateCommand, String> {
     let mut path: Option<String> = None;
     let mut format = NarrateFormat::Text;
     let mut templates_dir: Option<String> = None;
+    let mut save_ledger = false;
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -57,6 +62,7 @@ pub fn parse(args: &[String]) -> Result<NarrateCommand, String> {
                 Some(d) => templates_dir = Some(d.clone()),
                 None => return Err("--templates requires a directory path".into()),
             },
+            "--save-ledger" => save_ledger = true,
             other if !other.starts_with("--") && path.is_none() => {
                 path = Some(other.to_string());
             }
@@ -68,6 +74,7 @@ pub fn parse(args: &[String]) -> Result<NarrateCommand, String> {
         path,
         format,
         templates_dir,
+        save_ledger,
     })
 }
 
@@ -119,7 +126,12 @@ pub fn run_captured(cmd: NarrateCommand) -> (i32, String) {
     // 5. Evaluate templates.
     let narratives = mc_narrative::evaluate_all(&templates, &cube_data);
 
-    // 6. Render output.
+    // 6. Phase 7A.2: write ledger entries if --save-ledger is set.
+    if cmd.save_ledger && !narratives.is_empty() {
+        write_ledger(&cmd.path, &narratives);
+    }
+
+    // 7. Render output.
     let output = match cmd.format {
         NarrateFormat::Json => render_json(&narratives),
         NarrateFormat::Text => render_text(&narratives),
@@ -127,6 +139,96 @@ pub fn run_captured(cmd: NarrateCommand) -> (i32, String) {
     };
 
     (0, output)
+}
+
+// ---------------------------------------------------------------------------
+// Ledger write (Phase 7A.2)
+// ---------------------------------------------------------------------------
+
+/// Write narrative outputs to the interpretation ledger.
+///
+/// Computes the model hash, generates a timestamp, converts narratives
+/// to ledger entries, and appends them to `.mosaic/analysis-ledger.jsonl`.
+fn write_ledger(model_path: &str, narratives: &[NarrativeOutput]) {
+    let model_file = Path::new(model_path);
+    let model_dir = model_file.parent().unwrap_or(Path::new("."));
+
+    // Compute model hash.
+    let model_hash = match ledger::compute_model_hash(model_file) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("warning: could not compute model hash: {e}");
+            "sha256:unknown".to_string()
+        }
+    };
+
+    // Generate timestamp (ISO-8601 UTC).
+    let generated_at = utc_now_iso8601();
+
+    // Build scope from model path (minimal in v1).
+    let scope = BTreeMap::new();
+
+    // Convert narratives to ledger entries.
+    let entries = ledger::narratives_to_ledger_entries(
+        narratives,
+        model_path,
+        &model_hash,
+        &generated_at,
+        None, // report_period — not available from CLI args yet
+        &scope,
+    );
+
+    // Write to ledger.
+    match ledger::write_ledger_entries(model_dir, &entries) {
+        Ok(path) => {
+            eprintln!(
+                "[ledger] Wrote {} entries to {}",
+                entries.len(),
+                path.display()
+            );
+        }
+        Err(e) => {
+            eprintln!("warning: ledger write failed: {e}");
+        }
+    }
+}
+
+/// Get current UTC time as ISO-8601 string.
+///
+/// Uses UNIX timestamp to avoid pulling in chrono. Format: YYYY-MM-DDTHH:MM:SSZ.
+fn utc_now_iso8601() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Convert UNIX seconds to date-time components.
+    let days = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+
+    // Convert days since epoch to Y-M-D (simplified leap year handling).
+    let (year, month, day) = days_to_ymd(days);
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
+}
+
+/// Convert days since UNIX epoch to (year, month, day).
+fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
+    // Algorithm from Howard Hinnant's date library.
+    days += 719468;
+    let era = days / 146097;
+    let doe = days - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
 }
 
 // ---------------------------------------------------------------------------

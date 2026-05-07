@@ -23,10 +23,12 @@ use mc_model::{
 };
 
 mod diff;
+mod ledger_export;
 mod loader;
 mod mcp;
 mod narrate;
 mod query;
+mod query_ledger;
 mod sweep;
 mod tessera;
 mod trace;
@@ -75,6 +77,14 @@ fn main() {
                     },
                     "narrate" => match narrate::parse(&args[3..]) {
                         Ok(cmd) => std::process::exit(narrate::run(cmd)),
+                        Err(e) => fatal(&e),
+                    },
+                    "query-ledger" => match query_ledger::parse(&args[3..]) {
+                        Ok(cmd) => std::process::exit(query_ledger::run(cmd)),
+                        Err(e) => fatal(&e),
+                    },
+                    "ledger-export" => match ledger_export::parse(&args[3..]) {
+                        Ok(cmd) => std::process::exit(ledger_export::run(cmd)),
                         Err(e) => fatal(&e),
                     },
                     _ => {} // Fall through to legacy parse
@@ -170,7 +180,10 @@ fn print_help() {
         "    mc model diff   <path> --left <filter> --right <filter> [--format text|json|csv]"
     );
     println!("    mc model write  <path> --coord <coord> --value <n> [--dry-run] [--format ...]");
-    println!("    mc model narrate <path> [--templates <dir>] [--format text|json|markdown]");
+    println!("    mc model narrate <path> [--templates <dir>] [--format text|json|markdown] [--save-ledger]");
+    println!("    mc model query-ledger <model-dir> [--severity <s>] [--template <id>] [--since <period>]");
+    println!("                           [--scope <k=v>] [--repeated <n>] [--format text|json]");
+    println!("    mc model ledger-export <model-dir> [--format jsonl|csv] [--since <period>]");
     println!();
     println!("    mc tessera apply      <recipe.yaml>            [--format text|json]");
     println!("    mc tessera dry-run    <recipe.yaml>            [--format text|json]");
