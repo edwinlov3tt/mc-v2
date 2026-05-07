@@ -1,0 +1,282 @@
+# Narrative templates for display-like tactics
+# (Targeted Display, Addressable Display, Social Display, Native)
+#
+# These are the actual template definitions that the narrative engine
+# parses at startup and evaluates at request time. The engine is in
+# crates/mc-demo-server/src/narrative.rs — it reads these YAML files,
+# compiles the `when:` predicates, and evaluates them against populated
+# cube data. No Rust code changes needed to add/modify templates.
+#
+# Template shape:
+#   id:          unique identifier (used in evidence + payload)
+#   family:      which tactic families this fires for
+#   severity:    info | warning | critical
+#   table_types: which report table types this template applies to
+#   when:        predicate expression — template fires only if true
+#   template:    output string with {placeholder} substitution
+#   bindings:    named values computed from cube data, used in template
+#
+# Available variables in `when:` and `bindings:` expressions:
+#   current.<Measure>       — value at the current (latest) time period
+#   prev.<Measure>          — value at the previous time period
+#   period_count            — number of distinct time periods in the cube
+#   sum.<Measure>           — sum across all time periods
+#   campaign_avg.<Measure>  — average across all time periods
+#   max_by.<Dimension>.<Measure>  — element with highest value in that dimension
+#   min_by.<Dimension>.<Measure>  — element with lowest value
+#   count_where(<condition>, <Dimension>)  — count of elements matching condition
+#   any_where(<condition>, <Dimension>)    — true if any element matches
+#
+# Format hints in template strings:
+#   {value:.0f}   — integer (no decimals)
+#   {value:.1f}   — one decimal
+#   {value:.2f}   — two decimals
+#   {value:,.0f}  — integer with commas (e.g., 55,757)
+#   {value:+.0f}  — with sign prefix (+22, -5)
+
+narrative_format_version: 1
+
+templates:
+
+  # ─── Data quality + context ─────────────────────────────────
+
+  - id: data_sufficiency
+    family: [display-like, video-like, search-like, social-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    sort_order: -10  # fires first
+    when: "true"
+    template: >
+      This analysis is based on {period_count} reporting
+      period{plural}. {confidence}
+    bindings:
+      plural: "if(period_count > 1, 's', '')"
+      confidence: >
+        if(period_count == 1,
+          'Single-period snapshot — no trend analysis possible. All comparisons are against industry benchmarks only.',
+          if(period_count == 2,
+            'Directional trends are visible but 3+ periods are recommended for statistically confident trend assessment.',
+            'Sufficient data for meaningful trend analysis across all metrics.'))
+
+  - id: small_sample_warning
+    family: [display-like]
+    severity: warning
+    table_types: ["Performance by City", "Performance by Zip"]
+    when: "count_where(Impressions < 500, geo_dimension) > 0"
+    template: >
+      {count} geographic area{plural} had fewer than 500
+      impressions ({area_list}). CTR values for these areas
+      should be considered directionally indicative only —
+      sample sizes are insufficient for confident performance
+      assessment.
+    bindings:
+      count: "count_where(Impressions < 500, geo_dimension)"
+      plural: "if(count > 1, 's', '')"
+      area_list: "names_where(Impressions < 500, geo_dimension)"
+
+  # ─── Time-series trends ─────────────────────────────────────
+
+  - id: impressions_mom
+    family: [display-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: "period_count >= 2"
+    template: >
+      {tactic_name} impressions {direction} {abs_pct:.0f}% from
+      {prev_period} ({prev_value:,.0f}) to {current_period}
+      ({current_value:,.0f}).
+    bindings:
+      direction: "if(current.Impressions >= prev.Impressions, 'grew', 'declined')"
+      abs_pct: "abs((current.Impressions - prev.Impressions) / prev.Impressions * 100)"
+      prev_value: "prev.Impressions"
+      current_value: "current.Impressions"
+      prev_period: "prev.period_name"
+      current_period: "current.period_name"
+
+  - id: clicks_mom
+    family: [display-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: "period_count >= 2 AND abs((current.Clicks - prev.Clicks) / prev.Clicks) > 0.10"
+    template: >
+      Clicks {verb}, {direction} {abs_pct:.0f}% from
+      {prev_period} ({prev_value:,.0f}) to {current_period}
+      ({current_value:,.0f}).
+    bindings:
+      direction: "if(current.Clicks >= prev.Clicks, 'increasing', 'decreasing')"
+      verb: >
+        if(abs_pct > 100, 'more than doubled',
+          if(abs_pct > 50, 'surged',
+            if(current.Clicks >= prev.Clicks, 'increased', 'declined')))
+      abs_pct: "abs((current.Clicks - prev.Clicks) / prev.Clicks * 100)"
+      prev_value: "prev.Clicks"
+      current_value: "current.Clicks"
+
+  - id: ctr_trend
+    family: [display-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: "period_count >= 2 AND abs(current.CTR - prev.CTR) > 0.05"
+    template: >
+      CTR {direction} from {prev_ctr:.2f}% to {current_ctr:.2f}%.
+    bindings:
+      direction: "if(current.CTR >= prev.CTR, 'strengthened', 'weakened')"
+      prev_ctr: "prev.CTR"
+      current_ctr: "current.CTR"
+
+  - id: engagement_acceleration
+    family: [display-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: >
+      period_count >= 2
+      AND abs(click_growth) > abs(impr_growth) * 1.5
+      AND click_growth > 0
+    template: >
+      Engagement is accelerating faster than reach: clicks grew
+      {click_growth:.0f}% while impressions grew only
+      {impr_growth:.0f}%. The campaign is improving its ability
+      to convert attention into action.
+    bindings:
+      click_growth: "(current.Clicks - prev.Clicks) / prev.Clicks * 100"
+      impr_growth: "(current.Impressions - prev.Impressions) / prev.Impressions * 100"
+
+  - id: uniform_momentum
+    family: [display-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: >
+      period_count >= 2
+      AND current.Impressions > prev.Impressions
+      AND current.Clicks > prev.Clicks
+      AND current.CTR > prev.CTR
+    template: >
+      All key metrics improved from {prev_period} to
+      {current_period}: impressions (+{impr_pct:.0f}%), clicks
+      (+{click_pct:.0f}%), and CTR (+{ctr_pct:.0f}%). Uniform
+      positive momentum across reach, engagement, and efficiency
+      indicates the campaign is strengthening — not trading one
+      metric for another.
+    bindings:
+      impr_pct: "(current.Impressions - prev.Impressions) / prev.Impressions * 100"
+      click_pct: "(current.Clicks - prev.Clicks) / prev.Clicks * 100"
+      ctr_pct: "(current.CTR - prev.CTR) / prev.CTR * 100"
+
+  # ─── Benchmark comparisons ──────────────────────────────────
+
+  - id: ctr_vs_benchmark
+    family: [display-like]
+    severity: info
+    table_types: ["Monthly Performance", "Campaign Performance"]
+    when: "true"
+    template: >
+      Campaign CTR of {campaign_ctr:.2f}% is {multiple:.1f}x the
+      industry average for Targeted Display ({benchmark}%).
+      {interpretation}
+    bindings:
+      campaign_ctr: "campaign_avg.CTR"
+      benchmark: "0.10"
+      multiple: "campaign_avg.CTR / 0.10"
+      interpretation: >
+        if(campaign_avg.CTR > 0.30,
+          'This significant outperformance indicates strong creative-audience alignment.',
+          if(campaign_avg.CTR > 0.10,
+            'Performance is above industry norms — targeting appears effective.',
+            'Performance is at or below industry norms — review targeting and creative.'))
+
+  # ─── Device analysis ────────────────────────────────────────
+
+  - id: device_ranking
+    family: [display-like]
+    severity: info
+    table_types: ["Device Performance"]
+    when: "element_count(Device) >= 2"
+    template: >
+      {best_device} was the top-performing device by engagement:
+      {best_ctr:.2f}% CTR — {comparison} the campaign average.
+      {worst_device} underperformed at {worst_ctr:.2f}% CTR.
+    bindings:
+      best_device: "max_by.Device.CTR.name"
+      best_ctr: "max_by.Device.CTR.value"
+      worst_device: "min_by.Device.CTR.name"
+      worst_ctr: "min_by.Device.CTR.value"
+      comparison: >
+        if(max_by.Device.CTR.value > campaign_avg.CTR * 1.8, 'nearly 2x',
+          if(max_by.Device.CTR.value > campaign_avg.CTR * 1.3, 'well above',
+            'above'))
+
+  - id: device_underperformance
+    family: [display-like]
+    severity: warning
+    table_types: ["Device Performance"]
+    when: "min_by.Device.CTR.value < campaign_avg.CTR * 0.25"
+    template: >
+      {worst_device} is significantly underperforming at
+      {worst_ctr:.2f}% CTR — {deficit:.0f}% below the campaign
+      average ({avg_ctr:.2f}%). This device served
+      {worst_impressions:,.0f} impressions with minimal engagement.
+    bindings:
+      worst_device: "min_by.Device.CTR.name"
+      worst_ctr: "min_by.Device.CTR.value"
+      avg_ctr: "campaign_avg.CTR"
+      deficit: "(1 - min_by.Device.CTR.value / campaign_avg.CTR) * 100"
+      worst_impressions: "min_by.Device.Impressions.value"
+
+  # ─── Geographic analysis ────────────────────────────────────
+
+  - id: geo_concentration
+    family: [display-like]
+    severity: warning
+    table_types: ["Performance by City", "Performance by Zip"]
+    when: "max_by.geo.Impressions.value / sum.Impressions > 0.70"
+    template: >
+      {top_area} accounts for {share:.0f}% of total impressions
+      ({top_value:,.0f} of {total:,.0f}).
+    bindings:
+      top_area: "max_by.geo.Impressions.name"
+      top_value: "max_by.geo.Impressions.value"
+      total: "sum.Impressions"
+      share: "max_by.geo.Impressions.value / sum.Impressions * 100"
+
+  - id: zero_engagement_alarm
+    family: [display-like]
+    severity: warning
+    table_types: ["Performance by City", "Performance by Zip"]
+    when: "any_where(Clicks == 0 AND Impressions > 50, geo_dimension)"
+    template: >
+      {area_name} received {impressions:,.0f} impressions with
+      zero clicks. This area is consuming delivery with no
+      engagement signal — evaluate whether geo-targeting includes
+      this area intentionally.
+    bindings:
+      area_name: "first_where(Clicks == 0 AND Impressions > 50, geo_dimension).name"
+      impressions: "first_where(Clicks == 0 AND Impressions > 50, geo_dimension).Impressions"
+
+  # ─── Creative analysis ──────────────────────────────────────
+
+  - id: top_creative
+    family: [display-like]
+    severity: info
+    table_types: ["Creative By Name"]
+    when: "element_count(Creative) >= 3"
+    template: >
+      Top creative: "{best_name}" at {best_ctr:.2f}% CTR across
+      {best_impressions:,.0f} impressions.
+    bindings:
+      best_name: "max_by.Creative.CTR.name"
+      best_ctr: "max_by.Creative.CTR.value"
+      best_impressions: "max_by.Creative.Impressions.value"
+
+  # ─── Conversion tracking ────────────────────────────────────
+
+  - id: conversion_alarm
+    family: [display-like, video-like, search-like, social-like]
+    severity: critical
+    table_types: ["Campaign Performance", "Monthly Performance"]
+    when: "sum.Conversions == 0 AND sum.Impressions > 1000"
+    template: >
+      Zero conversions recorded across {total_impressions:,.0f}
+      impressions. Recommend verifying conversion pixel
+      installation.
+    bindings:
+      total_impressions: "sum.Impressions"
