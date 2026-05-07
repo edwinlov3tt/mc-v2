@@ -622,6 +622,450 @@ fn test_adstock_high_rate_long_tail() {
     assert_f64_eq(val, expected, "0.9^3 * 200 carryover at P4");
 }
 
+// ---------------------------------------------------------------------------
+// Saturation eval tests (Step 4) — Hill + Log + integrated pipeline.
+// ---------------------------------------------------------------------------
+
+/// Build a single-feature cube with a transforms block and (optionally)
+/// standardization / output_bound. Used by saturation + full-pipeline
+/// regressions. With intercept = 0 and weight = 1, the result equals the
+/// post-transform (post-coefficient = identity) feature value.
+fn build_saturation_cube(extra_yaml: &str) -> String {
+    format!(
+        r#"
+model_format_version: 1
+metadata:
+  name: "SaturationEvalTest"
+  description: "test"
+  author: "test"
+  created: "2026-05-06"
+dimensions:
+  - name: "Scenario"
+    kind: "Scenario"
+    elements:
+      - {{ name: "Base", scenario_meta: "Default" }}
+  - name: "Version"
+    kind: "Version"
+    elements:
+      - {{ name: "Working", version_state: "Draft" }}
+  - name: "Time"
+    kind: "Time"
+    elements:
+      - {{ name: "P1" }}
+  - name: "Channel"
+    kind: "Standard"
+    elements:
+      - {{ name: "Web" }}
+  - name: "Market"
+    kind: "Standard"
+    elements:
+      - {{ name: "US" }}
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+measures:
+  - {{ name: "tv_spend", role: "Input",   data_type: "F64", aggregation: "Sum" }}
+  - {{ name: "Result",  role: "Derived", data_type: "F64", aggregation: "Sum" }}
+fitted_models:
+  - name: "model"
+    method: "linear"
+    intercept: 0.0
+    coefficients:
+      - {{ feature: "tv_spend", weight: 1.0 }}
+{extra_yaml}
+rules:
+  - name: "rule_result"
+    target_measure: "Result"
+    scope: "AllLeaves"
+    body: "predict(\"model\", tv_spend)"
+    declared_dependencies: ["tv_spend"]
+"#
+    )
+}
+
+#[test]
+fn test_hill_saturation_basic() {
+    // Decision 5 — saturation(x) = x^alpha / (gamma^alpha + x^alpha).
+    // At x = gamma, saturation = 0.5 (the half-saturation point — this
+    // is the property gamma encodes by construction).
+    let yaml = build_saturation_cube(
+        r#"    transforms:
+      saturation:
+        - { type: "hill", feature: "tv_spend", alpha: 2.0, gamma: 5000.0 }
+"#,
+    );
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_f64(&mut cube, &compiled.refs, p, &spend_coord("P1"), 5000.0);
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P1"));
+    assert_f64_eq(val, 0.5, "Hill at gamma = 0.5 (half-saturation point)");
+
+    // At x → ∞, saturation → 1. With x = 100*gamma the value is very close.
+    write_f64(&mut cube, &compiled.refs, p, &spend_coord("P1"), 500_000.0);
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P1"));
+    assert!(
+        (val - 1.0).abs() < 1e-3,
+        "Hill at x=100*gamma should approach 1: got {val}"
+    );
+
+    // At x = 0, saturation = 0.
+    write_f64(&mut cube, &compiled.refs, p, &spend_coord("P1"), 0.0);
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P1"));
+    assert_f64_eq(val, 0.0, "Hill at x=0 = 0");
+}
+
+#[test]
+fn test_log_saturation_basic() {
+    // Decision 5 — saturation(x) = ln(1 + x / scale).
+    // Sanity samples:
+    //   x=0     → ln(1) = 0
+    //   x=scale → ln(2) ≈ 0.6931
+    let yaml = build_saturation_cube(
+        r#"    transforms:
+      saturation:
+        - { type: "log", feature: "tv_spend", scale: 1000.0 }
+"#,
+    );
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+
+    write_f64(&mut cube, &compiled.refs, p, &spend_coord("P1"), 0.0);
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P1"));
+    assert_f64_eq(val, 0.0, "Log at x=0 = 0");
+
+    write_f64(&mut cube, &compiled.refs, p, &spend_coord("P1"), 1000.0);
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P1"));
+    assert_f64_eq(val, 2.0_f64.ln(), "Log at x=scale = ln(2)");
+
+    write_f64(&mut cube, &compiled.refs, p, &spend_coord("P1"), 4000.0);
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P1"));
+    assert_f64_eq(val, 5.0_f64.ln(), "Log at x=4*scale = ln(5)");
+}
+
+#[test]
+fn test_hill_saturation_clamps_negative_to_zero() {
+    // Decision 5 W2 — negative input is clamped to 0 before applying the
+    // saturation curve. Hill at x=0 = 0, so a negative spend produces 0.
+    let yaml = build_saturation_cube(
+        r#"    transforms:
+      saturation:
+        - { type: "hill", feature: "tv_spend", alpha: 2.0, gamma: 5000.0 }
+"#,
+    );
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_f64(&mut cube, &compiled.refs, p, &spend_coord("P1"), -1000.0);
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P1"));
+    assert_f64_eq(val, 0.0, "Hill clamps negative spend to 0");
+}
+
+#[test]
+fn test_log_saturation_clamps_negative_to_zero() {
+    // Decision 5 W2 — negative input is clamped to 0; log(1+0) = 0.
+    let yaml = build_saturation_cube(
+        r#"    transforms:
+      saturation:
+        - { type: "log", feature: "tv_spend", scale: 1000.0 }
+"#,
+    );
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_f64(&mut cube, &compiled.refs, p, &spend_coord("P1"), -500.0);
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P1"));
+    assert_f64_eq(val, 0.0, "Log clamps negative spend to 0");
+}
+
+#[test]
+fn test_full_pipeline_adstock_then_saturation() {
+    // Decision 7 — adstock applies first, then saturation. With four
+    // periods of spend = 1000, rate = 0.5, max_lookback = 3, the
+    // adstocked value at P4 is 1000 * (1 + 0.5 + 0.25 + 0.125) = 1875.
+    // Then Hill with alpha = 2, gamma = 1875 gives saturation = 0.5.
+    let yaml = r#"
+model_format_version: 1
+metadata:
+  name: "FullPipelineTest"
+  description: "test"
+  author: "test"
+  created: "2026-05-06"
+dimensions:
+  - name: "Scenario"
+    kind: "Scenario"
+    elements:
+      - { name: "Base", scenario_meta: "Default" }
+  - name: "Version"
+    kind: "Version"
+    elements:
+      - { name: "Working", version_state: "Draft" }
+  - name: "Time"
+    kind: "Time"
+    elements:
+      - { name: "P1" }
+      - { name: "P2" }
+      - { name: "P3" }
+      - { name: "P4" }
+  - name: "Channel"
+    kind: "Standard"
+    elements:
+      - { name: "Web" }
+  - name: "Market"
+    kind: "Standard"
+    elements:
+      - { name: "US" }
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+measures:
+  - { name: "tv_spend", role: "Input",   data_type: "F64", aggregation: "Sum" }
+  - { name: "Result",  role: "Derived", data_type: "F64", aggregation: "Sum" }
+fitted_models:
+  - name: "model"
+    method: "linear"
+    intercept: 0.0
+    coefficients:
+      - { feature: "tv_spend", weight: 1.0 }
+    transforms:
+      adstock:
+        - { feature: "tv_spend", rate: 0.5, max_lookback: 3 }
+      saturation:
+        - { type: "hill", feature: "tv_spend", alpha: 2.0, gamma: 1875.0 }
+rules:
+  - name: "rule_result"
+    target_measure: "Result"
+    scope: "AllLeaves"
+    body: "predict(\"model\", tv_spend)"
+    declared_dependencies: ["tv_spend"]
+"#;
+    let compiled = build_test_cube(yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    for t in ["P1", "P2", "P3", "P4"] {
+        write_f64(&mut cube, &compiled.refs, p, &spend_coord(t), 1000.0);
+    }
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P4"));
+    assert_f64_eq(
+        val,
+        0.5,
+        "adstock(1000)→1875; Hill(1875, 2, 1875)=0.5 (half-sat point)",
+    );
+}
+
+#[test]
+fn test_full_pipeline_with_standardization() {
+    // Decision 7 — standardization applies AFTER saturation, BEFORE
+    // coefficient. Pipeline:
+    //   feature(100) → adstock (rate=0; identity) → saturation (log,
+    //   scale=100; ln(2)) → standardization (mean=0, std=1; identity)
+    //   → coefficient (× 1) → sum + intercept (0) = ln(2).
+    let yaml = r#"
+model_format_version: 1
+metadata:
+  name: "PipelineWithStd"
+  description: "test"
+  author: "test"
+  created: "2026-05-06"
+dimensions:
+  - name: "Scenario"
+    kind: "Scenario"
+    elements:
+      - { name: "Base", scenario_meta: "Default" }
+  - name: "Version"
+    kind: "Version"
+    elements:
+      - { name: "Working", version_state: "Draft" }
+  - name: "Time"
+    kind: "Time"
+    elements:
+      - { name: "P1" }
+  - name: "Channel"
+    kind: "Standard"
+    elements:
+      - { name: "Web" }
+  - name: "Market"
+    kind: "Standard"
+    elements:
+      - { name: "US" }
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+measures:
+  - { name: "tv_spend", role: "Input",   data_type: "F64", aggregation: "Sum" }
+  - { name: "Result",  role: "Derived", data_type: "F64", aggregation: "Sum" }
+fitted_models:
+  - name: "model"
+    method: "linear"
+    intercept: 0.0
+    coefficients:
+      - { feature: "tv_spend", weight: 1.0 }
+    standardization:
+      method: "zscore"
+      params:
+        - { feature: "tv_spend", mean: 0.0, std: 1.0 }
+    transforms:
+      saturation:
+        - { type: "log", feature: "tv_spend", scale: 100.0 }
+rules:
+  - name: "rule_result"
+    target_measure: "Result"
+    scope: "AllLeaves"
+    body: "predict(\"model\", tv_spend)"
+    declared_dependencies: ["tv_spend"]
+"#;
+    let compiled = build_test_cube(yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_f64(&mut cube, &compiled.refs, p, &spend_coord("P1"), 100.0);
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P1"));
+    assert_f64_eq(
+        val,
+        2.0_f64.ln(),
+        "log(2) after pipeline with identity standardization",
+    );
+}
+
+#[test]
+fn test_full_pipeline_logistic_with_output_bound() {
+    // Decision 7 step 6 — output_bound is the FINAL step, after the link
+    // function. Pipeline:
+    //   feature(1000) → log saturation (scale=100; ln(11) ≈ 2.398)
+    //   → no standardization → coefficient × 5 → sum + intercept
+    //   (0) ≈ 11.99 → logistic ≈ 0.99999... → output_bound max=0.95
+    //   → 0.95.
+    let yaml = r#"
+model_format_version: 1
+metadata:
+  name: "LogisticWithBound"
+  description: "test"
+  author: "test"
+  created: "2026-05-06"
+dimensions:
+  - name: "Scenario"
+    kind: "Scenario"
+    elements:
+      - { name: "Base", scenario_meta: "Default" }
+  - name: "Version"
+    kind: "Version"
+    elements:
+      - { name: "Working", version_state: "Draft" }
+  - name: "Time"
+    kind: "Time"
+    elements:
+      - { name: "P1" }
+  - name: "Channel"
+    kind: "Standard"
+    elements:
+      - { name: "Web" }
+  - name: "Market"
+    kind: "Standard"
+    elements:
+      - { name: "US" }
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+measures:
+  - { name: "tv_spend", role: "Input",   data_type: "F64", aggregation: "Sum" }
+  - { name: "Result",  role: "Derived", data_type: "F64", aggregation: "Sum" }
+fitted_models:
+  - name: "model"
+    method: "logistic"
+    intercept: 0.0
+    coefficients:
+      - { feature: "tv_spend", weight: 5.0 }
+    output_bound:
+      max: 0.95
+    transforms:
+      saturation:
+        - { type: "log", feature: "tv_spend", scale: 100.0 }
+rules:
+  - name: "rule_result"
+    target_measure: "Result"
+    scope: "AllLeaves"
+    body: "predict(\"model\", tv_spend)"
+    declared_dependencies: ["tv_spend"]
+"#;
+    let compiled = build_test_cube(yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_f64(&mut cube, &compiled.refs, p, &spend_coord("P1"), 1000.0);
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P1"));
+    // The logistic of 5 * ln(11) is very close to 1.0; output_bound clips.
+    assert_f64_eq(val, 0.95, "logistic saturates above 0.95 → clipped");
+}
+
+#[test]
+fn test_predict_without_transforms_unchanged() {
+    // Backward-compat regression — Decision 9 binds "no schema_version
+    // bump." A fitted model without `transforms:` evaluates identically
+    // to its pre-3H.2 behavior. Linear: prediction = 1 + 2 * 50 = 101.
+    let yaml = build_saturation_cube(
+        r#"    intercept_override: ignored # not used; default intercept 0 above
+"#,
+    );
+    let _ = yaml; // build_saturation_cube uses intercept = 0; check the
+                  // backward-compat path with a separate explicit YAML.
+    let yaml = r#"
+model_format_version: 1
+metadata:
+  name: "NoTransforms"
+  description: "test"
+  author: "test"
+  created: "2026-05-06"
+dimensions:
+  - name: "Scenario"
+    kind: "Scenario"
+    elements:
+      - { name: "Base", scenario_meta: "Default" }
+  - name: "Version"
+    kind: "Version"
+    elements:
+      - { name: "Working", version_state: "Draft" }
+  - name: "Time"
+    kind: "Time"
+    elements:
+      - { name: "P1" }
+  - name: "Channel"
+    kind: "Standard"
+    elements:
+      - { name: "Web" }
+  - name: "Market"
+    kind: "Standard"
+    elements:
+      - { name: "US" }
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+measures:
+  - { name: "tv_spend", role: "Input",   data_type: "F64", aggregation: "Sum" }
+  - { name: "Result",  role: "Derived", data_type: "F64", aggregation: "Sum" }
+fitted_models:
+  - name: "model"
+    method: "linear"
+    intercept: 1.0
+    coefficients:
+      - { feature: "tv_spend", weight: 2.0 }
+rules:
+  - name: "rule_result"
+    target_measure: "Result"
+    scope: "AllLeaves"
+    body: "predict(\"model\", tv_spend)"
+    declared_dependencies: ["tv_spend"]
+"#;
+    let compiled = build_test_cube(yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_f64(&mut cube, &compiled.refs, p, &spend_coord("P1"), 50.0);
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P1"));
+    assert_f64_eq(
+        val,
+        101.0,
+        "no transforms: linear prediction unchanged (intercept + weight*x)",
+    );
+}
+
 #[test]
 fn test_diagnostic_codes_2071_through_2076_collision_free() {
     // Pre-flight regression sweep — each new code appears only as the
