@@ -114,16 +114,12 @@ pub fn ingest_csv(
     let cube_name = format!("{} — {}", spec.subproduct_name, spec.table_name);
 
     // Identify which columns are numeric (measures) vs categorical.
-    // First column is always the category dimension.
-    let category_col = 0;
-    let category_header = &csv.headers[category_col];
-
+    // Find all non-numeric columns, then pick the best category column:
+    // for geo CSVs (city/zip), use the most specific geo column (last
+    // non-numeric before the numbers start), not the state column.
+    let mut non_numeric_cols: Vec<usize> = Vec::new();
     let mut measure_cols: Vec<(usize, String)> = Vec::new();
     for (i, header) in csv.headers.iter().enumerate() {
-        if i == category_col {
-            continue;
-        }
-        // Check if any row has a numeric value in this column.
         let is_numeric = csv.rows.iter().any(|row| {
             row.get(i)
                 .map(|v| parse_numeric(v).is_some())
@@ -131,8 +127,15 @@ pub fn ingest_csv(
         });
         if is_numeric {
             measure_cols.push((i, sanitize_name(header)));
+        } else {
+            non_numeric_cols.push(i);
         }
     }
+
+    // Pick the best category column: the last non-numeric column
+    // (e.g., "City" in "State,City,Impressions,...").
+    let category_col = non_numeric_cols.last().copied().unwrap_or(0);
+    let category_header = &csv.headers[category_col];
 
     if measure_cols.is_empty() {
         return Err(format!("{}: no numeric columns found", csv.filename));
@@ -142,7 +145,7 @@ pub fn ingest_csv(
     let category_values: Vec<String> = csv
         .rows
         .iter()
-        .filter_map(|row| row.first().map(|v| sanitize_name(v)))
+        .filter_map(|row| row.get(category_col).map(|v| sanitize_name(v)))
         .filter(|v| !v.is_empty())
         .collect::<Vec<_>>();
 
@@ -262,6 +265,7 @@ pub fn ingest_csv(
         actual_id,
         current_id,
         csv,
+        category_col,
         &measure_cols,
         &cat_elem_ids,
         &measure_elem_ids,
@@ -290,6 +294,7 @@ fn populate_cube(
     scenario_id: ElementId,
     version_id: ElementId,
     csv: &ParsedCsv,
+    category_col: usize,
     measure_cols: &[(usize, String)],
     cat_elem_ids: &BTreeMap<String, ElementId>,
     measure_elem_ids: &BTreeMap<String, ElementId>,
@@ -298,7 +303,7 @@ fn populate_cube(
     let mut values: BTreeMap<String, Vec<CellEntry>> = BTreeMap::new();
 
     for row in &csv.rows {
-        let cat_raw = match row.first() {
+        let cat_raw = match row.get(category_col) {
             Some(v) => sanitize_name(v),
             None => continue,
         };
