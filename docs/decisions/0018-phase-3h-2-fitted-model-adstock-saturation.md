@@ -360,6 +360,29 @@ Per process-notes Rule 2: Claude Desktop–sourced amendments numbered §11+. Pr
 
 **Process implication:** the next phase cycle (post-3H.2 / post-Phase 3) MUST include explicit consideration of when to scope the cross-coord dep-graph fix-it phase. The PM tracks this in MASTER_PHASE_PLAN.md as "queued — cross-coord dep-graph fix-it phase (target: within next 2 phase cycles after 3H.2)."
 
+### Amendment §12 (PM, post-implementation audit) — Hard Rule 7 violation caught + remediation; M-14 honest assessment; coverage additions
+
+**Source:** Phase 3H.2 implementer self-audit (Sections C, K, M).
+
+**Findings during audit:**
+
+1. **Hard Rule 7 violation (Section C — caught + fixed mid-audit, commit `6fb50aa`).** `SaturationSpec::feature_name` shipped as `pub fn` returning `&str`, intended as a convenience accessor. The handoff Hard Rule 7 binds "Zero new public functions in mc-core." The implementer demoted to `pub(crate) fn` mid-audit; variant fields stay `pub` so external callers can pattern-match the enum directly without needing the accessor. Same data accessibility, no semantic change, Hard Rule 7 honored.
+
+2. **Coverage gaps surfaced by Section K embarrassment test (caught + filled, commit `4660136`).** The implementer noticed two tests missing:
+   - No test exercised all 5 transforms simultaneously (adstock + saturation + standardization + logistic link + output_bound). Added `test_full_pipeline_all_five_transforms_active`.
+   - `rate=1.0` (full carryover; symmetric counterpart to existing `rate=0.0` test) was untested. Added `test_adstock_rate_one_full_carryover`.
+
+3. **M-14 closure is ASPIRATIONAL, not COMMITTED (Section M honest disclosure — preserved in completion report and MASTER_PHASE_PLAN).** The Tide MMM cartridge in email-matchback uses an earlier `lag() + rolling_avg()` architecture, not 3H.2's native `transforms:` block. Phase 3H.2 ships the CAPABILITY for general MMM authors; **the existing Tide MMM cartridge has NOT been migrated.** Whether the Tide MMM team chooses to migrate is their call. The Step 5 integration test (`test_tide_mmm_adstock_saturation_pipeline`) is fixture-based — proves what's POSSIBLE with 3H.2, not what's already DEPLOYED. This is acceptable disposition: Phase 3H.2 enables; cartridge migration is separate work scoped at the cartridge maintainer's discretion.
+
+4. **Documented deviations (Section I, all minor):**
+   - Schema types shipped as 3 (not 4 as the handoff suggested). `SaturationType` enum collapsed into the tagged-enum `SaturationSpec` itself via `#[serde(tag = "type")]`. Cleaner; same expressive power.
+   - `apply_adstock` is `fn apply_adstock(&mut self, ...)` on `Cube` (vs the handoff's free `pub(crate) fn` pseudocode). Stylistic improvement matching 3H.1's `OutputBound::apply` precedent. Same visibility.
+   - The integration test (`test_tide_mmm_adstock_saturation_pipeline`) uses a fixture-shaped cube, not the live `~/Projects/email-matchback/models/tide-mmm.yaml` (because that file uses the older architecture; modifying it would require email-matchback team buy-in).
+
+**Process implication.** This is the third instance of the audit pattern catching real issues mid-flight (after Phase 3J's Section L Str-leakage bug and Phase 3I's MC2053 collision). The pattern is mature and load-bearing for Phase 3 quality. Recommend retaining Sections C, D, K, L for any future kernel-touching phase; the Hard Rule 7 check (Section C) and the embarrassment test (Section K) are the two that surface non-obvious issues.
+
+**M-14 status update for the deferred queue.** The "deferred queue is empty" framing in this ADR's Notes section remains correct in the CAPABILITY sense — every formula-engine deferred item from ADR-0015 has shipped. **Cartridge migration to use the new capabilities is a separate concern**, tracked per-cartridge by the cartridge maintainer (in this case, the email-matchback team). The Phase 3 retrospective document should make this distinction explicit so future readers don't conflate "shipped capability" with "shipped migration."
+
 ---
 
 ## PM-accepted disposition
