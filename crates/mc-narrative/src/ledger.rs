@@ -536,7 +536,7 @@ fn find_consecutive_runs<'a>(sorted_periods: &[&'a str], min_len: usize) -> Vec<
 /// Check if two period strings are consecutive in calendar order.
 ///
 /// Supports YYYY-MM format (months) and YYYY-QN format (quarters).
-fn is_consecutive_period(a: &str, b: &str) -> bool {
+pub fn is_consecutive_period(a: &str, b: &str) -> bool {
     // Try YYYY-MM format.
     if let (Some((ya, ma)), Some((yb, mb))) = (parse_year_month(a), parse_year_month(b)) {
         let months_a = ya * 12 + ma;

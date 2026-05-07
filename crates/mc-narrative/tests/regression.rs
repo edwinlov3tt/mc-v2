@@ -729,7 +729,7 @@ fn test_template_ids_match_yaml() {
 fn test_monthly_performance_narratives() {
     let templates = load_templates();
     let cubes = vec![monthly_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
 
     // Expected: data_sufficiency, impressions_mom, clicks_mom, ctr_trend,
     // engagement_acceleration, uniform_momentum, ctr_vs_benchmark, conversion_alarm = 8
@@ -777,7 +777,7 @@ fn test_monthly_performance_narratives() {
 fn test_data_sufficiency_content() {
     let templates = load_templates();
     let cubes = vec![monthly_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
 
     let ds = narratives
         .iter()
@@ -800,7 +800,7 @@ fn test_data_sufficiency_content() {
 fn test_impressions_mom_content() {
     let templates = load_templates();
     let cubes = vec![monthly_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
 
     let impr = narratives
         .iter()
@@ -832,7 +832,7 @@ fn test_impressions_mom_content() {
 fn test_conversion_alarm_content() {
     let templates = load_templates();
     let cubes = vec![monthly_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
 
     let alarm = narratives
         .iter()
@@ -850,7 +850,7 @@ fn test_conversion_alarm_content() {
 fn test_device_narratives() {
     let templates = load_templates();
     let cubes = vec![device_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
 
     let ids: Vec<&str> = narratives.iter().map(|n| n.template_id.as_str()).collect();
     assert!(
@@ -877,7 +877,7 @@ fn test_device_narratives() {
 fn test_geo_narratives() {
     let templates = load_templates();
     let cubes = vec![performance_by_city()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
 
     let ids: Vec<&str> = narratives.iter().map(|n| n.template_id.as_str()).collect();
     assert!(
@@ -909,7 +909,7 @@ fn test_geo_narratives() {
 fn test_creative_narrative() {
     let templates = load_templates();
     let cubes = vec![creative_by_name()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
 
     let ids: Vec<&str> = narratives.iter().map(|n| n.template_id.as_str()).collect();
     assert!(
@@ -923,7 +923,7 @@ fn test_dedup_across_cubes() {
     let templates = load_templates();
     // data_sufficiency fires once even with multiple cubes.
     let cubes = vec![monthly_performance(), campaign_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
 
     let ds_count = narratives
         .iter()
@@ -955,7 +955,7 @@ fn test_full_scotts_rv_evaluation() {
         performance_by_zip(),
         creative_by_name(),
     ];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
 
     // Print all narratives for debugging.
     for (i, n) in narratives.iter().enumerate() {
@@ -995,7 +995,7 @@ fn test_full_scotts_rv_evaluation() {
 fn test_narrative_id_format() {
     let templates = load_templates();
     let cubes = vec![monthly_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
 
     for n in &narratives {
         assert!(
@@ -1019,7 +1019,7 @@ fn test_dag_binding_resolution() {
     // With DAG resolution, abs_pct resolves first, then verb can reference it.
     let templates = load_templates();
     let cubes = vec![monthly_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
 
     let clicks = narratives
         .iter()

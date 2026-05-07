@@ -23,7 +23,7 @@ pub fn evaluate_all(
     cubes: &[IngestedCube],
 ) -> Vec<NarrativeOutput> {
     let cube_data: Vec<mc_narrative::CubeData> = cubes.iter().map(convert_cube).collect();
-    mc_narrative::evaluate_all(templates, &cube_data)
+    mc_narrative::evaluate_all(templates, &cube_data, None)
 }
 
 /// Convert an `IngestedCube` (demo server type) to `CubeData` (narrative engine type).

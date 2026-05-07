@@ -9,8 +9,190 @@
 //! Also adds `NOT` operator support (Finding #4) and `not()` function.
 
 use crate::context::CubeData;
+use crate::ledger::LedgerEntry;
 use crate::renderer::readable_name;
 use std::collections::HashMap;
+
+// ─── Ledger index for cross-period queries (Phase 7A.3) ──────────────
+
+/// Pre-built index over ledger entries for efficient cross-period queries.
+///
+/// Built once per `evaluate_all` call. Indexes entries by
+/// `(template_id, scope_key)` for O(1) lookup during evaluation.
+/// The `current_period` field determines the lookback boundary.
+#[derive(Debug)]
+pub struct LedgerIndex {
+    /// Entries grouped by (template_id, scope_key).
+    /// Scope key is a deterministic string: "k1=v1,k2=v2,..." from BTreeMap.
+    entries: HashMap<(String, String), Vec<LedgerIndexEntry>>,
+    /// The "current" period — latest Time element in the cube being evaluated.
+    /// Ledger queries look backward from this period.
+    pub current_period: Option<String>,
+}
+
+/// A lightweight view of a ledger entry for index queries.
+#[derive(Debug, Clone)]
+struct LedgerIndexEntry {
+    report_period: Option<String>,
+    evidence: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl LedgerIndex {
+    /// Build a ledger index from a slice of entries with an optional current period.
+    ///
+    /// The `current_period` determines which entries are "prior" (before current).
+    /// If `None`, all entries with a report_period are included in lookbacks.
+    pub fn build(entries: &[LedgerEntry], current_period: Option<String>) -> Self {
+        let mut map: HashMap<(String, String), Vec<LedgerIndexEntry>> = HashMap::new();
+        for entry in entries {
+            let scope_key = entry
+                .scope
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let key = (entry.narrative.template_id.clone(), scope_key);
+            map.entry(key).or_default().push(LedgerIndexEntry {
+                report_period: entry.report_period.clone(),
+                evidence: entry.evidence.clone(),
+            });
+        }
+        LedgerIndex {
+            entries: map,
+            current_period,
+        }
+    }
+
+    /// Get matching entries for a template_id and scope_key, filtered to
+    /// periods before the current period and limited to `lookback` most recent.
+    fn lookup(
+        &self,
+        template_id: &str,
+        scope_key: &str,
+        lookback: usize,
+    ) -> Vec<&LedgerIndexEntry> {
+        let key = (template_id.to_string(), scope_key.to_string());
+        let entries = match self.entries.get(&key) {
+            Some(e) => e,
+            None => return Vec::new(),
+        };
+
+        // Filter to entries with periods before the current period.
+        let mut prior: Vec<&LedgerIndexEntry> = entries
+            .iter()
+            .filter(|e| {
+                match (&e.report_period, &self.current_period) {
+                    (Some(ep), Some(cp)) => ep.as_str() < cp.as_str(),
+                    (Some(_), None) => true, // no current period = include all
+                    _ => false,              // entries without periods are excluded
+                }
+            })
+            .collect();
+
+        // Sort by period descending (most recent first).
+        prior.sort_by(|a, b| {
+            b.report_period
+                .as_deref()
+                .unwrap_or("")
+                .cmp(a.report_period.as_deref().unwrap_or(""))
+        });
+
+        // Take only the `lookback` most recent.
+        prior.truncate(lookback);
+        prior
+    }
+
+    /// Count entries matching template_id + scope within lookback periods.
+    fn count(&self, template_id: &str, scope_key: &str, lookback: usize) -> usize {
+        self.lookup(template_id, scope_key, lookback).len()
+    }
+
+    /// Check if any entries exist for template_id + scope within lookback periods.
+    fn has(&self, template_id: &str, scope_key: &str, lookback: usize) -> bool {
+        self.count(template_id, scope_key, lookback) > 0
+    }
+
+    /// Count consecutive periods (ending at the period just before current)
+    /// where the template fired for the given scope.
+    fn streak(&self, template_id: &str, scope_key: &str) -> usize {
+        let key = (template_id.to_string(), scope_key.to_string());
+        let entries = match self.entries.get(&key) {
+            Some(e) => e,
+            None => return 0,
+        };
+
+        // Collect periods before current, sorted descending.
+        let mut periods: Vec<&str> = entries
+            .iter()
+            .filter_map(|e| {
+                let period = e.report_period.as_deref()?;
+                match &self.current_period {
+                    Some(cp) if period >= cp.as_str() => None,
+                    _ => Some(period),
+                }
+            })
+            .collect();
+        periods.sort();
+        periods.dedup();
+        periods.reverse(); // most recent first
+
+        if periods.is_empty() {
+            return 0;
+        }
+
+        // Count consecutive streak from the most recent period backward.
+        let mut streak = 1;
+        for i in 1..periods.len() {
+            if crate::ledger::is_consecutive_period(periods[i], periods[i - 1]) {
+                streak += 1;
+            } else {
+                break;
+            }
+        }
+        streak
+    }
+
+    /// Get a specific evidence field from an entry N periods ago.
+    fn evidence(
+        &self,
+        template_id: &str,
+        scope_key: &str,
+        field_name: &str,
+        periods_ago: usize,
+    ) -> Val {
+        let entries = self.lookup(template_id, scope_key, periods_ago + 1);
+        // periods_ago=0 means most recent prior, 1 means one before that, etc.
+        match entries.get(periods_ago) {
+            Some(entry) => match entry.evidence.get(field_name) {
+                Some(serde_json::Value::Number(n)) => Val::Num(n.as_f64().unwrap_or(0.0)),
+                Some(serde_json::Value::String(s)) => Val::Str(s.clone()),
+                Some(serde_json::Value::Bool(b)) => Val::Bool(*b),
+                _ => Val::Null,
+            },
+            None => Val::Null,
+        }
+    }
+
+    /// Get the first (earliest) period within lookback that has an entry.
+    fn first_period(&self, template_id: &str, scope_key: &str, lookback: usize) -> Val {
+        let entries = self.lookup(template_id, scope_key, lookback);
+        // Entries are sorted most-recent-first; last one is earliest.
+        match entries.last().and_then(|e| e.report_period.as_deref()) {
+            Some(p) => Val::Str(p.to_string()),
+            None => Val::Null,
+        }
+    }
+
+    /// Get the last (most recent) period within lookback that has an entry.
+    fn last_period(&self, template_id: &str, scope_key: &str, lookback: usize) -> Val {
+        let entries = self.lookup(template_id, scope_key, lookback);
+        // Entries are sorted most-recent-first; first one is most recent.
+        match entries.first().and_then(|e| e.report_period.as_deref()) {
+            Some(p) => Val::Str(p.to_string()),
+            None => Val::Null,
+        }
+    }
+}
 
 /// Runtime value type for the expression evaluator.
 #[derive(Debug, Clone)]
@@ -80,6 +262,30 @@ pub fn eval_expr(expr: &str, ctx: &Ctx) -> Val {
 /// by iterating over dimension elements. When `cube` is `None`,
 /// falls back to context variable lookup (backward compat).
 pub fn eval_expr_with_cube(expr: &str, ctx: &Ctx, cube: Option<&CubeData>) -> Val {
+    eval_expr_full(expr, ctx, cube, None, "")
+}
+
+/// Evaluate an expression with full context: cube + ledger + scope.
+///
+/// Phase 7A.3: adds ledger query capability. The `scope_key` identifies
+/// the current evaluation scope for ledger lookups (e.g., "channel=Paid_Search").
+pub fn eval_expr_with_ledger(
+    expr: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    scope_key: &str,
+) -> Val {
+    eval_expr_full(expr, ctx, cube, ledger, scope_key)
+}
+
+fn eval_expr_full(
+    expr: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    scope_key: &str,
+) -> Val {
     // Normalize whitespace: YAML folded scalars can embed newlines.
     let expr = expr.replace('\n', " ");
     let expr = expr.trim();
@@ -100,39 +306,45 @@ pub fn eval_expr_with_cube(expr: &str, ctx: &Ctx, cube: Option<&CubeData>) -> Va
         .strip_prefix("NOT ")
         .or_else(|| expr.strip_prefix("not "))
     {
-        let val = eval_expr_with_cube(rest, ctx, cube);
+        let val = eval_expr_full(rest, ctx, cube, ledger, scope_key);
         return Val::Bool(!val.is_truthy());
     }
 
     // AND / OR (lowest precedence, split from left)
-    if let Some(val) = try_logical(expr, ctx, cube) {
+    if let Some(val) = try_logical(expr, ctx, cube, ledger, scope_key) {
         return val;
     }
 
     // Comparisons: >=, <=, !=, ==, >, <
-    if let Some(val) = try_comparison(expr, ctx, cube) {
+    if let Some(val) = try_comparison(expr, ctx, cube, ledger, scope_key) {
         return val;
     }
 
     // Addition / subtraction (left-to-right, respecting parens)
-    if let Some(val) = try_additive(expr, ctx, cube) {
+    if let Some(val) = try_additive(expr, ctx, cube, ledger, scope_key) {
         return val;
     }
 
     // Multiplication / division
-    if let Some(val) = try_multiplicative(expr, ctx, cube) {
+    if let Some(val) = try_multiplicative(expr, ctx, cube, ledger, scope_key) {
         return val;
     }
 
     // Unary / atoms
-    eval_atom(expr, ctx, cube)
+    eval_atom(expr, ctx, cube, ledger, scope_key)
 }
 
-fn try_logical(expr: &str, ctx: &Ctx, cube: Option<&CubeData>) -> Option<Val> {
+fn try_logical(
+    expr: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    scope_key: &str,
+) -> Option<Val> {
     for keyword in &[" AND ", " OR "] {
         if let Some(pos) = find_top_level(expr, keyword) {
-            let left = eval_expr_with_cube(&expr[..pos], ctx, cube);
-            let right = eval_expr_with_cube(&expr[pos + keyword.len()..], ctx, cube);
+            let left = eval_expr_full(&expr[..pos], ctx, cube, ledger, scope_key);
+            let right = eval_expr_full(&expr[pos + keyword.len()..], ctx, cube, ledger, scope_key);
             return Some(match *keyword {
                 " AND " => Val::Bool(left.is_truthy() && right.is_truthy()),
                 " OR " => Val::Bool(left.is_truthy() || right.is_truthy()),
@@ -143,11 +355,17 @@ fn try_logical(expr: &str, ctx: &Ctx, cube: Option<&CubeData>) -> Option<Val> {
     None
 }
 
-fn try_comparison(expr: &str, ctx: &Ctx, cube: Option<&CubeData>) -> Option<Val> {
+fn try_comparison(
+    expr: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    scope_key: &str,
+) -> Option<Val> {
     for op in &[">=", "<=", "!=", "==", ">", "<"] {
         if let Some(pos) = find_top_level(expr, op) {
-            let left = eval_expr_with_cube(&expr[..pos], ctx, cube);
-            let right = eval_expr_with_cube(&expr[pos + op.len()..], ctx, cube);
+            let left = eval_expr_full(&expr[..pos], ctx, cube, ledger, scope_key);
+            let right = eval_expr_full(&expr[pos + op.len()..], ctx, cube, ledger, scope_key);
             let (l, r) = match (left.as_num(), right.as_num()) {
                 (Some(l), Some(r)) => (l, r),
                 _ => return Some(Val::Bool(false)),
@@ -166,7 +384,13 @@ fn try_comparison(expr: &str, ctx: &Ctx, cube: Option<&CubeData>) -> Option<Val>
     None
 }
 
-fn try_additive(expr: &str, ctx: &Ctx, cube: Option<&CubeData>) -> Option<Val> {
+fn try_additive(
+    expr: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    scope_key: &str,
+) -> Option<Val> {
     let bytes = expr.as_bytes();
     let mut depth = 0i32;
     let mut last_pos: Option<(usize, u8)> = None;
@@ -184,8 +408,8 @@ fn try_additive(expr: &str, ctx: &Ctx, cube: Option<&CubeData>) -> Option<Val> {
         }
     }
     if let Some((pos, op)) = last_pos {
-        let left = eval_expr_with_cube(&expr[..pos], ctx, cube);
-        let right = eval_expr_with_cube(&expr[pos + 1..], ctx, cube);
+        let left = eval_expr_full(&expr[..pos], ctx, cube, ledger, scope_key);
+        let right = eval_expr_full(&expr[pos + 1..], ctx, cube, ledger, scope_key);
         if let (Some(l), Some(r)) = (left.as_num(), right.as_num()) {
             return Some(Val::Num(if op == b'+' { l + r } else { l - r }));
         }
@@ -193,7 +417,13 @@ fn try_additive(expr: &str, ctx: &Ctx, cube: Option<&CubeData>) -> Option<Val> {
     None
 }
 
-fn try_multiplicative(expr: &str, ctx: &Ctx, cube: Option<&CubeData>) -> Option<Val> {
+fn try_multiplicative(
+    expr: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    scope_key: &str,
+) -> Option<Val> {
     let bytes = expr.as_bytes();
     let mut depth = 0i32;
     let mut last_pos: Option<(usize, u8)> = None;
@@ -208,8 +438,8 @@ fn try_multiplicative(expr: &str, ctx: &Ctx, cube: Option<&CubeData>) -> Option<
         }
     }
     if let Some((pos, op)) = last_pos {
-        let left = eval_expr_with_cube(&expr[..pos], ctx, cube);
-        let right = eval_expr_with_cube(&expr[pos + 1..], ctx, cube);
+        let left = eval_expr_full(&expr[..pos], ctx, cube, ledger, scope_key);
+        let right = eval_expr_full(&expr[pos + 1..], ctx, cube, ledger, scope_key);
         if let (Some(l), Some(r)) = (left.as_num(), right.as_num()) {
             return Some(Val::Num(if op == b'*' {
                 l * r
@@ -223,12 +453,18 @@ fn try_multiplicative(expr: &str, ctx: &Ctx, cube: Option<&CubeData>) -> Option<
     None
 }
 
-fn eval_atom(expr: &str, ctx: &Ctx, cube: Option<&CubeData>) -> Val {
+fn eval_atom(
+    expr: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    scope_key: &str,
+) -> Val {
     let expr = expr.trim();
 
     // Parenthesized expression.
     if expr.starts_with('(') && expr.ends_with(')') && matching_paren(expr) == expr.len() - 1 {
-        return eval_expr_with_cube(&expr[1..expr.len() - 1], ctx, cube);
+        return eval_expr_full(&expr[1..expr.len() - 1], ctx, cube, ledger, scope_key);
     }
 
     // String literal: 'text'
@@ -243,22 +479,42 @@ fn eval_atom(expr: &str, ctx: &Ctx, cube: Option<&CubeData>) -> Val {
 
     // Function calls.
     if let Some(inner) = strip_func(expr, "abs") {
-        return match eval_expr_with_cube(inner, ctx, cube).as_num() {
+        return match eval_expr_full(inner, ctx, cube, ledger, scope_key).as_num() {
             Some(n) => Val::Num(n.abs()),
             None => Val::Null,
         };
     }
     if let Some(inner) = strip_func(expr, "not") {
         // Finding #4: NOT operator as function call.
-        let val = eval_expr_with_cube(inner, ctx, cube);
+        let val = eval_expr_full(inner, ctx, cube, ledger, scope_key);
         return Val::Bool(!val.is_truthy());
     }
     if let Some(inner) = strip_func(expr, "if") {
-        return eval_if(inner, ctx, cube);
+        return eval_if(inner, ctx, cube, ledger, scope_key);
     }
     if let Some(inner) = strip_func(expr, "element_count") {
         let key = format!("element_count({})", inner.trim());
         return ctx.get(&key).cloned().unwrap_or(Val::Num(0.0));
+    }
+
+    // ─── Ledger query functions (Phase 7A.3) ──────────────────────────
+    if let Some(inner) = strip_func(expr, "ledger_count") {
+        return eval_ledger_count(inner, ctx, cube, ledger, scope_key);
+    }
+    if let Some(inner) = strip_func(expr, "ledger_has") {
+        return eval_ledger_has(inner, ctx, cube, ledger, scope_key);
+    }
+    if let Some(inner) = strip_func(expr, "ledger_streak") {
+        return eval_ledger_streak(inner, ledger, scope_key);
+    }
+    if let Some(inner) = strip_func(expr, "ledger_evidence") {
+        return eval_ledger_evidence(inner, ctx, cube, ledger, scope_key);
+    }
+    if let Some(inner) = strip_func(expr, "ledger_first_period") {
+        return eval_ledger_first_period(inner, ctx, cube, ledger, scope_key);
+    }
+    if let Some(inner) = strip_func(expr, "ledger_last_period") {
+        return eval_ledger_last_period(inner, ctx, cube, ledger, scope_key);
     }
 
     // Generic aggregate functions (Finding #1: evaluate arbitrary predicates).
@@ -298,16 +554,22 @@ fn eval_atom(expr: &str, ctx: &Ctx, cube: Option<&CubeData>) -> Val {
     Val::Null
 }
 
-fn eval_if(args_str: &str, ctx: &Ctx, cube: Option<&CubeData>) -> Val {
+fn eval_if(
+    args_str: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    scope_key: &str,
+) -> Val {
     let parts = split_top_level_commas(args_str);
     if parts.len() < 3 {
         return Val::Null;
     }
-    let cond = eval_expr_with_cube(parts[0], ctx, cube);
+    let cond = eval_expr_full(parts[0], ctx, cube, ledger, scope_key);
     if cond.is_truthy() {
-        eval_expr_with_cube(parts[1], ctx, cube)
+        eval_expr_full(parts[1], ctx, cube, ledger, scope_key)
     } else {
-        eval_expr_with_cube(parts[2], ctx, cube)
+        eval_expr_full(parts[2], ctx, cube, ledger, scope_key)
     }
 }
 
@@ -500,6 +762,177 @@ fn eval_first_where(full_expr: &str, ctx: &Ctx, cube: Option<&CubeData>) -> Val 
             .map(|e| Val::Num(e.value))
             .unwrap_or(Val::Null)
     }
+}
+
+// ─── Ledger query function implementations (Phase 7A.3) ─────────────
+
+/// `ledger_count(template_id, lookback_periods)` → number.
+///
+/// Counts how many of the last N periods have a ledger entry for the
+/// given template_id at the current evaluation scope.
+fn eval_ledger_count(
+    args: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    scope_key: &str,
+) -> Val {
+    let ledger = match ledger {
+        Some(l) => l,
+        None => return Val::Num(0.0),
+    };
+    let parts = split_top_level_commas(args);
+    if parts.len() < 2 {
+        return Val::Num(0.0);
+    }
+    let template_id = extract_string_arg(parts[0], ctx, cube, ledger, scope_key);
+    let lookback = eval_expr_full(parts[1].trim(), ctx, cube, Some(ledger), scope_key)
+        .as_num()
+        .unwrap_or(6.0) as usize;
+
+    Val::Num(ledger.count(&template_id, scope_key, lookback) as f64)
+}
+
+/// `ledger_has(template_id, lookback_periods)` → boolean (1.0/0.0).
+///
+/// Returns 1.0 if any ledger entry exists for the template_id within
+/// the lookback window at the current scope; 0.0 otherwise.
+fn eval_ledger_has(
+    args: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    scope_key: &str,
+) -> Val {
+    let ledger = match ledger {
+        Some(l) => l,
+        None => return Val::Num(0.0),
+    };
+    let parts = split_top_level_commas(args);
+    if parts.len() < 2 {
+        return Val::Num(0.0);
+    }
+    let template_id = extract_string_arg(parts[0], ctx, cube, ledger, scope_key);
+    let lookback = eval_expr_full(parts[1].trim(), ctx, cube, Some(ledger), scope_key)
+        .as_num()
+        .unwrap_or(6.0) as usize;
+
+    Val::Num(if ledger.has(&template_id, scope_key, lookback) {
+        1.0
+    } else {
+        0.0
+    })
+}
+
+/// `ledger_streak(template_id)` → number.
+///
+/// Counts consecutive periods ending at the period just before the
+/// current one where the template fired for the current scope.
+fn eval_ledger_streak(args: &str, ledger: Option<&LedgerIndex>, scope_key: &str) -> Val {
+    let ledger = match ledger {
+        Some(l) => l,
+        None => return Val::Num(0.0),
+    };
+    let template_id = args.trim().trim_matches('\'').trim_matches('"');
+    Val::Num(ledger.streak(template_id, scope_key) as f64)
+}
+
+/// `ledger_evidence(template_id, field_name, periods_ago)` → number/string.
+///
+/// Retrieves a specific evidence field from a ledger entry N periods ago.
+fn eval_ledger_evidence(
+    args: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    scope_key: &str,
+) -> Val {
+    let ledger = match ledger {
+        Some(l) => l,
+        None => return Val::Null,
+    };
+    let parts = split_top_level_commas(args);
+    if parts.len() < 3 {
+        return Val::Null;
+    }
+    let template_id = extract_string_arg(parts[0], ctx, cube, ledger, scope_key);
+    let field_name = extract_string_arg(parts[1], ctx, cube, ledger, scope_key);
+    let periods_ago = eval_expr_full(parts[2].trim(), ctx, cube, Some(ledger), scope_key)
+        .as_num()
+        .unwrap_or(0.0) as usize;
+
+    ledger.evidence(&template_id, scope_key, &field_name, periods_ago)
+}
+
+/// `ledger_first_period(template_id, lookback_periods)` → string.
+///
+/// Returns the earliest period within the lookback window that has an entry.
+fn eval_ledger_first_period(
+    args: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    scope_key: &str,
+) -> Val {
+    let ledger = match ledger {
+        Some(l) => l,
+        None => return Val::Null,
+    };
+    let parts = split_top_level_commas(args);
+    if parts.len() < 2 {
+        return Val::Null;
+    }
+    let template_id = extract_string_arg(parts[0], ctx, cube, ledger, scope_key);
+    let lookback = eval_expr_full(parts[1].trim(), ctx, cube, Some(ledger), scope_key)
+        .as_num()
+        .unwrap_or(6.0) as usize;
+
+    ledger.first_period(&template_id, scope_key, lookback)
+}
+
+/// `ledger_last_period(template_id, lookback_periods)` → string.
+///
+/// Returns the most recent period within the lookback window that has an entry.
+fn eval_ledger_last_period(
+    args: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    scope_key: &str,
+) -> Val {
+    let ledger = match ledger {
+        Some(l) => l,
+        None => return Val::Null,
+    };
+    let parts = split_top_level_commas(args);
+    if parts.len() < 2 {
+        return Val::Null;
+    }
+    let template_id = extract_string_arg(parts[0], ctx, cube, ledger, scope_key);
+    let lookback = eval_expr_full(parts[1].trim(), ctx, cube, Some(ledger), scope_key)
+        .as_num()
+        .unwrap_or(6.0) as usize;
+
+    ledger.last_period(&template_id, scope_key, lookback)
+}
+
+/// Extract a string argument (strip quotes if present, or evaluate as expression).
+fn extract_string_arg(
+    arg: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: &LedgerIndex,
+    scope_key: &str,
+) -> String {
+    let arg = arg.trim();
+    // String literal: 'text' or "text"
+    if (arg.starts_with('\'') && arg.ends_with('\''))
+        || (arg.starts_with('"') && arg.ends_with('"'))
+    {
+        return arg[1..arg.len() - 1].to_string();
+    }
+    // Otherwise evaluate and convert to string.
+    eval_expr_full(arg, ctx, cube, Some(ledger), scope_key).to_display()
 }
 
 // ─── Parsing helpers ────────────────────────────────────────────────
@@ -803,6 +1236,264 @@ mod tests {
             result.as_num().unwrap(),
             1.0,
             "only Peoria (80) has < 200 impressions"
+        );
+    }
+
+    // ─── Ledger query function tests (Phase 7A.3) ─────────────────────
+
+    fn make_ledger_entry(
+        template_id: &str,
+        period: &str,
+        scope: &[(&str, &str)],
+        evidence: &[(&str, f64)],
+    ) -> crate::ledger::LedgerEntry {
+        let scope_map: BTreeMap<String, String> = scope
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let evidence_map: BTreeMap<String, serde_json::Value> = evidence
+            .iter()
+            .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+            .collect();
+        crate::ledger::LedgerEntry {
+            schema_version: "1.0".to_string(),
+            ledger_entry_id: format!("{template_id}-{period}"),
+            generated_at: "2026-05-07T10:00:00Z".to_string(),
+            model: "test.yaml".to_string(),
+            model_hash: "sha256:test".to_string(),
+            report_period: Some(period.to_string()),
+            scope: scope_map,
+            narrative: crate::ledger::NarrativeRecord {
+                id: template_id.to_string(),
+                section: None,
+                severity: "warning".to_string(),
+                text: "test".to_string(),
+                template_id: template_id.to_string(),
+                notability_score: None,
+            },
+            evidence: evidence_map,
+            benchmarks_referenced: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_ledger_count_returns_matching_entry_count() {
+        let entries = vec![
+            make_ledger_entry("clicks_down", "2026-01", &[("channel", "Display")], &[]),
+            make_ledger_entry("clicks_down", "2026-02", &[("channel", "Display")], &[]),
+            make_ledger_entry("clicks_down", "2026-03", &[("channel", "Display")], &[]),
+            make_ledger_entry("spend_up", "2026-02", &[("channel", "Display")], &[]),
+        ];
+        let index = LedgerIndex::build(&entries, Some("2026-04".to_string()));
+        let ctx = HashMap::new();
+
+        let result = eval_expr_with_ledger(
+            "ledger_count('clicks_down', 6)",
+            &ctx,
+            None,
+            Some(&index),
+            "channel=Display",
+        );
+        assert_eq!(
+            result.as_num().unwrap(),
+            3.0,
+            "should find 3 entries for clicks_down"
+        );
+
+        // With lookback of 2, only get the 2 most recent.
+        let result = eval_expr_with_ledger(
+            "ledger_count('clicks_down', 2)",
+            &ctx,
+            None,
+            Some(&index),
+            "channel=Display",
+        );
+        assert_eq!(
+            result.as_num().unwrap(),
+            2.0,
+            "lookback 2 should return only 2 most recent"
+        );
+    }
+
+    #[test]
+    fn test_ledger_streak_counts_consecutive_periods() {
+        let entries = vec![
+            make_ledger_entry(
+                "impressions_mom_decline",
+                "2026-01",
+                &[("channel", "Search")],
+                &[],
+            ),
+            make_ledger_entry(
+                "impressions_mom_decline",
+                "2026-02",
+                &[("channel", "Search")],
+                &[],
+            ),
+            make_ledger_entry(
+                "impressions_mom_decline",
+                "2026-03",
+                &[("channel", "Search")],
+                &[],
+            ),
+        ];
+        let index = LedgerIndex::build(&entries, Some("2026-04".to_string()));
+        let ctx = HashMap::new();
+
+        let result = eval_expr_with_ledger(
+            "ledger_streak('impressions_mom_decline')",
+            &ctx,
+            None,
+            Some(&index),
+            "channel=Search",
+        );
+        assert_eq!(
+            result.as_num().unwrap(),
+            3.0,
+            "3 consecutive months should give streak of 3"
+        );
+    }
+
+    #[test]
+    fn test_ledger_streak_resets_on_gap() {
+        let entries = vec![
+            make_ledger_entry("clicks_down", "2026-01", &[("channel", "Display")], &[]),
+            // gap at 2026-02
+            make_ledger_entry("clicks_down", "2026-03", &[("channel", "Display")], &[]),
+            make_ledger_entry("clicks_down", "2026-04", &[("channel", "Display")], &[]),
+        ];
+        let index = LedgerIndex::build(&entries, Some("2026-05".to_string()));
+        let ctx = HashMap::new();
+
+        let result = eval_expr_with_ledger(
+            "ledger_streak('clicks_down')",
+            &ctx,
+            None,
+            Some(&index),
+            "channel=Display",
+        );
+        assert_eq!(
+            result.as_num().unwrap(),
+            2.0,
+            "gap at 2026-02 should reset streak; only Mar+Apr are consecutive"
+        );
+    }
+
+    #[test]
+    fn test_ledger_has_returns_boolean() {
+        let entries = vec![make_ledger_entry(
+            "device_underperformance",
+            "2026-03",
+            &[("channel", "Display")],
+            &[],
+        )];
+        let index = LedgerIndex::build(&entries, Some("2026-04".to_string()));
+        let ctx = HashMap::new();
+
+        let result = eval_expr_with_ledger(
+            "ledger_has('device_underperformance', 3)",
+            &ctx,
+            None,
+            Some(&index),
+            "channel=Display",
+        );
+        assert_eq!(result.as_num().unwrap(), 1.0, "should return 1.0 (true)");
+
+        let result = eval_expr_with_ledger(
+            "ledger_has('nonexistent_template', 3)",
+            &ctx,
+            None,
+            Some(&index),
+            "channel=Display",
+        );
+        assert_eq!(result.as_num().unwrap(), 0.0, "should return 0.0 (false)");
+    }
+
+    #[test]
+    fn test_ledger_evidence_reads_specific_field() {
+        let entries = vec![
+            make_ledger_entry(
+                "impressions_mom",
+                "2026-02",
+                &[("channel", "Display")],
+                &[("prev_value", 5000.0), ("current_value", 4200.0)],
+            ),
+            make_ledger_entry(
+                "impressions_mom",
+                "2026-03",
+                &[("channel", "Display")],
+                &[("prev_value", 4200.0), ("current_value", 3800.0)],
+            ),
+        ];
+        let index = LedgerIndex::build(&entries, Some("2026-04".to_string()));
+        let ctx = HashMap::new();
+
+        // periods_ago=0 → most recent (2026-03)
+        let result = eval_expr_with_ledger(
+            "ledger_evidence('impressions_mom', 'prev_value', 0)",
+            &ctx,
+            None,
+            Some(&index),
+            "channel=Display",
+        );
+        assert_eq!(
+            result.as_num().unwrap(),
+            4200.0,
+            "most recent entry's prev_value should be 4200"
+        );
+
+        // periods_ago=1 → one before (2026-02)
+        let result = eval_expr_with_ledger(
+            "ledger_evidence('impressions_mom', 'prev_value', 1)",
+            &ctx,
+            None,
+            Some(&index),
+            "channel=Display",
+        );
+        assert_eq!(
+            result.as_num().unwrap(),
+            5000.0,
+            "second-most-recent entry's prev_value should be 5000"
+        );
+    }
+
+    #[test]
+    fn test_ledger_query_with_no_ledger_returns_zero() {
+        let ctx = HashMap::new();
+
+        let result = eval_expr_with_ledger(
+            "ledger_count('clicks_down', 6)",
+            &ctx,
+            None,
+            None,
+            "channel=Display",
+        );
+        assert_eq!(result.as_num().unwrap(), 0.0, "no ledger should return 0");
+
+        let result = eval_expr_with_ledger(
+            "ledger_streak('clicks_down')",
+            &ctx,
+            None,
+            None,
+            "channel=Display",
+        );
+        assert_eq!(
+            result.as_num().unwrap(),
+            0.0,
+            "no ledger should return 0 for streak"
+        );
+
+        let result = eval_expr_with_ledger(
+            "ledger_has('clicks_down', 3)",
+            &ctx,
+            None,
+            None,
+            "channel=Display",
+        );
+        assert_eq!(
+            result.as_num().unwrap(),
+            0.0,
+            "no ledger should return 0 for has"
         );
     }
 }
