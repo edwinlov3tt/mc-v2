@@ -137,6 +137,7 @@ User clicks "Show Payload" → sees the raw JSON with evidence objects, template
 | How many templates per family? | **3 per family minimum** (impression/click trend, device/geo ranking, alarm/warning). Total: ~12 templates. Each ~10 lines of YAML. |
 | What if a template's `when:` predicate fails (e.g., `prev()` returns Null at first period)? | **Skip silently.** A template that can't fire doesn't produce output. This is correct behavior — "no change worth mentioning" produces no narrative. |
 | Evidence objects: what fields? | **Every binding value that went into the template.** If the template uses `{current_impressions}` and `{prev_impressions}`, the evidence includes both. Plus `tactic`, `period`, `severity`, `template_id`. This is the "show payload" data. |
+| **Design for extraction to `mc-narrative` crate (BINDING)** | **`narrative.rs` must be self-contained and extraction-ready.** Define `NarrativeTemplate`, `NarrativeOutput`, `NarrativeEvidence` as clean structs with no demo-server-specific types. Keep formula-engine calls behind a function boundary (`pub fn evaluate_templates(templates: &[NarrativeTemplate], cube: &mut Cube, refs: &Refs) -> Vec<NarrativeOutput>`). No axum types, no HTTP types, no frontend types leak into the narrative logic. After the demo ships, Phase 7A.1 extracts `narrative.rs` → `crates/mc-narrative/` as a mechanical refactor (move file + add Cargo.toml + expose public API), NOT a rewrite. Document at the top of `narrative.rs`: `// Designed for extraction to mc-narrative crate in Phase 7A.1. Keep self-contained.` |
 
 ---
 
