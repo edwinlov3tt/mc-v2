@@ -68,8 +68,9 @@ pub use cell::{CellValue, Provenance, StoredCell, Uncertainty};
 pub use consolidation::{Consolidator, LeafReadout};
 pub use coordinate::{CellCoordinate, CellCoordinateBuilder};
 pub use cube::{
-    CalibrationMapData, Cube, CubeBuilder, FittedModelData, OutputBound, ReferenceData,
-    ThresholdBand, WriteIntent, WritebackRequest, WritebackResult,
+    AdstockSpec, CalibrationMapData, Cube, CubeBuilder, FittedModelData, OutputBound,
+    ReferenceData, SaturationSpec, ThresholdBand, Transforms, WriteIntent, WritebackRequest,
+    WritebackResult,
 };
 pub use dependency::{DependencyEdge, DependencyGraph, DependencySource};
 pub use dimension::{Dimension, DimensionBuilder, DimensionKind};

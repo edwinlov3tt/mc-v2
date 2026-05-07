@@ -2623,6 +2623,11 @@ pub struct FittedModelData {
     /// after the link function. None → no clamp; Some(b) → apply
     /// `b.min`/`b.max` floor/ceiling per ADR-0017 Decision 3.
     pub output_bound: Option<OutputBound>,
+    /// Phase 3H.2 (ADR-0018): optional adstock + saturation transforms
+    /// applied per feature before standardization + coefficient
+    /// multiplication. Per Decision 7's binding pipeline order. None →
+    /// no transforms (pre-3H.2 behavior, byte-identical predictions).
+    pub transforms: Option<Transforms>,
 }
 
 /// Phase 3H.1 (ADR-0017): output clamp on a fitted model. Either field may
@@ -2651,6 +2656,66 @@ impl OutputBound {
             v = v.min(max);
         }
         v
+    }
+}
+
+/// Phase 3H.2 (ADR-0018): per-feature adstock + saturation transform
+/// block on a fitted model. Defaults are empty lists; an empty `Transforms`
+/// is functionally equivalent to `transforms: None`. Mirror of the
+/// schema-side `ParsedTransforms`. Validators MC2071-MC2076 (and MC2077
+/// if reached) clear all field bounds + name memberships before this
+/// reaches the kernel.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Transforms {
+    pub adstock: Vec<AdstockSpec>,
+    pub saturation: Vec<SaturationSpec>,
+}
+
+/// Phase 3H.2: geometric adstock spec for one feature. Eval applies
+/// `adstocked[t] = sum_{k=0}^{min(t, max_lookback)} (rate^k * feature[t-k])`
+/// per ADR-0018 Decision 2, with Null treated as 0 in the recursive sum
+/// (Decision 3 — deliberate exception to Mosaic's Null-propagation).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdstockSpec {
+    /// Feature name; matches a `coefficients[].0` entry on the same model.
+    pub feature: String,
+    /// Geometric decay rate in `[0.0, 1.0]`. Validator MC2075 enforces.
+    pub rate: f64,
+    /// Lookback window length (number of prior periods to include);
+    /// strictly > 0. Validator MC2076 enforces.
+    pub max_lookback: u32,
+}
+
+/// Phase 3H.2: per-feature saturation spec. Hill (S-curve) + Log
+/// (concave) only in v1 per ADR-0018 Decision 5. Other forms (root, exp)
+/// deferred to demand-driven amendments.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SaturationSpec {
+    /// Hill saturation: `x^alpha / (gamma^alpha + x^alpha)`.
+    /// Output in `[0, 1]` for `x >= 0`.
+    Hill {
+        feature: String,
+        /// Shape parameter; controls steepness. Validator MC2072 enforces > 0.
+        alpha: f64,
+        /// Half-saturation point; the value at which saturation = 0.5.
+        /// Validator MC2072 enforces > 0.
+        gamma: f64,
+    },
+    /// Log saturation: `ln(1 + x / scale)`. Output >= 0 for x >= 0.
+    Log {
+        feature: String,
+        /// Saturation rate scale. Validator MC2073 enforces > 0.
+        scale: f64,
+    },
+}
+
+impl SaturationSpec {
+    /// Feature name on the spec (helper used by eval lookup).
+    pub fn feature_name(&self) -> &str {
+        match self {
+            SaturationSpec::Hill { feature, .. } => feature,
+            SaturationSpec::Log { feature, .. } => feature,
+        }
     }
 }
 
