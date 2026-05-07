@@ -689,10 +689,11 @@ fn creative_by_name() -> CubeData {
 #[test]
 fn test_load_all_templates() {
     let templates = load_templates();
+    // 14 from display-like.yaml + 5 from trend-templates.yaml (Phase 7A.3).
     assert_eq!(
         templates.len(),
-        14,
-        "display-like.yaml has exactly 14 templates"
+        19,
+        "display-like.yaml (14) + trend-templates.yaml (5) = 19 templates"
     );
     // Verify sort order: data_sufficiency (sort_order: -10) should be first.
     assert_eq!(templates[0].id, "data_sufficiency");
@@ -703,6 +704,7 @@ fn test_load_all_templates() {
 fn test_template_ids_match_yaml() {
     let templates = load_templates();
     let expected_ids = [
+        // display-like.yaml (14)
         "data_sufficiency",
         "small_sample_warning",
         "impressions_mom",
@@ -717,6 +719,12 @@ fn test_template_ids_match_yaml() {
         "zero_engagement_alarm",
         "top_creative",
         "conversion_alarm",
+        // trend-templates.yaml (5, Phase 7A.3)
+        "persistent_decline",
+        "recurring_warning",
+        "conversion_alarm_persistent",
+        "improvement_trend",
+        "new_issue_first_occurrence",
     ];
     let mut actual_ids: Vec<&str> = templates.iter().map(|t| t.id.as_str()).collect();
     actual_ids.sort();

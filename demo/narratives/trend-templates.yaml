@@ -1,0 +1,71 @@
+narrative_format_version: 1
+
+templates:
+  - id: persistent_decline
+    family: [trend]
+    severity: critical
+    table_types: ["Monthly Performance"]
+    when: "ledger_streak('impressions_mom_decline') >= 3"
+    template: >
+      {tactic_name} impressions have declined for
+      {streak_count} consecutive months, falling from
+      {first_value:,.0f} to {current_value:,.0f} — a
+      cumulative {total_decline:.0f}% decrease. This
+      persistent trend warrants immediate investigation.
+    bindings:
+      streak_count: "ledger_streak('impressions_mom_decline')"
+      first_value: "ledger_evidence('impressions_mom', 'prev_value', streak_count)"
+      current_value: "current.Impressions"
+      total_decline: "(current_value - first_value) / first_value * 100"
+
+  - id: recurring_warning
+    family: [trend]
+    severity: warning
+    table_types: ["Monthly Performance"]
+    when: "ledger_count('device_underperformance', 3) >= 2"
+    template: >
+      Device underperformance has been flagged in
+      {occurrence_count} of the last 3 reporting periods.
+      This is a recurring issue, not a one-time anomaly.
+    bindings:
+      occurrence_count: "ledger_count('device_underperformance', 3)"
+
+  - id: conversion_alarm_persistent
+    family: [trend]
+    severity: critical
+    table_types: ["Campaign Performance", "Monthly Performance"]
+    when: "ledger_streak('conversion_alarm') >= 2"
+    deduplicate: true
+    template: >
+      PERSISTENT: Zero conversions have been recorded for
+      {streak_count} consecutive reporting periods across
+      {total_impressions:,.0f} cumulative impressions.
+      Conversion tracking is likely misconfigured — this is
+      not a performance issue, it is a measurement issue.
+    bindings:
+      streak_count: "ledger_streak('conversion_alarm')"
+      total_impressions: "sum.Impressions"
+
+  - id: improvement_trend
+    family: [trend]
+    severity: success
+    table_types: ["Monthly Performance"]
+    when: "ledger_streak('uniform_momentum') >= 2"
+    template: >
+      All key metrics have improved for {streak_count}
+      consecutive months. The campaign is on a sustained
+      upward trajectory.
+    bindings:
+      streak_count: "ledger_streak('uniform_momentum')"
+
+  - id: new_issue_first_occurrence
+    family: [trend]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: "ledger_has('device_underperformance', 1) == 0 AND any_where(CTR < campaign_avg.CTR * 0.25, Device)"
+    template: >
+      First-time flag: {worst_device} underperformance
+      detected this period. Monitoring — if this recurs
+      next month, it will be escalated to a recurring warning.
+    bindings:
+      worst_device: "first_where(CTR < campaign_avg.CTR * 0.25, Device).name"

@@ -27,6 +27,7 @@ mod ledger_export;
 mod loader;
 mod mcp;
 mod narrate;
+mod narrate_trends;
 mod query;
 mod query_ledger;
 mod sweep;
@@ -77,6 +78,10 @@ fn main() {
                     },
                     "narrate" => match narrate::parse(&args[3..]) {
                         Ok(cmd) => std::process::exit(narrate::run(cmd)),
+                        Err(e) => fatal(&e),
+                    },
+                    "narrate-trends" => match narrate_trends::parse(&args[3..]) {
+                        Ok(cmd) => std::process::exit(narrate_trends::run(cmd)),
                         Err(e) => fatal(&e),
                     },
                     "query-ledger" => match query_ledger::parse(&args[3..]) {
