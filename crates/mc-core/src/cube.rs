@@ -1288,8 +1288,13 @@ impl Cube {
                 principal,
             ),
             CrossCoordRead::PredictModel { model_id, features } => {
+                // Phase 3H.2: clone the model so subsequent `read_inner`
+                // calls inside `apply_adstock` (which need `&mut self`)
+                // don't conflict with the borrow. FittedModelData is
+                // small (a handful of Strings + small Vecs); typical MMM
+                // models are < 1KB.
                 let model = match self.reference_data.fitted_models.get(model_id) {
-                    Some(m) => m,
+                    Some(m) => m.clone(),
                     None => return Ok(ScalarValue::Null),
                 };
 
@@ -1307,11 +1312,79 @@ impl Cube {
                     return Ok(ScalarValue::Null);
                 }
 
-                // Apply standardization if configured. Per Phase 6A.1 CRIT-1:
-                // look up (mean, std) by feature name, not by position. The
-                // previous positional zip silently produced wrong predictions
-                // when standardization.params was declared in a different
-                // order than coefficients.
+                // Phase 3H.2 (ADR-0018 Decision 7): pipeline order is
+                // feature → adstock → saturation → standardization →
+                // coefficient → sum + intercept → link → output_bound.
+                // Each transform replaces feature_values[i] in place;
+                // the standardization + link + output_bound code below
+                // is unchanged from 3H.1 / 6A.1.
+
+                // Step 1 (Decision 2 + 3): adstock. Cross-coord backward
+                // scan; inherits cross-coord dep-graph debt per Decision
+                // 8 + Amendment §11. See `apply_adstock` doc comment for
+                // the LOAD-BEARING Null-as-zero exception (Decision 3).
+                if let Some(transforms) = &model.transforms {
+                    if !transforms.adstock.is_empty() {
+                        let time_pos = match self.find_time_dimension_position() {
+                            Some(p) => p,
+                            None => return Ok(ScalarValue::Null),
+                        };
+                        // Iterate adstock specs by index so we can mutate
+                        // feature_values in place. Spec is small enough
+                        // to clone per iteration without measurable cost.
+                        let adstock_specs = transforms.adstock.clone();
+                        for spec in &adstock_specs {
+                            let feature_idx = match model
+                                .coefficients
+                                .iter()
+                                .position(|(name, _)| name == &spec.feature)
+                            {
+                                Some(i) => i,
+                                // Validator MC2071 has already cleared
+                                // membership; the None arm is defensive.
+                                None => continue,
+                            };
+                            let current = feature_values[feature_idx];
+                            let adstocked = self.apply_adstock(
+                                current,
+                                spec,
+                                target_coord,
+                                time_pos,
+                                measure_dim_position,
+                                principal,
+                            )?;
+                            feature_values[feature_idx] = adstocked;
+                        }
+                    }
+
+                    // Step 2 (Decision 5): saturation. Pure per-feature
+                    // function; no cross-coord access. MC2072/MC2073
+                    // have already cleared parameter bounds.
+                    for spec in &transforms.saturation {
+                        let feature_idx = match model
+                            .coefficients
+                            .iter()
+                            .position(|(name, _)| name == spec.feature_name())
+                        {
+                            Some(i) => i,
+                            None => continue, // MC2074 caught it; defensive
+                        };
+                        let v = feature_values[feature_idx];
+                        feature_values[feature_idx] = match spec {
+                            SaturationSpec::Hill { alpha, gamma, .. } => {
+                                apply_hill_saturation(v, *alpha, *gamma)
+                            }
+                            SaturationSpec::Log { scale, .. } => apply_log_saturation(v, *scale),
+                        };
+                    }
+                }
+
+                // Step 3 (Phase 6A.1 CRIT-1): standardization. Per
+                // ADR-0018 Decision 7 binding pipeline order, this runs
+                // AFTER saturation, BEFORE coefficient multiplication.
+                // Look up (mean, std) by feature name (positional zip
+                // would silently mis-pair when standardization.params
+                // was declared in a different order than coefficients).
                 if let Some(ref std_params) = model.standardization {
                     let std_by_name: ahash::AHashMap<&str, (f64, f64)> = std_params
                         .iter()
@@ -1328,7 +1401,7 @@ impl Cube {
                     }
                 }
 
-                // Linear combination: intercept + sum(weight_i * feature_i)
+                // Step 4: linear combination — intercept + sum(weight_i * feature_i)
                 let linear_result = model.intercept
                     + model
                         .coefficients
@@ -1337,18 +1410,16 @@ impl Cube {
                         .map(|((_name, weight), val)| weight * val)
                         .sum::<f64>();
 
-                // Apply link function
+                // Step 5: link function
                 let result = match model.method.as_str() {
                     "logistic" => 1.0 / (1.0 + (-linear_result).exp()),
                     _ => linear_result, // "linear" default
                 };
 
-                // Phase 3H.1 (ADR-0017 Decision 3): clamp the final
-                // prediction to the configured `output_bound` if any.
-                // `OutputBound::apply` is NaN-safe (passes NaN through
-                // unchanged for defense-in-depth, even though Phase
-                // 6A.1 NaN-rejection at writeback should make NaN
-                // unreachable here). The validator (MC2070) has
+                // Step 6 — Phase 3H.1 (ADR-0017 Decision 3): clamp the
+                // final prediction to the configured `output_bound` if
+                // any. `OutputBound::apply` is NaN-safe (passes NaN
+                // through unchanged for defense-in-depth). MC2070 has
                 // already cleared `min < max` so the floor/ceiling
                 // composition is well-defined.
                 let result = match &model.output_bound {
@@ -1539,6 +1610,124 @@ impl Cube {
         self.dimensions
             .iter()
             .position(|d| d.kind == DimensionKind::Standard)
+    }
+
+    /// Phase 3H.2 (ADR-0018 Decision 2 + 3): geometric adstock backward
+    /// scan for one feature.
+    ///
+    /// Computes
+    ///
+    /// ```text
+    /// adstocked[t] = sum_{k=0}^{min(t, max_lookback)} (rate^k * feature[t-k])
+    /// ```
+    ///
+    /// where `feature[t-k]` is read from the cube at the prior coord with
+    /// the Time slot shifted back `k` positions and the Measure slot set
+    /// to the measure named by `spec.feature`. The feature name is
+    /// resolved against the Measure dim by `element_by_name`; if it does
+    /// not match a measure (the user declared adstock on a coefficient
+    /// label that isn't a measure), the function falls back to the
+    /// pre-evaluated current value with no carryover (defensive — not an
+    /// expected configuration).
+    ///
+    /// **Decision 3 — load-bearing exception (Mosaic Null discipline):**
+    /// when `feature[t-k]` is `Null`, it is **TREATED AS 0.0** for the
+    /// recursive sum. This is the **ONLY** exception to Mosaic's
+    /// Null-propagation discipline shipped in Phase 3. The MMM convention
+    /// behind it: a Null cell at a prior period semantically means "no
+    /// campaign / no spend that period," which contributes 0 to adstock.
+    /// Future readers: this is **not** a bug; it's documented in ADR-0018
+    /// Decision 3 and surfaced loudly in the eval site so the convention
+    /// is self-evident.
+    ///
+    /// **Decision 8 + Amendment §11 — cross-coord dep-graph debt:**
+    /// reads at prior coords go through `read_inner`, which inherits the
+    /// existing cross-coord dep-graph behavior (over-invalidation;
+    /// correctness is preserved via the cube-wide revision-bump on every
+    /// write). Adstock makes Phase 3H.2 the fourth+ ADR to inherit this
+    /// debt; cumulative tracking lives in
+    /// `docs/research-notes/cross-coord-dep-graph.md`. The dedicated
+    /// fix-it phase is targeted within the next 2 phase cycles per
+    /// ADR-0018 Amendment §11.
+    fn apply_adstock(
+        &mut self,
+        current_value: f64,
+        spec: &AdstockSpec,
+        target_coord: &CellCoordinate,
+        time_pos: usize,
+        measure_dim_position: usize,
+        principal: PrincipalId,
+    ) -> Result<f64, EngineError> {
+        // Resolve `spec.feature` (a coefficient-name string) to a measure
+        // ElementId via the Measure dim's name index.
+        let measure_dim = &self.dimensions[measure_dim_position];
+        let feature_measure = match measure_dim.element_by_name(&spec.feature) {
+            Some(e) => e.id,
+            None => {
+                // No matching measure name → adstock cannot apply
+                // backward. Return the pre-evaluated current value
+                // unmodified (degraded behavior, defensive).
+                return Ok(current_value);
+            }
+        };
+
+        let cube_id = self.id;
+
+        // Resolve the current Time element's index in the dim's element
+        // vector (the brief's same pattern as TimeOffset / Cumulative —
+        // ElementId is opaque, position is via element_index lookup).
+        let current_time_id = target_coord.element_at(time_pos);
+        let current_time_idx = {
+            let time_dim = &self.dimensions[time_pos];
+            match time_dim.element_index.get(&current_time_id).copied() {
+                Some(i) => i,
+                None => return Ok(current_value),
+            }
+        };
+
+        // Snapshot the Time element id list so the borrow on `self`
+        // can be released before each `read_inner` call (which needs
+        // `&mut self`).
+        let time_element_ids: Vec<ElementId> = self.dimensions[time_pos]
+            .elements
+            .iter()
+            .map(|e| e.id)
+            .collect();
+
+        // Decision 2: silently truncate when max_lookback exceeds the
+        // number of available prior periods. `max_k` covers both the
+        // common case (max_k = max_lookback) and the truncated case
+        // (max_k = current_time_idx).
+        let max_k = current_time_idx.min(spec.max_lookback as usize);
+
+        let mut adstocked = 0.0_f64;
+        let mut rate_pow_k = 1.0_f64;
+        for k in 0..=max_k {
+            let prior_time_id = time_element_ids[current_time_idx - k];
+            // Build the prior coord by replacing the Time slot and the
+            // Measure slot in `target_coord`. All other dim slots stay
+            // identical (per Decision 2: adstock is Time-axis only in v1;
+            // spatial / channel-axis carryover is out of scope).
+            let mut elements: SmallVec<[ElementId; 8]> =
+                target_coord.elements().iter().copied().collect();
+            elements[time_pos] = prior_time_id;
+            elements[measure_dim_position] = feature_measure;
+            let prior_coord = CellCoordinate::from_parts(cube_id, elements.iter().copied());
+            let cv = self.read_inner(&prior_coord, principal, false)?;
+            let prior_value = match cv.value {
+                ScalarValue::F64(v) => v,
+                // Decision 3 — load-bearing exception: Null becomes 0.
+                ScalarValue::Null => 0.0,
+                // Other types (Bool / Str) on a feature measure shouldn't
+                // happen for MMM (features are F64). Treat as 0 to mirror
+                // the Null branch (consistent with how Cumulative skips
+                // non-F64 prior values).
+                _ => 0.0,
+            };
+            adstocked += rate_pow_k * prior_value;
+            rate_pow_k *= spec.rate;
+        }
+        Ok(adstocked)
     }
 
     /// Phase 3J item 5: decide whether a rule with the given `scope`
@@ -2717,6 +2906,46 @@ impl SaturationSpec {
             SaturationSpec::Log { feature, .. } => feature,
         }
     }
+}
+
+/// Phase 3H.2 (ADR-0018 Decision 5): Hill saturation.
+/// `saturation(x) = x^alpha / (gamma^alpha + x^alpha)`.
+/// Output in `[0, 1]` for `x >= 0`.
+///
+/// Defenses:
+/// - Negative `x` is clamped to 0 before raising to `alpha` (negative
+///   spend is nonsensical for MMM and would produce NaN under non-integer
+///   alpha).
+/// - NaN / infinite `x` passes through unchanged. NaN never enters cube
+///   storage (Phase 6A.1 NaN-rejection at writeback), so this is
+///   defense-in-depth; if NaN appears mid-pipeline, the writeback
+///   rejection catches it later.
+/// - Validator MC2072 has already rejected `alpha <= 0` and `gamma <= 0`,
+///   so the denominator `gamma^alpha + x^alpha` is strictly positive.
+pub(crate) fn apply_hill_saturation(x: f64, alpha: f64, gamma: f64) -> f64 {
+    if x.is_nan() || x.is_infinite() {
+        return x;
+    }
+    let x_clamped = x.max(0.0);
+    let x_alpha = x_clamped.powf(alpha);
+    let g_alpha = gamma.powf(alpha);
+    x_alpha / (g_alpha + x_alpha)
+}
+
+/// Phase 3H.2 (ADR-0018 Decision 5): Log saturation.
+/// `saturation(x) = ln(1 + x / scale)`. Output >= 0 for x >= 0.
+///
+/// Defenses:
+/// - Negative `x` is clamped to 0 (negative spend = nonsensical).
+/// - NaN / infinite `x` passes through unchanged.
+/// - Validator MC2073 has already rejected `scale <= 0`, so the
+///   division and the `ln(1 + ·)` are well-defined for all clamped x.
+pub(crate) fn apply_log_saturation(x: f64, scale: f64) -> f64 {
+    if x.is_nan() || x.is_infinite() {
+        return x;
+    }
+    let x_clamped = x.max(0.0);
+    (1.0 + x_clamped / scale).ln()
 }
 
 /// Calibration map data for `calibrate()` evaluation (Phase 3H).

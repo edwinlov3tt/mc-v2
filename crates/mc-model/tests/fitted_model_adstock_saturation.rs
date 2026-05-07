@@ -380,6 +380,248 @@ fn test_same_feature_in_both_adstock_and_saturation_allowed() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Adstock eval tests (Step 3) — cross-coord backward scan.
+// ---------------------------------------------------------------------------
+
+/// Build a 4-period (P1-P4) cube with one feature `tv_spend` and a derived
+/// `Result` measure that calls `predict("model", tv_spend)`. The
+/// `transform_yaml` snippet is inlined under the fitted model. With
+/// intercept = 0 and weight = 1 the prediction equals the post-transform
+/// feature value at the target coord.
+fn build_single_feature_adstock_cube(transform_yaml: &str) -> String {
+    format!(
+        r#"
+model_format_version: 1
+metadata:
+  name: "AdstockEvalTest"
+  description: "test"
+  author: "test"
+  created: "2026-05-06"
+dimensions:
+  - name: "Scenario"
+    kind: "Scenario"
+    elements:
+      - {{ name: "Base", scenario_meta: "Default" }}
+  - name: "Version"
+    kind: "Version"
+    elements:
+      - {{ name: "Working", version_state: "Draft" }}
+  - name: "Time"
+    kind: "Time"
+    elements:
+      - {{ name: "P1" }}
+      - {{ name: "P2" }}
+      - {{ name: "P3" }}
+      - {{ name: "P4" }}
+  - name: "Channel"
+    kind: "Standard"
+    elements:
+      - {{ name: "Web" }}
+  - name: "Market"
+    kind: "Standard"
+    elements:
+      - {{ name: "US" }}
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+measures:
+  - {{ name: "tv_spend", role: "Input",   data_type: "F64", aggregation: "Sum" }}
+  - {{ name: "Result",  role: "Derived", data_type: "F64", aggregation: "Sum" }}
+fitted_models:
+  - name: "model"
+    method: "linear"
+    intercept: 0.0
+    coefficients:
+      - {{ feature: "tv_spend", weight: 1.0 }}
+{transform_yaml}
+rules:
+  - name: "rule_result"
+    target_measure: "Result"
+    scope: "AllLeaves"
+    body: "predict(\"model\", tv_spend)"
+    declared_dependencies: ["tv_spend"]
+"#
+    )
+}
+
+const SCENARIO_BASE: &[(&str, &str)] = &[];
+
+fn spend_coord(time: &'static str) -> Vec<(&'static str, &'static str)> {
+    let _ = SCENARIO_BASE;
+    vec![
+        ("Scenario", "Base"),
+        ("Version", "Working"),
+        ("Time", time),
+        ("Channel", "Web"),
+        ("Market", "US"),
+        ("Measure", "tv_spend"),
+    ]
+}
+
+fn result_coord(time: &'static str) -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("Scenario", "Base"),
+        ("Version", "Working"),
+        ("Time", time),
+        ("Channel", "Web"),
+        ("Market", "US"),
+        ("Measure", "Result"),
+    ]
+}
+
+#[test]
+fn test_adstock_geometric_decay_at_steady_state() {
+    // Decision 2 — feature = 100 at all 4 periods, rate = 0.5,
+    // max_lookback = 3. At P4 the adstocked value is:
+    //   adstocked[P4] = 100 + 0.5*100 + 0.25*100 + 0.125*100 = 187.5
+    let yaml = build_single_feature_adstock_cube(
+        r#"    transforms:
+      adstock:
+        - { feature: "tv_spend", rate: 0.5, max_lookback: 3 }
+"#,
+    );
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    for t in ["P1", "P2", "P3", "P4"] {
+        write_f64(&mut cube, &compiled.refs, p, &spend_coord(t), 100.0);
+    }
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P4"));
+    assert_f64_eq(val, 187.5, "geometric decay at steady state, t=P4");
+}
+
+#[test]
+fn test_adstock_at_first_time_period_returns_current_value() {
+    // At P1 (current_time_idx = 0), max_k = min(0, max_lookback) = 0.
+    // The loop runs once with k = 0, returning rate^0 * feature[P1] = 100.
+    let yaml = build_single_feature_adstock_cube(
+        r#"    transforms:
+      adstock:
+        - { feature: "tv_spend", rate: 0.7, max_lookback: 6 }
+"#,
+    );
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_f64(&mut cube, &compiled.refs, p, &spend_coord("P1"), 100.0);
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P1"));
+    assert_f64_eq(val, 100.0, "adstock at first period = current value");
+}
+
+#[test]
+fn test_adstock_with_null_prior_treats_as_zero() {
+    // Decision 3 — load-bearing exception. Write feature only at P3
+    // (P1, P2 stay Null). At P3 the adstock backward scan reads:
+    //   k=0: feature[P3] = 100
+    //   k=1: feature[P2] = Null → 0
+    //   k=2: feature[P1] = Null → 0
+    // adstocked[P3] = 100 + 0.5*0 + 0.25*0 = 100.
+    let yaml = build_single_feature_adstock_cube(
+        r#"    transforms:
+      adstock:
+        - { feature: "tv_spend", rate: 0.5, max_lookback: 6 }
+"#,
+    );
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_f64(&mut cube, &compiled.refs, p, &spend_coord("P3"), 100.0);
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P3"));
+    assert_f64_eq(
+        val,
+        100.0,
+        "Decision 3: Null prior treated as 0; only current spend contributes",
+    );
+}
+
+#[test]
+fn test_adstock_max_lookback_truncates_correctly() {
+    // Spend = 100 at all 4 periods. With max_lookback = 1, P4 sees only
+    // P3 + P4: 100 + 0.5*100 = 150 (NOT 187.5 — P1, P2 excluded).
+    let yaml = build_single_feature_adstock_cube(
+        r#"    transforms:
+      adstock:
+        - { feature: "tv_spend", rate: 0.5, max_lookback: 1 }
+"#,
+    );
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    for t in ["P1", "P2", "P3", "P4"] {
+        write_f64(&mut cube, &compiled.refs, p, &spend_coord(t), 100.0);
+    }
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P4"));
+    assert_f64_eq(val, 150.0, "max_lookback=1 truncates after 1 prior period");
+}
+
+#[test]
+fn test_adstock_max_lookback_exceeds_time_dim_length_silently_caps() {
+    // Cube has 4 periods. With max_lookback = 100, the scan at P4 silently
+    // caps at current_time_idx = 3, so the result is identical to
+    // max_lookback = 3: 100 + 50 + 25 + 12.5 = 187.5.
+    let yaml = build_single_feature_adstock_cube(
+        r#"    transforms:
+      adstock:
+        - { feature: "tv_spend", rate: 0.5, max_lookback: 100 }
+"#,
+    );
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    for t in ["P1", "P2", "P3", "P4"] {
+        write_f64(&mut cube, &compiled.refs, p, &spend_coord(t), 100.0);
+    }
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P4"));
+    assert_f64_eq(
+        val,
+        187.5,
+        "max_lookback >> time dim length silently caps; same as full scan",
+    );
+}
+
+#[test]
+fn test_adstock_rate_zero_means_no_carryover() {
+    // rate = 0 means rate^k = 0 for k >= 1, so only the k = 0 term
+    // contributes. Result equals the current-period feature value.
+    let yaml = build_single_feature_adstock_cube(
+        r#"    transforms:
+      adstock:
+        - { feature: "tv_spend", rate: 0.0, max_lookback: 6 }
+"#,
+    );
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    for t in ["P1", "P2", "P3", "P4"] {
+        write_f64(&mut cube, &compiled.refs, p, &spend_coord(t), 100.0);
+    }
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P4"));
+    assert_f64_eq(val, 100.0, "rate=0 → no carryover; current value only");
+}
+
+#[test]
+fn test_adstock_high_rate_long_tail() {
+    // rate = 0.9, lookback = 3. Spend at P1=200, P2=0, P3=0, P4=0.
+    // At P4: rate^0*0 + rate^1*0 + rate^2*0 + rate^3*200 = 0.9^3 * 200 = 145.8
+    let yaml = build_single_feature_adstock_cube(
+        r#"    transforms:
+      adstock:
+        - { feature: "tv_spend", rate: 0.9, max_lookback: 3 }
+"#,
+    );
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_f64(&mut cube, &compiled.refs, p, &spend_coord("P1"), 200.0);
+    write_f64(&mut cube, &compiled.refs, p, &spend_coord("P2"), 0.0);
+    write_f64(&mut cube, &compiled.refs, p, &spend_coord("P3"), 0.0);
+    write_f64(&mut cube, &compiled.refs, p, &spend_coord("P4"), 0.0);
+    let val = read_f64(&mut cube, &compiled.refs, p, &result_coord("P4"));
+    let expected = 0.9_f64.powi(3) * 200.0;
+    assert_f64_eq(val, expected, "0.9^3 * 200 carryover at P4");
+}
+
 #[test]
 fn test_diagnostic_codes_2071_through_2076_collision_free() {
     // Pre-flight regression sweep — each new code appears only as the
