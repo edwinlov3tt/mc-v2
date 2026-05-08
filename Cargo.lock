@@ -1344,6 +1344,7 @@ version = "0.1.0"
 dependencies = [
  "mc-core",
  "mc-demo-server",
+ "mc-diagnostics",
  "mc-drivers",
  "mc-fixtures",
  "mc-model",
@@ -1383,6 +1384,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mc-diagnostics"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "mc-drivers"
 version = "0.1.0"
 dependencies = [
@@ -1419,6 +1427,7 @@ version = "0.1.0"
 dependencies = [
  "ahash 0.8.12",
  "mc-core",
+ "mc-diagnostics",
  "mc-fixtures",
  "serde",
  "serde_yaml",
@@ -1429,6 +1438,7 @@ dependencies = [
 name = "mc-narrative"
 version = "0.1.0"
 dependencies = [
+ "mc-diagnostics",
  "serde",
  "serde_json",
  "serde_yaml",

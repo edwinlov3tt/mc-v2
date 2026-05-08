@@ -1,0 +1,11 @@
+[package]
+name = "mc-diagnostics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Mosaic diagnostic types and Rust-style source-span renderer"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

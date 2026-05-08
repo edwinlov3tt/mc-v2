@@ -204,6 +204,44 @@ impl ParseError {
             | ParseError::FormulaCrossCoordInFilter { span, .. } => span,
         }
     }
+
+    /// For formula errors (MC1003–MC1025), return `(rule_name, byte_offset)`
+    /// within the formula string. Returns `None` for non-formula errors.
+    pub fn formula_info(&self) -> Option<(&str, usize)> {
+        match self {
+            ParseError::FormulaUnbalancedParen {
+                rule_name, offset, ..
+            }
+            | ParseError::FormulaUnexpectedToken {
+                rule_name, offset, ..
+            }
+            | ParseError::FormulaExpectedExpression {
+                rule_name, offset, ..
+            }
+            | ParseError::FormulaInvalidNumber {
+                rule_name, offset, ..
+            }
+            | ParseError::FormulaUnknownFunction {
+                rule_name, offset, ..
+            }
+            | ParseError::FormulaWrongArgCount {
+                rule_name, offset, ..
+            }
+            | ParseError::FormulaActualRefNonIdentifier {
+                rule_name, offset, ..
+            }
+            | ParseError::FormulaCrossCoordNesting {
+                rule_name, offset, ..
+            }
+            | ParseError::FormulaStringLiteralMisplaced {
+                rule_name, offset, ..
+            } => Some((rule_name.as_str(), *offset)),
+            // MC1025 is for filter expressions (no rule_name).
+            ParseError::FormulaCrossCoordInFilter { .. }
+            | ParseError::Syntax { .. }
+            | ParseError::SafeSubset { .. } => None,
+        }
+    }
 }
 
 /// Why a safe-subset prefilter rejected the YAML. ADR-0004 Decision 1

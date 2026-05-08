@@ -17,9 +17,10 @@
 use mc_core::{CellValue, ScalarValue, TraceNode, TraceOp, WriteIntent, WritebackRequest};
 use mc_fixtures::{build_acme_cube, coord, write_canonical_inputs, AcmeRefs};
 use mc_model::{
-    apply_canonical_inputs, apply_fixture, diagnostics_to_json, diagnostics_to_text, inspect_json,
-    inspect_text_with_diagnostics, lint_with_file, resolve_inputs, sort_diagnostics, Diagnostic,
-    ModelPath, Severity, ValidatedModel, ValidationError, SCHEMA_VERSION,
+    apply_canonical_inputs, apply_fixture, diagnostics_to_json, diagnostics_to_json_rich,
+    diagnostics_to_text, inspect_json, inspect_text_with_diagnostics, lint_with_file,
+    resolve_inputs, sort_diagnostics, Diagnostic, ModelPath, Severity, ValidatedModel,
+    ValidationError, SCHEMA_VERSION,
 };
 
 mod build_benchmarks;
@@ -269,6 +270,18 @@ enum OutputFormat {
     Json,
 }
 
+/// Detect color mode for rich diagnostic rendering.
+///
+/// Per ADR-0024 Decision 3: `$NO_COLOR` env var disables colors.
+/// No external crate for TTY detection.
+fn detect_color_mode() -> mc_diagnostics::ColorMode {
+    if std::env::var_os("NO_COLOR").is_some() {
+        mc_diagnostics::ColorMode::Never
+    } else {
+        mc_diagnostics::ColorMode::Auto
+    }
+}
+
 fn parse_model_args(args: &[String]) -> Result<ModelCommand, String> {
     if args.is_empty() {
         return Err("`mc model` requires a verb (validate|inspect|lint|test)".into());
@@ -386,7 +399,10 @@ fn load_validated(path: &str, format: OutputFormat) -> ValidatedModel {
         Err(errs) => {
             // Phase 3D: validate now returns Vec<Error> mixing
             // ParseError (MC1003-MC1006) with ValidationError (MC2xxx).
-            print_mixed_errors(path, &errs, format);
+            // Phase 7A.6: build location map for rich diagnostic rendering.
+            // TODO(saphyr): replace with single-pass LocatedValue parsing.
+            let loc_map = mc_model::LocationMap::build(path, &yaml);
+            print_mixed_errors(path, &errs, format, Some(&loc_map));
             std::process::exit(1);
         }
     };
@@ -439,6 +455,11 @@ fn run_lint(path: &str, format: OutputFormat, deny_warnings: bool) {
     match format {
         OutputFormat::Text => {
             if !diags.is_empty() {
+                // Phase 7A.6: lint text output stays flat for backward
+                // compat with existing snapshot tests. Rich rendering is
+                // used for validate errors (which have source spans and
+                // go to stderr). Lint diagnostics typically lack source
+                // spans — the rich format adds no value there.
                 print!("{}", diagnostics_to_text(&diags));
             }
         }
@@ -869,7 +890,17 @@ fn print_validation_errors(path: &str, errs: &[ValidationError], format: OutputF
 /// errors stay on the `print_validation_errors` path. The diagnostic
 /// envelope shape (Phase 3B) is unchanged: same five fields, same
 /// `schema_version: "1.0"`.
-fn print_mixed_errors(path: &str, errs: &[mc_model::Error], format: OutputFormat) {
+///
+/// Phase 7A.6: when `loc_map` is provided AND format is Text, renders
+/// rich diagnostics with source context, underlines, and help text.
+/// Formula errors use offset composition via `with_inner_offset` to
+/// point at the exact bad token within the YAML file.
+fn print_mixed_errors(
+    path: &str,
+    errs: &[mc_model::Error],
+    format: OutputFormat,
+    loc_map: Option<&mc_model::LocationMap>,
+) {
     let mut diags: Vec<Diagnostic> = Vec::with_capacity(errs.len());
     for e in errs {
         match e {
@@ -897,6 +928,60 @@ fn print_mixed_errors(path: &str, errs: &[mc_model::Error], format: OutputFormat
         }
     }
     sort_diagnostics(&mut diags);
+
+    // Phase 7A.6: render rich diagnostics with source context for text output.
+    // Only use the rich renderer when a diagnostic actually has a SourceSpan.
+    // Spanless diagnostics fall back to the existing flat format so they don't
+    // lose the `in:`, `pointer:`, `suggestion:` lines (audit finding B1).
+    if let (OutputFormat::Text, Some(map)) = (format, loc_map) {
+        let mut spanless: Vec<&Diagnostic> = Vec::new();
+        for (diag, err) in diags.iter().zip(errs.iter()) {
+            let mut rich = diag.to_rich(Some(map));
+
+            // Formula offset composition: if this is a formula error,
+            // look up the rule's body span and compose with the formula offset.
+            if let mc_model::Error::Parse(p) = err {
+                if let Some((rule_name, formula_offset)) = p.formula_info() {
+                    if let Some(body_span) = map.rule_body_span(rule_name) {
+                        // Compose: body_span points at the formula string value;
+                        // formula_offset is the byte offset within the formula.
+                        rich.primary_span = Some(body_span.with_inner_offset(formula_offset, 1));
+                    }
+                }
+            }
+
+            // Only use rich rendering when we actually have a source span.
+            // Otherwise fall back to flat format to preserve information density.
+            if rich.primary_span.is_some() {
+                let rendered = mc_diagnostics::render_diagnostic(
+                    &rich,
+                    |file_path| {
+                        if file_path == map.file_path() {
+                            Some(map.source_text().to_string())
+                        } else {
+                            std::fs::read_to_string(file_path).ok()
+                        }
+                    },
+                    detect_color_mode(),
+                );
+                eprint!("{}", rendered);
+            } else {
+                spanless.push(diag);
+            }
+        }
+        if !spanless.is_empty() {
+            let owned: Vec<Diagnostic> = spanless.into_iter().cloned().collect();
+            eprint!("{}", diagnostics_to_text(&owned));
+        }
+        return;
+    }
+
+    // Phase 7A.6: JSON output with rendered field when loc_map is available.
+    if let (OutputFormat::Json, Some(map)) = (format, loc_map) {
+        print!("{}", diagnostics_to_json_rich(&diags, Some(map)));
+        return;
+    }
+
     emit_error_diags(&diags, format);
 }
 

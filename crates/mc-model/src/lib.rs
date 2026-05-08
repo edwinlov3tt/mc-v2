@@ -41,6 +41,7 @@ pub mod formula;
 pub mod inputs;
 pub mod inspect;
 pub mod lint;
+pub mod location;
 pub mod parse;
 pub mod schema;
 pub mod validate;
@@ -49,8 +50,8 @@ use std::path::Path;
 
 pub use compile::{compile, CompiledCube, ModelRefs};
 pub use diagnostic::{
-    diagnostics_to_json, diagnostics_to_text, sort_diagnostics, Diagnostic, DiagnosticCode,
-    ModelPath, Severity, SCHEMA_VERSION,
+    diagnostics_to_json, diagnostics_to_json_rich, diagnostics_to_text, sort_diagnostics,
+    Diagnostic, DiagnosticCode, ModelPath, Severity, SCHEMA_VERSION,
 };
 pub use error::{Error, ParseError, ParseErrorKind, Span, ValidationError};
 pub use formula::parse_expression;
@@ -60,6 +61,7 @@ pub use inputs::{
 };
 pub use inspect::{inspect_json, inspect_text, inspect_text_with_diagnostics, ModelSummary};
 pub use lint::{lint, lint_with_file};
+pub use location::LocationMap;
 pub use parse::parse;
 pub use schema::{
     ParsedActualRefBody, ParsedBenchmark, ParsedBenchmarkRefBody, ParsedBinopBody,
