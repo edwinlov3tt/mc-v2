@@ -2512,3 +2512,177 @@ fn test_mc7052_expires_before_period_warning() {
         .any(|e| matches!(e, NarrativeError::ContextEventExpiresBeforePeriod { .. }));
     assert!(has_mc7052, "MC7052 should fire when expires_at < period");
 }
+
+// ─── Phase 7A.5 Session 3: Auto-detection tests ─────────────────────
+
+#[test]
+fn test_auto_detect_budget_decrease_event() {
+    // Cube where Budget dropped >20% → auto-detect budget_decrease event.
+    let cube = CubeData {
+        table_name: "Monthly Performance".into(),
+        subproduct: "Targeted Display".into(),
+        source_file: "report.csv".into(),
+        dimension_name: None,
+        values: BTreeMap::from([
+            (
+                "Budget".into(),
+                vec![
+                    CellEntry {
+                        category: "Jul 2025".into(),
+                        value: 10000.0,
+                    },
+                    CellEntry {
+                        category: "Aug 2025".into(),
+                        value: 5000.0, // 50% decrease
+                    },
+                ],
+            ),
+            (
+                "Impressions".into(),
+                vec![
+                    CellEntry {
+                        category: "Jul 2025".into(),
+                        value: 25000.0,
+                    },
+                    CellEntry {
+                        category: "Aug 2025".into(),
+                        value: 12000.0,
+                    },
+                ],
+            ),
+        ]),
+    };
+
+    // Template checks for auto-detected budget_decrease event.
+    let templates = vec![make_template(
+        "auto_budget",
+        "has_context_event('budget_decrease') == 1",
+        "budget decrease detected",
+        None,
+        500,
+    )];
+
+    // No manual events — should still fire via auto-detection.
+    let empty_events: Vec<mc_narrative::context_events::ContextEvent> = Vec::new();
+    let narratives =
+        mc_narrative::evaluate_all(&templates, &[cube], None, None, Some(&empty_events));
+
+    assert_eq!(
+        narratives.len(),
+        1,
+        "auto-detected budget_decrease event should fire template"
+    );
+}
+
+#[test]
+fn test_auto_detect_single_period_event() {
+    let cube = CubeData {
+        table_name: "Monthly Performance".into(),
+        subproduct: "Targeted Display".into(),
+        source_file: "report.csv".into(),
+        dimension_name: None,
+        values: BTreeMap::from([(
+            "Impressions".into(),
+            vec![CellEntry {
+                category: "Aug 2025".into(),
+                value: 25000.0,
+            }],
+        )]),
+    };
+
+    let templates = vec![make_template(
+        "single_period",
+        "has_context_event('single_period') == 1",
+        "single period",
+        None,
+        500,
+    )];
+
+    let empty_events: Vec<mc_narrative::context_events::ContextEvent> = Vec::new();
+    let narratives =
+        mc_narrative::evaluate_all(&templates, &[cube], None, None, Some(&empty_events));
+
+    assert_eq!(
+        narratives.len(),
+        1,
+        "auto-detected single_period event should fire template"
+    );
+}
+
+#[test]
+fn test_auto_events_coexist_with_manual_events() {
+    use mc_narrative::context_events::ContextEvent;
+
+    let cube = CubeData {
+        table_name: "Monthly Performance".into(),
+        subproduct: "Targeted Display".into(),
+        source_file: "report.csv".into(),
+        dimension_name: None,
+        values: BTreeMap::from([
+            (
+                "Budget".into(),
+                vec![
+                    CellEntry {
+                        category: "Jul 2025".into(),
+                        value: 10000.0,
+                    },
+                    CellEntry {
+                        category: "Aug 2025".into(),
+                        value: 5000.0,
+                    },
+                ],
+            ),
+            (
+                "Impressions".into(),
+                vec![
+                    CellEntry {
+                        category: "Jul 2025".into(),
+                        value: 25000.0,
+                    },
+                    CellEntry {
+                        category: "Aug 2025".into(),
+                        value: 12000.0,
+                    },
+                ],
+            ),
+        ]),
+    };
+
+    // Manual event alongside auto-detected.
+    let events = vec![ContextEvent {
+        id: "ce-manual-001".to_string(),
+        period: "Aug 2025".to_string(),
+        scope: BTreeMap::new(),
+        event_type: "creative_pause".to_string(),
+        description: "3 creatives paused".to_string(),
+        source: None,
+        expires_at: None,
+    }];
+
+    // Two templates: one checks auto-detected, one checks manual.
+    let templates = vec![
+        make_template(
+            "auto_check",
+            "has_context_event('budget_decrease') == 1",
+            "auto",
+            None,
+            500,
+        ),
+        make_template(
+            "manual_check",
+            "has_context_event('creative_pause') == 1",
+            "manual",
+            None,
+            500,
+        ),
+    ];
+
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, Some(&events));
+
+    let ids: Vec<&str> = narratives.iter().map(|n| n.template_id.as_str()).collect();
+    assert!(
+        ids.contains(&"auto_check"),
+        "auto-detected event should fire"
+    );
+    assert!(ids.contains(&"manual_check"), "manual event should fire");
+}

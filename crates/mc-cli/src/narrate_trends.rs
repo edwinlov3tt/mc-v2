@@ -133,18 +133,27 @@ pub fn run(cmd: NarrateTrendsCommand) -> i32 {
         }
     }
 
-    // 7. Evaluate templates with ledger + benchmark context.
+    // 7. Evaluate templates with ledger + benchmark + context events.
     let ledger_slice = if ledger_entries.is_empty() {
         None
     } else {
         Some(ledger_entries.as_slice())
     };
+
+    // 7b. Load context events if present (Phase 7A.5).
+    let context_events = mc_narrative::context_events::read_context_events(model_dir);
+    let context_ref = if context_events.is_empty() {
+        None
+    } else {
+        Some(context_events.as_slice())
+    };
+
     let narratives = mc_narrative::evaluate_all(
         &templates,
         &cube_data,
         ledger_slice,
         benchmark_lib.as_ref(),
-        None,
+        context_ref,
     );
 
     // 7. Optionally filter to trend templates only.
