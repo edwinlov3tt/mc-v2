@@ -28,6 +28,8 @@ ureq = { workspace = true }
 mc-demo-server = { path = "../mc-demo-server" }
 # Phase 7A.1: narrative engine for `mc model narrate`.
 mc-narrative = { path = "../mc-narrative" }
+# Phase 7A.6: rich diagnostic rendering.
+mc-diagnostics = { path = "../mc-diagnostics" }
 
 [[bin]]
 name = "mc"

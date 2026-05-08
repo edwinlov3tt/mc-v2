@@ -128,6 +128,42 @@ pub struct Diagnostic {
     pub suggestion: Option<String>,
 }
 
+impl Diagnostic {
+    /// Convert to a `RichDiagnostic` from `mc-diagnostics`, optionally
+    /// attaching a source span from the location map.
+    ///
+    /// Per ADR-0024 Decision 2: backward compatibility — the existing
+    /// `Diagnostic` type is not deleted; it gains this conversion method.
+    pub fn to_rich(
+        &self,
+        loc_map: Option<&crate::location::LocationMap>,
+    ) -> mc_diagnostics::RichDiagnostic {
+        let severity = match self.severity {
+            Severity::Error => mc_diagnostics::DiagSeverity::Error,
+            Severity::Warning => mc_diagnostics::DiagSeverity::Warning,
+            Severity::Info => mc_diagnostics::DiagSeverity::Info,
+        };
+
+        let mut rich =
+            mc_diagnostics::RichDiagnostic::new(self.code.to_string(), severity, &self.message);
+
+        // Attach source span from location map if available
+        // TODO(saphyr): replace with single-pass LocatedValue parsing.
+        if let Some(map) = loc_map {
+            if let Some(span) = map.get(&self.path.yaml_pointer) {
+                rich.primary_span = Some(span.clone());
+            }
+        }
+
+        // Carry over suggestion as help text
+        if let Some(ref suggestion) = self.suggestion {
+            rich = rich.with_help(suggestion.clone());
+        }
+
+        rich
+    }
+}
+
 /// JSON envelope schema version. Bumps on breaking diagnostic shape changes
 /// (renaming a field, changing a severity enum variant). Phase 3B ships at
 /// `"1.0"`. Phase 4 + Phase 6 pin to this exact value.

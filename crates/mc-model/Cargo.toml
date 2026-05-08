@@ -20,6 +20,7 @@ serde = { version = "1", features = ["derive"] }
 # this satisfies (1); no transitive pinning needed; no toolchain bump.
 serde_yaml = "0.9.34"
 thiserror = { workspace = true }
+mc-diagnostics = { path = "../mc-diagnostics" }
 
 [dev-dependencies]
 # Per ADR-0004 Decision 3 + Decision 7: structural-equivalence + golden tests
