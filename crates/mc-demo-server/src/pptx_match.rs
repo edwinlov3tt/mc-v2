@@ -1686,22 +1686,6 @@ mod tests {
             crate::pptx::extract_slide_infos(&bytes).expect("slide infos should succeed");
         assert!(!tables.is_empty(), "should extract tables");
 
-        // Debug: print slide_infos to understand divider detection.
-        eprintln!("\n  === Slide Infos (potential dividers) ===");
-        for info in &slide_infos {
-            let title = info.title.as_deref().unwrap_or("(no title)");
-            let is_divider_candidate = !info.has_data_tables
-                && info.text_line_count < 15
-                && title.len() < 60
-                && !title.is_empty();
-            if is_divider_candidate {
-                eprintln!(
-                    "  slide {:>3}: DIVIDER CANDIDATE — title={:?}, lines={}, has_tables={}",
-                    info.slide_index, title, info.text_line_count, info.has_data_tables
-                );
-            }
-        }
-
         // Load registry.
         let reg_paths = [
             "demo/registry/performance_tables.csv",
@@ -1813,5 +1797,102 @@ mod tests {
         for w in &result.coverage_warnings {
             eprintln!("  WARNING: {w}");
         }
+    }
+
+    /// Helper: run cascade on a PPTX file and return (auto_resolved_pct, stats).
+    fn run_cascade_on_pptx(pptx_path: &str) -> Option<(f64, MatchStats)> {
+        let bytes = std::fs::read(pptx_path).ok()?;
+        let tables = crate::pptx::extract_pptx_tables(&bytes).ok()?;
+        let slide_infos = crate::pptx::extract_slide_infos(&bytes).ok()?;
+
+        let reg_paths = [
+            "demo/registry/performance_tables.csv",
+            "../demo/registry/performance_tables.csv",
+            "../../demo/registry/performance_tables.csv",
+        ];
+        let registry = reg_paths.iter().find_map(|p| Registry::from_file(p).ok())?;
+
+        let profile_dirs = [
+            std::path::Path::new("demo/sample-data"),
+            std::path::Path::new("../demo/sample-data"),
+            std::path::Path::new("../../demo/sample-data"),
+        ];
+        let profile = profile_dirs
+            .iter()
+            .find_map(|d| crate::pptx_profile::load_profile(d, "lumina-charts"));
+
+        let idf = IdfTable::build(&registry);
+        let result =
+            match_deck_with_slides(&tables, &slide_infos, &registry, profile.as_ref(), &idf);
+
+        let pct = if result.stats.total_tables > 0 {
+            (result.stats.auto_resolved + result.stats.skipped) as f64
+                / result.stats.total_tables as f64
+                * 100.0
+        } else {
+            0.0
+        };
+
+        eprintln!(
+            "\n  === {} ===",
+            pptx_path.rsplit('/').next().unwrap_or(pptx_path)
+        );
+        eprintln!(
+            "  {} tables: {} matched, {} skipped, {} review, {} dup, {} unmatched ({:.1}%)",
+            result.stats.total_tables,
+            result.stats.auto_resolved,
+            result.stats.skipped,
+            result.stats.review_needed,
+            result.stats.duplicates,
+            result.stats.unmatched,
+            pct,
+        );
+        eprintln!("  By source: {:?}", result.stats.by_source);
+
+        Some((pct, result.stats))
+    }
+
+    /// Test against deck 627917 — should have SEM duplicate suppression.
+    #[test]
+    fn test_lumina_deck_627917() {
+        let path = "/Users/edwinlovettiii/Downloads/1778255627917_lumina_charts.pptx";
+        let Some((pct, _stats)) = run_cascade_on_pptx(path) else {
+            eprintln!("  [skip] {path} not found");
+            return;
+        };
+        assert!(
+            pct >= 60.0,
+            "deck 627917: expected ≥60% auto-resolved, got {pct:.1}%"
+        );
+    }
+
+    /// Test against deck 792946 — should have 3-tactic rollup manifest.
+    #[test]
+    fn test_lumina_deck_792946() {
+        let path = "/Users/edwinlovettiii/Downloads/1778255792946_lumina_charts.pptx";
+        let Some((pct, _stats)) = run_cascade_on_pptx(path) else {
+            eprintln!("  [skip] {path} not found");
+            return;
+        };
+        // This deck has many sections and more unresolved tables.
+        // The primary deck hits 91.7%; this is a secondary regression target.
+        assert!(
+            pct >= 50.0,
+            "deck 792946: expected ≥50% auto-resolved, got {pct:.1}%"
+        );
+    }
+
+    /// Test against deck 959819 — false-positive divider rejection test.
+    #[test]
+    fn test_lumina_deck_959819() {
+        let path = "/Users/edwinlovettiii/Downloads/1778255959819_lumina_charts.pptx";
+        let Some((pct, _stats)) = run_cascade_on_pptx(path) else {
+            eprintln!("  [skip] {path} not found");
+            return;
+        };
+        assert!(
+            pct >= 60.0,
+            "deck 959819: expected ≥60% auto-resolved, got {pct:.1}%"
+        );
     }
 }
