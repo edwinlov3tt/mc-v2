@@ -149,7 +149,7 @@ context_event_count(type, lookback_periods) → f64
 
 **Scope matching:** context events match when their `scope` is a subset of the current evaluation scope. An event with `scope: { Channel: "Targeted Display" }` matches any evaluation where the current scope includes `Channel: "Targeted Display"`. An event with empty scope matches everywhere.
 
-**Period matching:** `has_context_event('budget_change')` checks the current period only. `has_context_event('budget_change', 3)` checks the current period and the 2 prior periods. Respects `expires_at` — an expired event doesn't match even if the period is in range.
+**Period matching:** `has_context_event('budget_change')` checks the current period only. `has_context_event('budget_change', 3)` checks 3 periods total: the current period and the 2 prior periods (same semantics as `ledger_count('template_id', 3)` in Phase 7A.3). Respects `expires_at` — an expired event doesn't match even if the period is in range.
 
 **`context_description` returns the first matching event's description.** If multiple events match, the first by `id` (sorted) wins. This is deterministic.
 
@@ -169,15 +169,19 @@ The engine automatically synthesizes context events from large input changes det
 | `current.Budget > prev.Budget * 1.20` | `budget_increase` | "Budget increased {pct}% from {prev_period}" |
 | `period_count == 1` | `single_period` | "Only one reporting period available" |
 
-Auto-detected events have `explanation_priority` lower than manual context events but higher than bare findings. The typical chain becomes:
+Auto-detected events are queryable via `has_context_event()` / `context_description()` just like manual events. Templates that match auto-detected events conventionally use `explanation_priority` ~200, positioning them between manual context events (~100) and data-driven correlation templates (~300). The priority lives on the template, not the event — auto-detected events are just another data source that templates can query.
+
+The conventional priority ladder:
 
 ```
-Priority 100: Manual context event (analyst logged it)
-Priority 200: Auto-detected input change (engine sees budget/traffic move)
-Priority 300: Data-driven correlation (proportional movement template)
-Priority 400: Benchmark deviation (own-history comparison)
-Priority 999: Bare finding (fallback)
+Priority ~100: Templates matching manual context events (analyst logged it — most authoritative)
+Priority ~200: Templates matching auto-detected input changes (engine sees budget/traffic move)
+Priority ~300: Data-driven correlation templates (proportional movement checks)
+Priority ~400: Benchmark deviation templates (own-history comparison)
+Priority  999: Bare finding fallback
 ```
+
+**Auto-detection thresholds (80%/120%) are v1 defaults.** Different domains have different "meaningful change" thresholds — a 20% budget swing is alarming in marketing and a rounding error in stock forecasting. These thresholds will eventually need to be configurable per-cartridge; for Phase 7A.5 they are hardcoded constants with a `// TODO(cartridge-config):` comment at the definition site.
 
 **Why ephemeral:** auto-detected events are derivable from the cube data on every run. Writing them to disk creates a file that mutates on every evaluation, which conflicts with the "hand-edited annotations" nature of `context-events.yaml`. Auto-detected events live in the evaluator's `ContextIndex` alongside manually-loaded events, but they're rebuilt fresh each evaluation.
 
@@ -225,16 +229,24 @@ When a template fires as part of an explanation group, the ledger entry includes
   "template_id": "impressions_declined_budget_proportional",
   "finding_id": "impressions_declined_significant",
   "explanation_priority": 200,
-  "suppressed_explanations": [
+  "skipped_explanations": [
     "impressions_declined_efficiency",
     "impressions_declined_unexplained"
+  ],
+  "rejected_explanations": [
+    "impressions_declined_seasonal"
   ]
 }
 ```
 
-The `suppressed_explanations` list records which templates in the group were skipped (their `when:` wasn't evaluated because a higher-priority explanation already matched, OR their `when:` didn't match). This makes the explanation chain inspectable after the fact — "last month the decline was explained by budget; this month nothing explained it."
+The two lists capture distinct diagnostic states:
 
-**Why:** the ledger is the audit trail. Knowing which explanation WON is useful; knowing which explanations LOST is diagnostic gold for template refinement.
+- **`skipped_explanations`** — templates that were never evaluated because a higher-priority explanation already matched. These are the templates the chain short-circuited past.
+- **`rejected_explanations`** — templates that were evaluated but whose `when:` predicate returned false. These are the explanations the engine considered and ruled out.
+
+This distinction matters for template authors debugging why a chain didn't behave as expected ("was my template not considered, or was it considered and rejected?") and for the audit trail ("the engine checked for seasonality but it didn't match").
+
+**Why:** the ledger is the audit trail. Knowing which explanation WON is useful; knowing which explanations were CONSIDERED AND REJECTED vs. NEVER REACHED is diagnostic gold for template refinement and the compliance/audit story.
 
 ---
 
@@ -247,6 +259,7 @@ The `suppressed_explanations` list records which templates in the group were ski
 | MC7052 | Context event `expires_at` is before its `period` | Warning |
 | MC7053 | A `finding_id` group has no template with `explanation_priority >= 900` (missing fallback) | Info |
 | MC7054 | Context events file parse error (malformed YAML, missing required fields) | Error |
+| MC7055 | A `finding_id` is referenced by only one template (likely typo — intended to be part of a group) | Info |
 
 ---
 
@@ -285,8 +298,8 @@ The `--add` verb generates the `id` automatically (`ce-{period}-{seq}`) and appe
 - Auto-detection for budget increase/decrease + single-period
 - 8-10 explanation templates in `demo/narratives/explanation-templates.yaml`
 - `mc model context-events` CLI verb
-- MC7050-MC7054 diagnostic codes
-- Ledger records `finding_id` + `suppressed_explanations`
+- MC7050-MC7055 diagnostic codes
+- Ledger records `finding_id` + `skipped_explanations` + `rejected_explanations`
 - Demo server loads context events if present
 
 **Phase 7A.5 does NOT ship:**
@@ -337,10 +350,11 @@ Alternative: if any explanation fires for `ctr_declined_significant`, also suppr
 - [ ] Templates without `finding_id` fire independently (zero behavior change)
 - [ ] `.mosaic/context-events.yaml` loads and `has_context_event()` returns correct values
 - [ ] Auto-detected budget change event fires when `current.Budget < prev.Budget * 0.80`
-- [ ] Ledger records `finding_id` and `suppressed_explanations` for explanation-chain templates
+- [ ] Ledger records `finding_id`, `skipped_explanations`, and `rejected_explanations` for explanation-chain templates
 - [ ] `mc model context-events --add` creates/appends to the events file
-- [ ] MC7050-MC7054 codes swept free before implementation, then shipped
-- [ ] `cargo test --workspace` passes (1001 → expect ~+15 = ~1016)
+- [ ] MC7050-MC7055 codes swept free before implementation, then shipped
+- [ ] `cargo test --workspace` passes (1007 → expect ~+15 = ~1022)
+- [ ] Performance: explanation-chain evaluation adds < 5ms to `narrate` on a 50-template, 10-group workload (sub-200ms contract from Phase 6D preserved)
 - [ ] Locked surfaces (mc-core, mc-model, mc-fixtures, mc-recipe, mc-drivers, mc-tessera): zero diff
 
 ---
