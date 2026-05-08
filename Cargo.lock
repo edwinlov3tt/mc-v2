@@ -1438,6 +1438,7 @@ dependencies = [
 name = "mc-narrative"
 version = "0.1.0"
 dependencies = [
+ "mc-diagnostics",
  "serde",
  "serde_json",
  "serde_yaml",

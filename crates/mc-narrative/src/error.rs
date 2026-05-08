@@ -135,3 +135,51 @@ pub enum NarrativeError {
     #[error("cannot parse template file `{path}`: {detail}")]
     ParseError { path: String, detail: String },
 }
+
+impl NarrativeError {
+    /// Stable diagnostic code for this error.
+    pub fn code(&self) -> &'static str {
+        match self {
+            NarrativeError::UnknownMeasure { .. } => "MC7001",
+            NarrativeError::UnknownDimension { .. } => "MC7002",
+            NarrativeError::InvalidWhenPredicate { .. } => "MC7003",
+            NarrativeError::UnknownFormatHint { .. } => "MC7004",
+            NarrativeError::UnresolvedPlaceholder { .. } => "MC7005",
+            NarrativeError::InvalidSeverity { .. } => "MC7006",
+            NarrativeError::UnknownFamily { .. } => "MC7007",
+            NarrativeError::DuplicateTemplateId { .. } => "MC7008",
+            NarrativeError::UndefinedSection { .. } => "MC7009",
+            NarrativeError::NotabilityOutOfRange { .. } => "MC7010",
+            NarrativeError::LedgerQueryCycle { .. } => "MC7030",
+            NarrativeError::LedgerLookbackExceedsDepth { .. } => "MC7031",
+            NarrativeError::LedgerUnknownTemplateRef { .. } => "MC7032",
+            NarrativeError::ExplanationPriorityCollision { .. } => "MC7050",
+            NarrativeError::ContextEventUnknownPeriod { .. } => "MC7051",
+            NarrativeError::ContextEventExpiresBeforePeriod { .. } => "MC7052",
+            NarrativeError::ExplanationMissingFallback { .. } => "MC7053",
+            NarrativeError::ExplanationSingletonFindingId { .. } => "MC7055",
+            NarrativeError::IoError { .. } => "MC7098",
+            NarrativeError::ParseError { .. } => "MC7099",
+        }
+    }
+
+    /// Convert to a `RichDiagnostic` for rich rendering.
+    ///
+    /// Phase 7A.6: narrative errors gain rich diagnostic support. The
+    /// MC7050 priority-collision case is the canonical multi-location
+    /// diagnostic with two related spans.
+    pub fn to_rich(&self) -> mc_diagnostics::RichDiagnostic {
+        let severity = match self {
+            NarrativeError::ContextEventUnknownPeriod { .. }
+            | NarrativeError::ContextEventExpiresBeforePeriod { .. }
+            | NarrativeError::LedgerLookbackExceedsDepth { .. }
+            | NarrativeError::ExplanationMissingFallback { .. }
+            | NarrativeError::ExplanationSingletonFindingId { .. } => {
+                mc_diagnostics::DiagSeverity::Warning
+            }
+            _ => mc_diagnostics::DiagSeverity::Error,
+        };
+
+        mc_diagnostics::RichDiagnostic::new(self.code(), severity, self.to_string())
+    }
+}

@@ -154,3 +154,56 @@ fn test_to_rich_without_location_map() {
     assert!(rendered.contains("error[MC2001]: duplicate name"));
     assert!(!rendered.contains("-->"), "no location without span");
 }
+
+// -----------------------------------------------------------------------
+// 8. Lint warning gets source span from LocationMap
+// -----------------------------------------------------------------------
+#[test]
+fn test_lint_warning_has_source_span() {
+    let yaml = "model_format_version: 1\ndimensions:\n  - name: Time\n    elements: [Q1]";
+    let map = LocationMap::build("model.yaml", yaml);
+
+    // Simulate an MC3001 lint diagnostic for a dimension with no description
+    let diag = Diagnostic {
+        code: "MC3001",
+        severity: Severity::Warning,
+        path: ModelPath::new("model.yaml", "/dimensions/0", "dimensions.Time"),
+        message: "dimension 'Time' has no description".into(),
+        suggestion: Some("Add a description field".into()),
+    };
+
+    let rich = diag.to_rich(Some(&map));
+    assert_eq!(rich.code, "MC3001");
+
+    // Render it — should show the source line if the LocationMap found it
+    let rendered = render_diagnostic(&rich, |_| Some(yaml.to_string()), ColorMode::Never);
+    assert!(
+        rendered.contains("warning[MC3001]"),
+        "should have warning header"
+    );
+    assert!(
+        rendered.contains("= help: Add a description field"),
+        "should have help from suggestion"
+    );
+}
+
+// -----------------------------------------------------------------------
+// 9. Lint diagnostic renders with underline when LocationMap finds span
+// -----------------------------------------------------------------------
+#[test]
+fn test_lint_diagnostic_renders_with_underline() {
+    let source = "dimensions:\n  - name: Time";
+    let diag = mc_diagnostics::RichDiagnostic::new(
+        "MC3001",
+        mc_diagnostics::DiagSeverity::Warning,
+        "dimension has no description",
+    )
+    .with_span(SourceSpan::new("model.yaml", 17, 21)); // "Time"
+
+    let rendered = render_diagnostic(&diag, |_| Some(source.to_string()), ColorMode::Never);
+    assert!(rendered.contains("warning[MC3001]"));
+    assert!(
+        rendered.contains("^^^^"),
+        "should underline 'Time' (4 chars)"
+    );
+}
