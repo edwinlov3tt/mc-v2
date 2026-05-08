@@ -1,6 +1,6 @@
 # ADR-0023 — PPTX Cascade Matcher + Profile System
 
-**Status:** Proposed  
+**Status:** Accepted (2026-05-08)  
 **Date:** 2026-05-08  
 **Author:** Edwin Lovett III  
 **Depends on:** Phase 6D (demo MVP), PPTX table extractor (shipped in `mc-demo-server/src/pptx.rs`)  
