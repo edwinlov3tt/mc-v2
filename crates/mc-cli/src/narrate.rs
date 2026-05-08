@@ -124,7 +124,7 @@ pub fn run_captured(cmd: NarrateCommand) -> (i32, String) {
     }
 
     // 5. Evaluate templates.
-    let narratives = mc_narrative::evaluate_all(&templates, &cube_data);
+    let narratives = mc_narrative::evaluate_all(&templates, &cube_data, None);
 
     // 6. Phase 7A.2: write ledger entries if --save-ledger is set.
     if cmd.save_ledger && !narratives.is_empty() {
@@ -269,7 +269,7 @@ fn discover_templates_dir(model_path: &str) -> String {
 ///
 /// For each non-Scenario, non-Version, non-Measure dimension (the "category"
 /// dimensions), builds a CubeData with measure values indexed by category element.
-fn cube_to_cube_data(
+pub fn cube_to_cube_data(
     cube: &mut mc_core::Cube,
     _refs: &mc_model::ModelRefs,
     principal: PrincipalId,
@@ -435,6 +435,18 @@ fn build_coord_from_dims(
 // ---------------------------------------------------------------------------
 // Output rendering
 // ---------------------------------------------------------------------------
+
+/// Render narratives in the specified format (shared with narrate-trends).
+pub fn render_narratives(narratives: &[NarrativeOutput], format: NarrateFormat) -> String {
+    if narratives.is_empty() {
+        return render_empty(format);
+    }
+    match format {
+        NarrateFormat::Json => render_json(narratives),
+        NarrateFormat::Text => render_text(narratives),
+        NarrateFormat::Markdown => render_markdown(narratives),
+    }
+}
 
 fn render_empty(format: NarrateFormat) -> String {
     match format {

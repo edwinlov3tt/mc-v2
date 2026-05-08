@@ -13,7 +13,8 @@ pub mod schema;
 
 pub use context::{CellEntry, CubeData};
 pub use error::NarrativeError;
-pub use evaluator::{Ctx, Val};
+pub use evaluator::{Ctx, LedgerIndex, Val};
+pub use ledger::LedgerEntry;
 pub use renderer::{format_comma, format_val, readable_name};
 pub use schema::{NarrativeOutput, Severity, TemplateDefinition, TemplateFile};
 
@@ -169,13 +170,35 @@ fn extract_placeholders(template: &str) -> Vec<String> {
 /// Session 4: bindings are resolved in **DAG topological order** (Finding #3).
 /// A binding that references another binding works to any depth. Cycle
 /// detection prevents infinite loops.
-pub fn evaluate_all(templates: &[TemplateDefinition], cubes: &[CubeData]) -> Vec<NarrativeOutput> {
+///
+/// Phase 7A.3: optional `ledger` parameter enables cross-period analysis.
+/// When `Some`, ledger query functions (`ledger_count`, `ledger_streak`, etc.)
+/// have data to search. When `None`, they return 0/false/Null and templates
+/// with ledger predicates in `when:` silently don't fire.
+pub fn evaluate_all(
+    templates: &[TemplateDefinition],
+    cubes: &[CubeData],
+    ledger: Option<&[LedgerEntry]>,
+) -> Vec<NarrativeOutput> {
     let mut narratives = Vec::new();
     let mut fired_ids: HashSet<String> = HashSet::new();
 
     for cube in cubes {
         let ctx = context::build_context(cube);
         let table_lower = cube.table_name.to_lowercase();
+
+        // Derive scope key from cube metadata for ledger lookups.
+        let scope_key = format!("channel={}", cube.subproduct);
+
+        // Determine current period from context for ledger lookback boundary.
+        let current_period = ctx.get("current.period_name").and_then(|v| match v {
+            Val::Str(s) => Some(s.clone()),
+            _ => None,
+        });
+
+        // Build ledger index with current period context.
+        let ledger_index = ledger.map(|entries| LedgerIndex::build(entries, current_period));
+        let ledger_ref = ledger_index.as_ref();
 
         for tmpl in templates {
             // Table type filter.
@@ -192,14 +215,20 @@ pub fn evaluate_all(templates: &[TemplateDefinition], cubes: &[CubeData]) -> Vec
                 continue;
             }
 
-            // Evaluate when predicate.
-            let when_val = evaluator::eval_expr_with_cube(&tmpl.when, &ctx, Some(cube));
+            // Evaluate when predicate (with ledger access).
+            let when_val = evaluator::eval_expr_with_ledger(
+                &tmpl.when,
+                &ctx,
+                Some(cube),
+                ledger_ref,
+                &scope_key,
+            );
             if !when_val.is_truthy() {
                 continue;
             }
 
-            // DAG-ordered binding resolution (Finding #3).
-            let resolved = resolve_bindings_dag(&tmpl.bindings, &ctx, cube);
+            // DAG-ordered binding resolution (Finding #3) with ledger access.
+            let resolved = resolve_bindings_dag(&tmpl.bindings, &ctx, cube, ledger_ref, &scope_key);
 
             // Add tactic_name to resolved bindings.
             let mut resolved = resolved;
@@ -245,6 +274,8 @@ fn resolve_bindings_dag(
     bindings: &BTreeMap<String, String>,
     base_ctx: &Ctx,
     cube: &CubeData,
+    ledger: Option<&LedgerIndex>,
+    scope_key: &str,
 ) -> HashMap<String, Val> {
     if bindings.is_empty() {
         return HashMap::new();
@@ -274,7 +305,8 @@ fn resolve_bindings_dag(
 
     for name in &order {
         if let Some(expr) = bindings.get(*name) {
-            let val = evaluator::eval_expr_with_cube(expr, &eval_ctx, Some(cube));
+            let val =
+                evaluator::eval_expr_with_ledger(expr, &eval_ctx, Some(cube), ledger, scope_key);
             eval_ctx.insert(name.to_string(), val.clone());
             resolved.insert(name.to_string(), val);
         }

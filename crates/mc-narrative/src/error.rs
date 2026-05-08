@@ -1,8 +1,8 @@
-//! Diagnostic codes MC7001–MC7010 for the narrative template engine.
+//! Diagnostic codes MC7001–MC7032 for the narrative template engine.
 //!
-//! These codes are reserved per the Phase 7A diagnostic namespace.
-//! Phase 7A.1 allocates MC7001–MC7010; higher codes are reserved
-//! for Phases 7A.2–7A.4.
+//! Phase 7A.1: MC7001–MC7010 (template validation).
+//! Phase 7A.2: MC7020–MC7025 (interpretation ledger) — in `ledger.rs`.
+//! Phase 7A.3: MC7030–MC7032 (cross-period analysis).
 
 use thiserror::Error;
 
@@ -61,6 +61,28 @@ pub enum NarrativeError {
     /// MC7010: notability_base outside [0, 1] range.
     #[error("MC7010: template `{template_id}` has notability_base {value} outside [0, 1]")]
     NotabilityOutOfRange { template_id: String, value: f64 },
+
+    // ─── Phase 7A.3: Cross-period analysis (MC7030–MC7032) ─────────────
+    /// MC7030: Cross-period template references itself (cycle detection).
+    #[error("MC7030: template `{template_id}` ledger query references its own output (cycle)")]
+    LedgerQueryCycle { template_id: String },
+
+    /// MC7031: Ledger lookback exceeds available depth (warning-level).
+    #[error(
+        "MC7031: template `{template_id}` requested {requested} periods but ledger has only {available}"
+    )]
+    LedgerLookbackExceedsDepth {
+        template_id: String,
+        requested: usize,
+        available: usize,
+    },
+
+    /// MC7032: Cross-period template references a template_id not in the template set.
+    #[error("MC7032: trend template `{template_id}` references unknown template_id `{referenced}` in ledger query")]
+    LedgerUnknownTemplateRef {
+        template_id: String,
+        referenced: String,
+    },
 
     /// Template file I/O error.
     #[error("cannot read template file `{path}`: {detail}")]
