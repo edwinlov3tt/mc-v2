@@ -234,6 +234,52 @@ The audit-pattern variant: when running parallel audit instances (e.g., the Phas
 
 If all four are clear, proceed. If any is ambiguous, resolve it in the kickoff before the instance starts.
 
+### 12. Self-audit after every phase completion (binding)
+
+Every ADR-defined phase MUST have a self-audit prompt handed to the implementing instance (or a separate auditing instance) after the DONE report. The PM generates the audit prompt before merging. The implementing instance does NOT push the branch; the PM reviews the audit results first.
+
+**Why this exists:** Phase 6D and 7A.1 both had shortcuts and fragility that only surfaced during manual PM review after merge. A structured self-audit catches these before the merge commit, when fixes are cheap. The audit is not adversarial — it surfaces weak spots so the PM can assess risk before accepting.
+
+**The self-audit template has 8 sections (A-H). Adapt per phase but keep the structure:**
+
+**A. Gate re-run.** Re-run the full build gate (`fmt`, `clippy`, `build --release`, `test --workspace`). Report exit codes + test counts. Confirm the expected test count from the DONE report.
+
+**B. Regression check.** Run the system end-to-end and compare output to the pre-phase baseline. For demo-server phases: start the server, upload sample data, compare narrative/detection output. For model phases: `mc model validate/lint/test` against known fixtures. Report any MISSING or CHANGED outputs vs. the baseline.
+
+**C. Proof test.** The load-bearing test that proves the phase's central claim. Examples:
+- Template engine refactor: add a YAML template WITHOUT recompiling, confirm it fires.
+- Explanation chains: add a `finding_id` group, confirm first-match-wins suppression.
+- Rich diagnostics: introduce a YAML error, confirm the rendered output shows file:line:column with underlines.
+- PPTX matcher: upload a PPTX, confirm tables auto-resolve to registry entries.
+
+If the proof test requires recompilation or manual workarounds, the phase's central claim is not fully delivered. Report which part failed.
+
+**D. Engine robustness — edge cases.** Test the phase's new code paths against adversarial input:
+- Unknown/missing inputs (references to non-existent measures, files, etc.)
+- Division by zero, empty collections, null/missing values
+- Malformed input (syntax errors in YAML, invalid JSON, corrupt files)
+- Empty input (empty YAML files, zero-row tables, missing directories)
+
+For each: report whether the system skips gracefully (correct), crashes/panics (bad), or produces wrong output silently (worst).
+
+**E. Code quality scan.** Grep the modified files for:
+- `unwrap()`, `.expect(`, `panic!`, `todo!`, `unimplemented!` — for each match: is it on a path that handles user-provided data (bad) or only startup/known-good data (acceptable)?
+- `// TODO`, `// HACK`, `// FIXME`, `// TEMP`, `// WORKAROUND` — report all technical debt markers left behind.
+- Line counts on key files — flag if a file is significantly larger than expected (dead code? over-engineering?).
+
+**F. Where did you struggle? (the honest section).** This is the most important section for the PM. Document explicitly:
+- What was the hardest part?
+- Where did you take a shortcut? Name every place where you chose simpler/faster over correct. No judgment — just surface them.
+- What does the new code NOT support that the design claims it does? List gaps between the ADR/handoff and what shipped.
+- Are there any code paths that silently fall back to old behavior or hardcoded defaults?
+- What would break if a user pushed the system beyond the test fixtures?
+
+**G. Performance check.** Compare timing of the phase's hot paths to the pre-phase baseline or the ADR's performance gate. Report if any measurement exceeds the gate. If no performance gate was specified, report timing anyway for the record.
+
+**H. File/output quality review.** Read the new YAML/config/template files top to bottom. Report: meaningful IDs? consistent style? accurate comments? duplicates? missing entries?
+
+**Post-audit:** the implementing instance posts results. The PM reviews. If the audit surfaces issues, the PM decides: fix-before-merge, accept-with-known-debt, or reject. The instance does NOT push the branch until the PM approves.
+
 ---
 
 ## Open process questions
