@@ -737,7 +737,7 @@ fn test_template_ids_match_yaml() {
 fn test_monthly_performance_narratives() {
     let templates = load_templates();
     let cubes = vec![monthly_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
 
     // Expected: data_sufficiency, impressions_mom, clicks_mom, ctr_trend,
     // engagement_acceleration, uniform_momentum, ctr_vs_benchmark, conversion_alarm = 8
@@ -785,7 +785,7 @@ fn test_monthly_performance_narratives() {
 fn test_data_sufficiency_content() {
     let templates = load_templates();
     let cubes = vec![monthly_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
 
     let ds = narratives
         .iter()
@@ -808,7 +808,7 @@ fn test_data_sufficiency_content() {
 fn test_impressions_mom_content() {
     let templates = load_templates();
     let cubes = vec![monthly_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
 
     let impr = narratives
         .iter()
@@ -840,7 +840,7 @@ fn test_impressions_mom_content() {
 fn test_conversion_alarm_content() {
     let templates = load_templates();
     let cubes = vec![monthly_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
 
     let alarm = narratives
         .iter()
@@ -858,7 +858,7 @@ fn test_conversion_alarm_content() {
 fn test_device_narratives() {
     let templates = load_templates();
     let cubes = vec![device_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
 
     let ids: Vec<&str> = narratives.iter().map(|n| n.template_id.as_str()).collect();
     assert!(
@@ -885,7 +885,7 @@ fn test_device_narratives() {
 fn test_geo_narratives() {
     let templates = load_templates();
     let cubes = vec![performance_by_city()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
 
     let ids: Vec<&str> = narratives.iter().map(|n| n.template_id.as_str()).collect();
     assert!(
@@ -917,7 +917,7 @@ fn test_geo_narratives() {
 fn test_creative_narrative() {
     let templates = load_templates();
     let cubes = vec![creative_by_name()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
 
     let ids: Vec<&str> = narratives.iter().map(|n| n.template_id.as_str()).collect();
     assert!(
@@ -931,7 +931,7 @@ fn test_dedup_across_cubes() {
     let templates = load_templates();
     // data_sufficiency fires once even with multiple cubes.
     let cubes = vec![monthly_performance(), campaign_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
 
     let ds_count = narratives
         .iter()
@@ -963,7 +963,7 @@ fn test_full_scotts_rv_evaluation() {
         performance_by_zip(),
         creative_by_name(),
     ];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
 
     // Print all narratives for debugging.
     for (i, n) in narratives.iter().enumerate() {
@@ -1003,7 +1003,7 @@ fn test_full_scotts_rv_evaluation() {
 fn test_narrative_id_format() {
     let templates = load_templates();
     let cubes = vec![monthly_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
 
     for n in &narratives {
         assert!(
@@ -1027,7 +1027,7 @@ fn test_dag_binding_resolution() {
     // With DAG resolution, abs_pct resolves first, then verb can reference it.
     let templates = load_templates();
     let cubes = vec![monthly_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
 
     let clicks = narratives
         .iter()
@@ -1155,7 +1155,7 @@ fn test_persistent_decline_fires_on_3_month_ledger() {
     let ledger = load_fixture("3-month-decline.jsonl");
     let cubes = vec![trend_test_cube()];
 
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&ledger));
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&ledger), None);
 
     let trend_narratives: Vec<_> = narratives
         .iter()
@@ -1177,7 +1177,7 @@ fn test_recurring_warning_fires_on_2_of_3_months() {
     let ledger = load_fixture("2-month-device-warning.jsonl");
     let cubes = vec![trend_test_cube()];
 
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&ledger));
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&ledger), None);
 
     let trend_narratives: Vec<_> = narratives
         .iter()
@@ -1196,7 +1196,7 @@ fn test_conversion_alarm_persistent_fires_on_streak() {
     let ledger = load_fixture("persistent-zero-conversions.jsonl");
     let cubes = vec![trend_test_cube()];
 
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&ledger));
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&ledger), None);
 
     let trend_narratives: Vec<_> = narratives
         .iter()
@@ -1218,7 +1218,7 @@ fn test_improvement_trend_fires_on_2_month_momentum() {
     let ledger = load_fixture("sustained-improvement.jsonl");
     let cubes = vec![trend_test_cube()];
 
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&ledger));
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&ledger), None);
 
     let trend_narratives: Vec<_> = narratives
         .iter()
@@ -1287,7 +1287,7 @@ fn test_first_occurrence_fires_when_no_history() {
 
     // Empty ledger: no prior device_underperformance entries.
     let empty_ledger: Vec<mc_narrative::LedgerEntry> = Vec::new();
-    let narratives = mc_narrative::evaluate_all(&templates, &[cube], Some(&empty_ledger));
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], Some(&empty_ledger), None);
 
     let trend_narratives: Vec<_> = narratives
         .iter()
@@ -1306,7 +1306,7 @@ fn test_no_trends_fire_with_empty_ledger() {
     let empty_ledger: Vec<mc_narrative::LedgerEntry> = Vec::new();
     let cubes = vec![trend_test_cube()];
 
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&empty_ledger));
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&empty_ledger), None);
 
     // The trend templates that use ledger_streak >= N should NOT fire.
     let trend_ids = [
@@ -1382,13 +1382,13 @@ fn test_ledger_query_performance_1000_entries() {
     let cubes = vec![trend_test_cube()];
 
     // Warm up.
-    let _ = mc_narrative::evaluate_all(&templates, &cubes, Some(&entries));
+    let _ = mc_narrative::evaluate_all(&templates, &cubes, Some(&entries), None);
 
     // Measure 10 iterations.
     let start = Instant::now();
     let iterations = 10;
     for _ in 0..iterations {
-        let _ = mc_narrative::evaluate_all(&templates, &cubes, Some(&entries));
+        let _ = mc_narrative::evaluate_all(&templates, &cubes, Some(&entries), None);
     }
     let elapsed = start.elapsed();
     let median_ms = elapsed.as_millis() as f64 / iterations as f64;
@@ -1398,4 +1398,320 @@ fn test_ledger_query_performance_1000_entries() {
         "ledger query with 1000 entries should complete in <50ms; got {median_ms:.1}ms"
     );
     eprintln!("[perf] 1000-entry ledger evaluation: {median_ms:.2}ms avg over {iterations} runs");
+}
+
+// ─── Phase 7A.4: Benchmark evaluator function tests ──────────────────
+
+#[test]
+fn test_benchmark_p50_returns_median() {
+    use mc_narrative::benchmark::{BenchmarkLibrary, MetricBenchmark, PeriodRange};
+    use std::collections::BTreeMap;
+
+    let mut benchmarks = BTreeMap::new();
+    let mut scope = BTreeMap::new();
+    scope.insert("channel".to_string(), "Targeted Display".to_string());
+    benchmarks.insert(
+        "CTR::channel=Targeted Display".to_string(),
+        MetricBenchmark {
+            metric: "CTR".to_string(),
+            scope,
+            p10: 0.05,
+            p25: 0.10,
+            p50: 0.18,
+            p75: 0.25,
+            p90: 0.35,
+            mean: 0.19,
+            stddev: 0.08,
+            sample_count: 6,
+        },
+    );
+    let lib = BenchmarkLibrary {
+        schema_version: "1.0".to_string(),
+        generated_at: "2026-05-07T10:00:00Z".to_string(),
+        workspace: "test".to_string(),
+        period_range: PeriodRange {
+            from: "2025-11".to_string(),
+            to: "2026-04".to_string(),
+        },
+        period_count: 6,
+        benchmarks,
+    };
+
+    let templates = vec![mc_narrative::TemplateDefinition {
+        id: "bench_test".to_string(),
+        family: vec!["display-like".to_string()],
+        severity: mc_narrative::Severity::Info,
+        table_types: vec!["Monthly Performance".to_string()],
+        sort_order: 0,
+        when: "benchmark_p50('CTR') > 0".to_string(),
+        template: "p50={median_ctr}".to_string(),
+        bindings: {
+            let mut b = BTreeMap::new();
+            b.insert("median_ctr".to_string(), "benchmark_p50('CTR')".to_string());
+            b
+        },
+        deduplicate: false,
+        format: BTreeMap::new(),
+        notability_base: None,
+    }];
+
+    let cube = monthly_performance();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, Some(&lib));
+    assert!(!narratives.is_empty(), "benchmark template should fire");
+
+    let n = &narratives[0];
+    let median = n
+        .evidence
+        .get("median_ctr")
+        .and_then(|v| v.as_f64())
+        .unwrap();
+    assert!(
+        (median - 0.18).abs() < 1e-9,
+        "p50 should be 0.18, got {median}"
+    );
+}
+
+#[test]
+fn test_benchmark_percentile_ranks_value() {
+    use mc_narrative::benchmark::{BenchmarkLibrary, MetricBenchmark, PeriodRange};
+    use std::collections::BTreeMap;
+
+    let mut benchmarks = BTreeMap::new();
+    let mut scope = BTreeMap::new();
+    scope.insert("channel".to_string(), "Targeted Display".to_string());
+    benchmarks.insert(
+        "CTR::channel=Targeted Display".to_string(),
+        MetricBenchmark {
+            metric: "CTR".to_string(),
+            scope,
+            p10: 0.05,
+            p25: 0.10,
+            p50: 0.18,
+            p75: 0.25,
+            p90: 0.35,
+            mean: 0.19,
+            stddev: 0.08,
+            sample_count: 6,
+        },
+    );
+    let lib = BenchmarkLibrary {
+        schema_version: "1.0".to_string(),
+        generated_at: "2026-05-07T10:00:00Z".to_string(),
+        workspace: "test".to_string(),
+        period_range: PeriodRange {
+            from: "2025-11".to_string(),
+            to: "2026-04".to_string(),
+        },
+        period_count: 6,
+        benchmarks,
+    };
+
+    let templates = vec![mc_narrative::TemplateDefinition {
+        id: "pctile_test".to_string(),
+        family: vec!["display-like".to_string()],
+        severity: mc_narrative::Severity::Info,
+        table_types: vec!["Monthly Performance".to_string()],
+        sort_order: 0,
+        when: "true".to_string(),
+        template: "rank={rank}".to_string(),
+        bindings: {
+            let mut b = BTreeMap::new();
+            // A value of 0.03 should be <= p10 (0.05), so rank = 10
+            b.insert(
+                "rank".to_string(),
+                "benchmark_percentile('CTR', 0.03)".to_string(),
+            );
+            b
+        },
+        deduplicate: false,
+        format: BTreeMap::new(),
+        notability_base: None,
+    }];
+
+    let cube = monthly_performance();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, Some(&lib));
+    assert!(!narratives.is_empty());
+    let rank = narratives[0]
+        .evidence
+        .get("rank")
+        .and_then(|v| v.as_f64())
+        .unwrap();
+    assert!(
+        (rank - 10.0).abs() < 1e-9,
+        "value 0.03 <= p10 should rank 10, got {rank}"
+    );
+}
+
+#[test]
+fn test_benchmark_above_median_returns_correct_boolean() {
+    use mc_narrative::benchmark::{BenchmarkLibrary, MetricBenchmark, PeriodRange};
+    use std::collections::BTreeMap;
+
+    let mut benchmarks = BTreeMap::new();
+    let mut scope = BTreeMap::new();
+    scope.insert("channel".to_string(), "Targeted Display".to_string());
+    benchmarks.insert(
+        "CTR::channel=Targeted Display".to_string(),
+        MetricBenchmark {
+            metric: "CTR".to_string(),
+            scope,
+            p10: 0.01,
+            p25: 0.02,
+            p50: 0.05, // median is 0.05
+            p75: 0.08,
+            p90: 0.10,
+            mean: 0.05,
+            stddev: 0.03,
+            sample_count: 6,
+        },
+    );
+    let lib = BenchmarkLibrary {
+        schema_version: "1.0".to_string(),
+        generated_at: "2026-05-07T10:00:00Z".to_string(),
+        workspace: "test".to_string(),
+        period_range: PeriodRange {
+            from: "2025-11".to_string(),
+            to: "2026-04".to_string(),
+        },
+        period_count: 6,
+        benchmarks,
+    };
+
+    // The monthly_performance cube has current.CTR which we need to check.
+    // benchmark_above_median reads current.CTR from context and compares to p50.
+    let templates = vec![mc_narrative::TemplateDefinition {
+        id: "above_test".to_string(),
+        family: vec!["display-like".to_string()],
+        severity: mc_narrative::Severity::Info,
+        table_types: vec!["Monthly Performance".to_string()],
+        sort_order: 0,
+        when: "true".to_string(),
+        template: "above={above}".to_string(),
+        bindings: {
+            let mut b = BTreeMap::new();
+            b.insert(
+                "above".to_string(),
+                "benchmark_above_median('CTR')".to_string(),
+            );
+            b
+        },
+        deduplicate: false,
+        format: BTreeMap::new(),
+        notability_base: None,
+    }];
+
+    let cube = monthly_performance();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, Some(&lib));
+    assert!(!narratives.is_empty());
+    // The cube's CTR values should be > 0.05 (the p50), so above_median = 1.0
+    let above = narratives[0]
+        .evidence
+        .get("above")
+        .and_then(|v| v.as_f64())
+        .unwrap();
+    // CTR in monthly_performance is typically ~0.08-0.12, well above 0.05
+    assert!(
+        (above - 1.0).abs() < 1e-9,
+        "CTR should be above median 0.05, got above={above}"
+    );
+}
+
+#[test]
+fn test_benchmark_z_score_computation() {
+    use mc_narrative::benchmark::{BenchmarkLibrary, MetricBenchmark, PeriodRange};
+    use std::collections::BTreeMap;
+
+    let mut benchmarks = BTreeMap::new();
+    benchmarks.insert(
+        "CTR::channel=Targeted Display".to_string(),
+        MetricBenchmark {
+            metric: "CTR".to_string(),
+            scope: {
+                let mut s = BTreeMap::new();
+                s.insert("channel".to_string(), "Targeted Display".to_string());
+                s
+            },
+            p10: 0.05,
+            p25: 0.10,
+            p50: 0.20,
+            p75: 0.30,
+            p90: 0.40,
+            mean: 0.20,
+            stddev: 0.10,
+            sample_count: 6,
+        },
+    );
+    let lib = BenchmarkLibrary {
+        schema_version: "1.0".to_string(),
+        generated_at: "2026-05-07T10:00:00Z".to_string(),
+        workspace: "test".to_string(),
+        period_range: PeriodRange {
+            from: "2025-11".to_string(),
+            to: "2026-04".to_string(),
+        },
+        period_count: 6,
+        benchmarks,
+    };
+
+    let templates = vec![mc_narrative::TemplateDefinition {
+        id: "zscore_test".to_string(),
+        family: vec!["display-like".to_string()],
+        severity: mc_narrative::Severity::Info,
+        table_types: vec!["Monthly Performance".to_string()],
+        sort_order: 0,
+        when: "true".to_string(),
+        template: "z={z_score}".to_string(),
+        bindings: {
+            let mut b = BTreeMap::new();
+            // z = (0.40 - 0.20) / 0.10 = 2.0
+            b.insert(
+                "z_score".to_string(),
+                "benchmark_z_score('CTR', 0.40)".to_string(),
+            );
+            b
+        },
+        deduplicate: false,
+        format: BTreeMap::new(),
+        notability_base: None,
+    }];
+
+    let cube = monthly_performance();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, Some(&lib));
+    assert!(!narratives.is_empty());
+    let z = narratives[0]
+        .evidence
+        .get("z_score")
+        .and_then(|v| v.as_f64())
+        .unwrap();
+    assert!(
+        (z - 2.0).abs() < 1e-9,
+        "z-score of 0.40 with mean=0.20, stddev=0.10 should be 2.0, got {z}"
+    );
+}
+
+#[test]
+fn test_benchmark_functions_return_zero_when_no_library() {
+    // Without a benchmark library, all benchmark_*() functions return 0.0
+    // and templates with benchmark predicates in when: silently don't fire.
+    let templates = vec![mc_narrative::TemplateDefinition {
+        id: "no_lib_test".to_string(),
+        family: vec!["display-like".to_string()],
+        severity: mc_narrative::Severity::Info,
+        table_types: vec!["Monthly Performance".to_string()],
+        sort_order: 0,
+        when: "benchmark_p50('CTR') > 0".to_string(),
+        template: "should not fire".to_string(),
+        bindings: std::collections::BTreeMap::new(),
+        deduplicate: false,
+        format: std::collections::BTreeMap::new(),
+        notability_base: None,
+    }];
+
+    let cube = monthly_performance();
+    // No benchmark library → benchmark_p50 returns 0.0 → "0.0 > 0" is false → template skips.
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None);
+    assert!(
+        narratives.iter().all(|n| n.template_id != "no_lib_test"),
+        "benchmark template should NOT fire when no library is present"
+    );
 }

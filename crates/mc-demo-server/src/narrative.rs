@@ -23,7 +23,7 @@ pub fn evaluate_all(
     cubes: &[IngestedCube],
 ) -> Vec<NarrativeOutput> {
     let cube_data: Vec<mc_narrative::CubeData> = cubes.iter().map(convert_cube).collect();
-    mc_narrative::evaluate_all(templates, &cube_data, None)
+    mc_narrative::evaluate_all(templates, &cube_data, None, None)
 }
 
 /// Evaluate templates with ledger context (Phase 7A.3 cross-period analysis).
@@ -35,7 +35,7 @@ pub fn evaluate_all_with_ledger(
     ledger: Option<&[mc_narrative::LedgerEntry]>,
 ) -> Vec<NarrativeOutput> {
     let cube_data: Vec<mc_narrative::CubeData> = cubes.iter().map(convert_cube).collect();
-    mc_narrative::evaluate_all(templates, &cube_data, ledger)
+    mc_narrative::evaluate_all(templates, &cube_data, ledger, None)
 }
 
 /// Convert an `IngestedCube` (demo server type) to `CubeData` (narrative engine type).

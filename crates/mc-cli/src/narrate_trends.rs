@@ -127,7 +127,7 @@ pub fn run(cmd: NarrateTrendsCommand) -> i32 {
     } else {
         Some(ledger_entries.as_slice())
     };
-    let narratives = mc_narrative::evaluate_all(&templates, &cube_data, ledger_slice);
+    let narratives = mc_narrative::evaluate_all(&templates, &cube_data, ledger_slice, None);
 
     // 7. Optionally filter to trend templates only.
     let narratives = if cmd.trends_only {

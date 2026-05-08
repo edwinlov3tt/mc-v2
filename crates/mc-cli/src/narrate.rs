@@ -124,7 +124,7 @@ pub fn run_captured(cmd: NarrateCommand) -> (i32, String) {
     }
 
     // 5. Evaluate templates.
-    let narratives = mc_narrative::evaluate_all(&templates, &cube_data, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cube_data, None, None);
 
     // 6. Phase 7A.2: write ledger entries if --save-ledger is set.
     if cmd.save_ledger && !narratives.is_empty() {

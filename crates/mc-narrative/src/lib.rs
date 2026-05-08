@@ -15,7 +15,7 @@ pub mod schema;
 pub use benchmark::{BenchmarkError, BenchmarkLibrary, MetricBenchmark};
 pub use context::{CellEntry, CubeData};
 pub use error::NarrativeError;
-pub use evaluator::{Ctx, LedgerIndex, Val};
+pub use evaluator::{BenchmarkIndex, Ctx, LedgerIndex, Val};
 pub use ledger::LedgerEntry;
 pub use renderer::{format_comma, format_val, readable_name};
 pub use schema::{NarrativeOutput, Severity, TemplateDefinition, TemplateFile};
@@ -177,13 +177,23 @@ fn extract_placeholders(template: &str) -> Vec<String> {
 /// When `Some`, ledger query functions (`ledger_count`, `ledger_streak`, etc.)
 /// have data to search. When `None`, they return 0/false/Null and templates
 /// with ledger predicates in `when:` silently don't fire.
+///
+/// Phase 7A.4: optional `benchmark` parameter enables workspace-local benchmarks.
+/// When `Some`, benchmark query functions (`benchmark_p50`, `benchmark_percentile`,
+/// etc.) have data to query. When `None`, they return 0.0 and templates with
+/// benchmark predicates in `when:` silently don't fire.
 pub fn evaluate_all(
     templates: &[TemplateDefinition],
     cubes: &[CubeData],
     ledger: Option<&[LedgerEntry]>,
+    benchmark: Option<&benchmark::BenchmarkLibrary>,
 ) -> Vec<NarrativeOutput> {
     let mut narratives = Vec::new();
     let mut fired_ids: HashSet<String> = HashSet::new();
+
+    // Build benchmark index once per evaluate_all call (not per cube).
+    let benchmark_index = benchmark.map(BenchmarkIndex::build);
+    let benchmark_ref = benchmark_index.as_ref();
 
     for cube in cubes {
         let ctx = context::build_context(cube);
@@ -217,20 +227,28 @@ pub fn evaluate_all(
                 continue;
             }
 
-            // Evaluate when predicate (with ledger access).
-            let when_val = evaluator::eval_expr_with_ledger(
+            // Evaluate when predicate (with ledger + benchmark access).
+            let when_val = evaluator::eval_expr_with_benchmark(
                 &tmpl.when,
                 &ctx,
                 Some(cube),
                 ledger_ref,
+                benchmark_ref,
                 &scope_key,
             );
             if !when_val.is_truthy() {
                 continue;
             }
 
-            // DAG-ordered binding resolution (Finding #3) with ledger access.
-            let resolved = resolve_bindings_dag(&tmpl.bindings, &ctx, cube, ledger_ref, &scope_key);
+            // DAG-ordered binding resolution (Finding #3) with ledger + benchmark access.
+            let resolved = resolve_bindings_dag(
+                &tmpl.bindings,
+                &ctx,
+                cube,
+                ledger_ref,
+                benchmark_ref,
+                &scope_key,
+            );
 
             // Add tactic_name to resolved bindings.
             let mut resolved = resolved;
@@ -277,6 +295,7 @@ fn resolve_bindings_dag(
     base_ctx: &Ctx,
     cube: &CubeData,
     ledger: Option<&LedgerIndex>,
+    benchmark: Option<&BenchmarkIndex>,
     scope_key: &str,
 ) -> HashMap<String, Val> {
     if bindings.is_empty() {
@@ -307,8 +326,14 @@ fn resolve_bindings_dag(
 
     for name in &order {
         if let Some(expr) = bindings.get(*name) {
-            let val =
-                evaluator::eval_expr_with_ledger(expr, &eval_ctx, Some(cube), ledger, scope_key);
+            let val = evaluator::eval_expr_with_benchmark(
+                expr,
+                &eval_ctx,
+                Some(cube),
+                ledger,
+                benchmark,
+                scope_key,
+            );
             eval_ctx.insert(name.to_string(), val.clone());
             resolved.insert(name.to_string(), val);
         }
