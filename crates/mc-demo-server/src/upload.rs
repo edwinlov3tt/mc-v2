@@ -205,7 +205,12 @@ pub fn count_unique_tactics(detections: &[DetectionResult]) -> usize {
     products.len()
 }
 
-/// Process a full upload: extract zip → detect → build response.
+/// Process a full upload: extract zip/pptx → detect → build response.
+///
+/// Detects whether the uploaded file is a PPTX (PowerPoint) or a ZIP of CSVs,
+/// and routes to the appropriate extractor. Both produce `Vec<ParsedCsv>` so
+/// the rest of the pipeline (registry matching, cube construction, narratives)
+/// works unchanged.
 pub fn process_upload(
     registry: &Registry,
     templates: &[TemplateDefinition],
@@ -214,8 +219,12 @@ pub fn process_upload(
 ) -> Result<UploadResponse, String> {
     let mut timer = PipelineTimer::start();
 
-    // Extract zip in memory (Decision 11 optimization #1)
-    let csvs = extract_zip(bytes)?;
+    // Detect file type: PPTX or ZIP-of-CSVs, then extract accordingly.
+    let csvs = if crate::pptx::is_pptx(bytes) {
+        crate::pptx::extract_pptx(bytes)?
+    } else {
+        extract_zip(bytes)?
+    };
 
     // Detect tactics against registry
     let detections = detect_tactics(registry, &csvs);

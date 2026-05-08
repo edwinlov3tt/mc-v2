@@ -8,6 +8,7 @@
 pub mod banner;
 pub mod ingest;
 pub mod narrative;
+pub mod pptx;
 pub mod registry;
 pub mod server;
 pub mod timing;
