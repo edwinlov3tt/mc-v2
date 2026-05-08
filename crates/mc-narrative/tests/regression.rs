@@ -691,10 +691,13 @@ fn test_load_all_templates() {
     let templates = load_templates();
     // 14 from display-like.yaml + 5 from trend-templates.yaml (Phase 7A.3)
     // + 5 from benchmark-templates.yaml (Phase 7A.4).
+    // 14 from display-like.yaml + 5 from trend-templates.yaml (Phase 7A.3)
+    // + 5 from benchmark-templates.yaml (Phase 7A.4)
+    // + 9 from explanation-templates.yaml (Phase 7A.5).
     assert_eq!(
         templates.len(),
-        24,
-        "display-like.yaml (14) + trend-templates.yaml (5) + benchmark-templates.yaml (5) = 24 templates"
+        33,
+        "display-like (14) + trend (5) + benchmark (5) + explanation (9) = 33 templates"
     );
     // Verify sort order: data_sufficiency (sort_order: -10) should be first.
     assert_eq!(templates[0].id, "data_sufficiency");
@@ -732,6 +735,16 @@ fn test_template_ids_match_yaml() {
         "impressions_unusually_high",
         "ctr_benchmark_context",
         "spend_efficiency_trending",
+        // explanation-templates.yaml (9, Phase 7A.5)
+        "impressions_declined_context_event",
+        "impressions_declined_auto_budget",
+        "impressions_declined_unexplained",
+        "ctr_declined_context_event",
+        "ctr_declined_unexplained",
+        "clicks_declined_budget_proportional",
+        "clicks_declined_unexplained",
+        "conversions_zero_single_period",
+        "conversions_zero_unexplained",
     ];
     let mut actual_ids: Vec<&str> = templates.iter().map(|t| t.id.as_str()).collect();
     actual_ids.sort();
@@ -744,7 +757,7 @@ fn test_template_ids_match_yaml() {
 fn test_monthly_performance_narratives() {
     let templates = load_templates();
     let cubes = vec![monthly_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None, None);
 
     // Expected: data_sufficiency, impressions_mom, clicks_mom, ctr_trend,
     // engagement_acceleration, uniform_momentum, ctr_vs_benchmark, conversion_alarm = 8
@@ -792,7 +805,7 @@ fn test_monthly_performance_narratives() {
 fn test_data_sufficiency_content() {
     let templates = load_templates();
     let cubes = vec![monthly_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None, None);
 
     let ds = narratives
         .iter()
@@ -815,7 +828,7 @@ fn test_data_sufficiency_content() {
 fn test_impressions_mom_content() {
     let templates = load_templates();
     let cubes = vec![monthly_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None, None);
 
     let impr = narratives
         .iter()
@@ -847,7 +860,7 @@ fn test_impressions_mom_content() {
 fn test_conversion_alarm_content() {
     let templates = load_templates();
     let cubes = vec![monthly_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None, None);
 
     let alarm = narratives
         .iter()
@@ -865,7 +878,7 @@ fn test_conversion_alarm_content() {
 fn test_device_narratives() {
     let templates = load_templates();
     let cubes = vec![device_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None, None);
 
     let ids: Vec<&str> = narratives.iter().map(|n| n.template_id.as_str()).collect();
     assert!(
@@ -892,7 +905,7 @@ fn test_device_narratives() {
 fn test_geo_narratives() {
     let templates = load_templates();
     let cubes = vec![performance_by_city()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None, None);
 
     let ids: Vec<&str> = narratives.iter().map(|n| n.template_id.as_str()).collect();
     assert!(
@@ -924,7 +937,7 @@ fn test_geo_narratives() {
 fn test_creative_narrative() {
     let templates = load_templates();
     let cubes = vec![creative_by_name()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None, None);
 
     let ids: Vec<&str> = narratives.iter().map(|n| n.template_id.as_str()).collect();
     assert!(
@@ -938,7 +951,7 @@ fn test_dedup_across_cubes() {
     let templates = load_templates();
     // data_sufficiency fires once even with multiple cubes.
     let cubes = vec![monthly_performance(), campaign_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None, None);
 
     let ds_count = narratives
         .iter()
@@ -970,7 +983,7 @@ fn test_full_scotts_rv_evaluation() {
         performance_by_zip(),
         creative_by_name(),
     ];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None, None);
 
     // Print all narratives for debugging.
     for (i, n) in narratives.iter().enumerate() {
@@ -1010,7 +1023,7 @@ fn test_full_scotts_rv_evaluation() {
 fn test_narrative_id_format() {
     let templates = load_templates();
     let cubes = vec![monthly_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None, None);
 
     for n in &narratives {
         assert!(
@@ -1034,7 +1047,7 @@ fn test_dag_binding_resolution() {
     // With DAG resolution, abs_pct resolves first, then verb can reference it.
     let templates = load_templates();
     let cubes = vec![monthly_performance()];
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, None, None, None);
 
     let clicks = narratives
         .iter()
@@ -1162,7 +1175,7 @@ fn test_persistent_decline_fires_on_3_month_ledger() {
     let ledger = load_fixture("3-month-decline.jsonl");
     let cubes = vec![trend_test_cube()];
 
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&ledger), None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&ledger), None, None);
 
     let trend_narratives: Vec<_> = narratives
         .iter()
@@ -1184,7 +1197,7 @@ fn test_recurring_warning_fires_on_2_of_3_months() {
     let ledger = load_fixture("2-month-device-warning.jsonl");
     let cubes = vec![trend_test_cube()];
 
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&ledger), None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&ledger), None, None);
 
     let trend_narratives: Vec<_> = narratives
         .iter()
@@ -1203,7 +1216,7 @@ fn test_conversion_alarm_persistent_fires_on_streak() {
     let ledger = load_fixture("persistent-zero-conversions.jsonl");
     let cubes = vec![trend_test_cube()];
 
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&ledger), None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&ledger), None, None);
 
     let trend_narratives: Vec<_> = narratives
         .iter()
@@ -1225,7 +1238,7 @@ fn test_improvement_trend_fires_on_2_month_momentum() {
     let ledger = load_fixture("sustained-improvement.jsonl");
     let cubes = vec![trend_test_cube()];
 
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&ledger), None);
+    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&ledger), None, None);
 
     let trend_narratives: Vec<_> = narratives
         .iter()
@@ -1294,7 +1307,8 @@ fn test_first_occurrence_fires_when_no_history() {
 
     // Empty ledger: no prior device_underperformance entries.
     let empty_ledger: Vec<mc_narrative::LedgerEntry> = Vec::new();
-    let narratives = mc_narrative::evaluate_all(&templates, &[cube], Some(&empty_ledger), None);
+    let narratives =
+        mc_narrative::evaluate_all(&templates, &[cube], Some(&empty_ledger), None, None);
 
     let trend_narratives: Vec<_> = narratives
         .iter()
@@ -1313,7 +1327,8 @@ fn test_no_trends_fire_with_empty_ledger() {
     let empty_ledger: Vec<mc_narrative::LedgerEntry> = Vec::new();
     let cubes = vec![trend_test_cube()];
 
-    let narratives = mc_narrative::evaluate_all(&templates, &cubes, Some(&empty_ledger), None);
+    let narratives =
+        mc_narrative::evaluate_all(&templates, &cubes, Some(&empty_ledger), None, None);
 
     // The trend templates that use ledger_streak >= N should NOT fire.
     let trend_ids = [
@@ -1375,6 +1390,9 @@ fn test_ledger_query_performance_1000_entries() {
                 text: "perf test".to_string(),
                 template_id: template_id.to_string(),
                 notability_score: None,
+                finding_id: None,
+                skipped_explanations: Vec::new(),
+                rejected_explanations: Vec::new(),
             },
             evidence: {
                 let mut m = BTreeMap::new();
@@ -1389,13 +1407,13 @@ fn test_ledger_query_performance_1000_entries() {
     let cubes = vec![trend_test_cube()];
 
     // Warm up.
-    let _ = mc_narrative::evaluate_all(&templates, &cubes, Some(&entries), None);
+    let _ = mc_narrative::evaluate_all(&templates, &cubes, Some(&entries), None, None);
 
     // Measure 10 iterations.
     let start = Instant::now();
     let iterations = 10;
     for _ in 0..iterations {
-        let _ = mc_narrative::evaluate_all(&templates, &cubes, Some(&entries), None);
+        let _ = mc_narrative::evaluate_all(&templates, &cubes, Some(&entries), None, None);
     }
     let elapsed = start.elapsed();
     let median_ms = elapsed.as_millis() as f64 / iterations as f64;
@@ -1460,10 +1478,12 @@ fn test_benchmark_p50_returns_median() {
         deduplicate: false,
         format: BTreeMap::new(),
         notability_base: None,
+        finding_id: None,
+        explanation_priority: 500,
     }];
 
     let cube = monthly_performance();
-    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, Some(&lib));
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, Some(&lib), None);
     assert!(!narratives.is_empty(), "benchmark template should fire");
 
     let n = &narratives[0];
@@ -1533,10 +1553,12 @@ fn test_benchmark_percentile_ranks_value() {
         deduplicate: false,
         format: BTreeMap::new(),
         notability_base: None,
+        finding_id: None,
+        explanation_priority: 500,
     }];
 
     let cube = monthly_performance();
-    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, Some(&lib));
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, Some(&lib), None);
     assert!(!narratives.is_empty());
     let rank = narratives[0]
         .evidence
@@ -1605,10 +1627,12 @@ fn test_benchmark_above_median_returns_correct_boolean() {
         deduplicate: false,
         format: BTreeMap::new(),
         notability_base: None,
+        finding_id: None,
+        explanation_priority: 500,
     }];
 
     let cube = monthly_performance();
-    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, Some(&lib));
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, Some(&lib), None);
     assert!(!narratives.is_empty());
     // The cube's CTR values should be > 0.05 (the p50), so above_median = 1.0
     let above = narratives[0]
@@ -1680,10 +1704,12 @@ fn test_benchmark_z_score_computation() {
         deduplicate: false,
         format: BTreeMap::new(),
         notability_base: None,
+        finding_id: None,
+        explanation_priority: 500,
     }];
 
     let cube = monthly_performance();
-    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, Some(&lib));
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, Some(&lib), None);
     assert!(!narratives.is_empty());
     let z = narratives[0]
         .evidence
@@ -1712,11 +1738,13 @@ fn test_benchmark_functions_return_zero_when_no_library() {
         deduplicate: false,
         format: std::collections::BTreeMap::new(),
         notability_base: None,
+        finding_id: None,
+        explanation_priority: 500,
     }];
 
     let cube = monthly_performance();
     // No benchmark library → benchmark_p50 returns 0.0 → "0.0 > 0" is false → template skips.
-    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, None);
     assert!(
         narratives.iter().all(|n| n.template_id != "no_lib_test"),
         "benchmark template should NOT fire when no library is present"
@@ -1767,7 +1795,7 @@ fn test_benchmark_templates_fire_with_loaded_library() {
 
     let templates = load_templates();
     let cube = monthly_performance();
-    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, Some(&lib));
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, Some(&lib), None);
 
     // ctr_above_own_median should fire: CTR ~0.08-0.12 > p50 of 0.05, sample_count >= 3.
     let fired_ids: Vec<&str> = narratives.iter().map(|n| n.template_id.as_str()).collect();
@@ -1788,7 +1816,7 @@ fn test_benchmark_templates_skip_without_library() {
     let templates = load_templates();
     let cube = monthly_performance();
     // No benchmark library → all benchmark templates should silently skip.
-    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None);
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, None);
     let benchmark_template_ids = [
         "ctr_above_own_median",
         "ctr_below_own_p25",
@@ -1840,6 +1868,9 @@ fn test_mc7042_stale_library_warning() {
             text: "test".to_string(),
             template_id: "test".to_string(),
             notability_score: None,
+            finding_id: None,
+            skipped_explanations: Vec::new(),
+            rejected_explanations: Vec::new(),
         },
         evidence: BTreeMap::new(),
         benchmarks_referenced: vec![],
@@ -1874,6 +1905,9 @@ fn test_mc7042_stale_library_warning() {
             text: "test".to_string(),
             template_id: "test".to_string(),
             notability_score: None,
+            finding_id: None,
+            skipped_explanations: Vec::new(),
+            rejected_explanations: Vec::new(),
         },
         evidence: BTreeMap::new(),
         benchmarks_referenced: vec![],
@@ -1935,11 +1969,13 @@ fn test_mc7041_missing_metric_returns_zero() {
         deduplicate: false,
         format: BTreeMap::new(),
         notability_base: None,
+        finding_id: None,
+        explanation_priority: 500,
     }];
 
     let cube = monthly_performance();
     // CTR not in benchmark library → benchmark_p50('CTR') returns 0.0 → template skips.
-    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, Some(&lib));
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, Some(&lib), None);
     assert!(
         narratives.iter().all(|n| n.template_id != "mc7041_test"),
         "template should skip when metric not found in benchmark library (MC7041)"
@@ -2004,4 +2040,988 @@ fn test_benchmark_lookup_performance() {
         "benchmark lookup should be < 1ms; got {per_lookup_ns}ns"
     );
     eprintln!("[perf] benchmark lookup: {per_lookup_ns}ns avg over {iterations} lookups");
+}
+
+// ─── Phase 7A.5: Explanation chain tests (ADR-0022) ──────────────────
+
+/// Helper: create a TemplateDefinition for explanation chain tests.
+fn make_template(
+    id: &str,
+    when: &str,
+    template: &str,
+    finding_id: Option<&str>,
+    priority: u32,
+) -> mc_narrative::TemplateDefinition {
+    mc_narrative::TemplateDefinition {
+        id: id.to_string(),
+        family: vec!["display-like".to_string()],
+        severity: Severity::Info,
+        table_types: vec!["Monthly Performance".to_string()],
+        sort_order: 0,
+        when: when.to_string(),
+        template: template.to_string(),
+        bindings: BTreeMap::new(),
+        deduplicate: false,
+        format: BTreeMap::new(),
+        notability_base: None,
+        finding_id: finding_id.map(|s| s.to_string()),
+        explanation_priority: priority,
+    }
+}
+
+#[test]
+fn test_explanation_chain_first_match_fires() {
+    // Three templates in one explanation group. The first (priority 100) should fire.
+    let templates = vec![
+        make_template(
+            "explain_a",
+            "current.Impressions > 0",
+            "explanation A",
+            Some("impr_declined"),
+            100,
+        ),
+        make_template(
+            "explain_b",
+            "current.Impressions > 0",
+            "explanation B",
+            Some("impr_declined"),
+            200,
+        ),
+        make_template(
+            "explain_c",
+            "current.Impressions > 0",
+            "explanation C",
+            Some("impr_declined"),
+            999,
+        ),
+    ];
+
+    let cube = monthly_performance();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, None);
+
+    assert_eq!(narratives.len(), 1, "only the first match should fire");
+    assert_eq!(narratives[0].template_id, "explain_a");
+    assert_eq!(narratives[0].finding_id.as_deref(), Some("impr_declined"));
+}
+
+#[test]
+fn test_explanation_chain_fallback_fires_when_no_match() {
+    // First two templates' when: is false. Fallback at 999 should fire.
+    let templates = vec![
+        make_template(
+            "explain_a",
+            "current.Impressions < 0",
+            "should not fire",
+            Some("impr_declined"),
+            100,
+        ),
+        make_template(
+            "explain_b",
+            "current.Impressions < 0",
+            "should not fire",
+            Some("impr_declined"),
+            200,
+        ),
+        make_template(
+            "explain_fallback",
+            "current.Impressions > 0",
+            "fallback fired",
+            Some("impr_declined"),
+            999,
+        ),
+    ];
+
+    let cube = monthly_performance();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, None);
+
+    assert_eq!(narratives.len(), 1);
+    assert_eq!(narratives[0].template_id, "explain_fallback");
+}
+
+#[test]
+fn test_explanation_chain_skipped_and_rejected_recorded() {
+    // Priority 100 when: false (rejected), 200 when: true (fires), 999 never evaluated (skipped).
+    let templates = vec![
+        make_template(
+            "explain_rejected",
+            "current.Impressions < 0",
+            "rejected",
+            Some("finding_x"),
+            100,
+        ),
+        make_template(
+            "explain_winner",
+            "current.Impressions > 0",
+            "winner",
+            Some("finding_x"),
+            200,
+        ),
+        make_template(
+            "explain_skipped",
+            "current.Impressions > 0",
+            "skipped",
+            Some("finding_x"),
+            999,
+        ),
+    ];
+
+    let cube = monthly_performance();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, None);
+
+    assert_eq!(narratives.len(), 1);
+    let n = &narratives[0];
+    assert_eq!(n.template_id, "explain_winner");
+    assert_eq!(
+        n.rejected_explanations,
+        vec!["explain_rejected"],
+        "rejected list should contain templates whose when: was false"
+    );
+    assert_eq!(
+        n.skipped_explanations,
+        vec!["explain_skipped"],
+        "skipped list should contain templates never evaluated"
+    );
+}
+
+#[test]
+fn test_templates_without_finding_id_fire_independently() {
+    // Two standalone templates + one explanation group. All should fire if their when: passes.
+    let templates = vec![
+        make_template(
+            "standalone_a",
+            "current.Impressions > 0",
+            "standalone A",
+            None,
+            500,
+        ),
+        make_template(
+            "standalone_b",
+            "current.Clicks > 0",
+            "standalone B",
+            None,
+            500,
+        ),
+        make_template(
+            "grouped_a",
+            "current.Impressions > 0",
+            "grouped A",
+            Some("finding_y"),
+            100,
+        ),
+        make_template(
+            "grouped_b",
+            "current.Impressions > 0",
+            "grouped B",
+            Some("finding_y"),
+            999,
+        ),
+    ];
+
+    let cube = monthly_performance();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, None);
+
+    let ids: Vec<&str> = narratives.iter().map(|n| n.template_id.as_str()).collect();
+    assert!(ids.contains(&"standalone_a"), "standalone A should fire");
+    assert!(ids.contains(&"standalone_b"), "standalone B should fire");
+    assert!(
+        ids.contains(&"grouped_a"),
+        "grouped A should fire (first match in group)"
+    );
+    assert!(
+        !ids.contains(&"grouped_b"),
+        "grouped B should be suppressed (grouped_a already matched)"
+    );
+    assert_eq!(
+        ids.len(),
+        3,
+        "exactly 3 narratives: 2 standalone + 1 from group"
+    );
+}
+
+#[test]
+fn test_mc7050_priority_collision_error() {
+    use mc_narrative::NarrativeError;
+
+    let templates = vec![
+        make_template("tmpl_a", "true", "a", Some("finding_z"), 200),
+        make_template("tmpl_b", "true", "b", Some("finding_z"), 200),
+    ];
+
+    let errors = mc_narrative::validate_templates(&templates);
+    let has_mc7050 = errors
+        .iter()
+        .any(|e| matches!(e, NarrativeError::ExplanationPriorityCollision { .. }));
+    assert!(
+        has_mc7050,
+        "MC7050 should fire when two templates share finding_id + priority"
+    );
+}
+
+#[test]
+fn test_mc7053_missing_fallback_info() {
+    use mc_narrative::NarrativeError;
+
+    // Group with no priority >= 900 template.
+    let templates = vec![
+        make_template("tmpl_a", "true", "a", Some("finding_nofb"), 100),
+        make_template("tmpl_b", "true", "b", Some("finding_nofb"), 200),
+    ];
+
+    let errors = mc_narrative::validate_templates(&templates);
+    let has_mc7053 = errors
+        .iter()
+        .any(|e| matches!(e, NarrativeError::ExplanationMissingFallback { .. }));
+    assert!(
+        has_mc7053,
+        "MC7053 should fire when no fallback template exists"
+    );
+}
+
+#[test]
+fn test_mc7055_singleton_finding_id() {
+    use mc_narrative::NarrativeError;
+
+    // Only one template references this finding_id → likely typo.
+    let templates = vec![make_template(
+        "tmpl_solo",
+        "true",
+        "solo",
+        Some("typo_finding"),
+        100,
+    )];
+
+    let errors = mc_narrative::validate_templates(&templates);
+    let has_mc7055 = errors
+        .iter()
+        .any(|e| matches!(e, NarrativeError::ExplanationSingletonFindingId { .. }));
+    assert!(
+        has_mc7055,
+        "MC7055 should fire for single-template finding_id"
+    );
+}
+
+#[test]
+fn test_explanation_group_no_match_produces_no_output() {
+    // All templates in the group have when: false → group produces nothing.
+    let templates = vec![
+        make_template("never_a", "false", "never", Some("never_group"), 100),
+        make_template("never_b", "false", "never", Some("never_group"), 200),
+    ];
+
+    let cube = monthly_performance();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, None);
+    assert!(
+        narratives.is_empty(),
+        "explanation group with no matches should produce no output"
+    );
+}
+
+// ─── Phase 7A.5 Session 2: Context event evaluator function tests ────
+
+#[test]
+fn test_has_context_event_matches_current_period() {
+    use mc_narrative::context_events::ContextEvent;
+
+    let events = vec![ContextEvent {
+        id: "ce-2025-08-001".to_string(),
+        period: "Aug 2025".to_string(),
+        scope: BTreeMap::new(),
+        event_type: "budget_change".to_string(),
+        description: "Budget reduced 40%".to_string(),
+        source: None,
+        expires_at: None,
+    }];
+
+    // Template checks has_context_event('budget_change') == 1.
+    let templates = vec![make_template(
+        "test_ctx",
+        "has_context_event('budget_change') == 1",
+        "context matched",
+        None,
+        500,
+    )];
+
+    let cube = monthly_performance();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, Some(&events));
+
+    assert_eq!(
+        narratives.len(),
+        1,
+        "template should fire when context event matches"
+    );
+    assert_eq!(narratives[0].text, "context matched");
+}
+
+#[test]
+fn test_has_context_event_lookback_3_periods() {
+    use mc_narrative::context_events::ContextEvent;
+
+    // Event is for Jul_2025, current period is Aug_2025. Lookback=3 should match.
+    let events = vec![ContextEvent {
+        id: "ce-2025-07-001".to_string(),
+        period: "Jul 2025".to_string(),
+        scope: BTreeMap::new(),
+        event_type: "creative_pause".to_string(),
+        description: "3 creatives paused".to_string(),
+        source: None,
+        expires_at: None,
+    }];
+
+    // Lookback=1 should NOT match (current period only).
+    let templates_1 = vec![make_template(
+        "ctx_lb1",
+        "has_context_event('creative_pause') == 1",
+        "should not fire",
+        None,
+        500,
+    )];
+
+    // Lookback=3 should match.
+    let templates_3 = vec![make_template(
+        "ctx_lb3",
+        "has_context_event('creative_pause', 3) == 1",
+        "lookback matched",
+        None,
+        500,
+    )];
+
+    let cube = monthly_performance();
+    let n1 = mc_narrative::evaluate_all(&templates_1, &[cube.clone()], None, None, Some(&events));
+    let n3 = mc_narrative::evaluate_all(&templates_3, &[cube], None, None, Some(&events));
+
+    assert!(
+        n1.is_empty(),
+        "lookback=1 should not match prior period event"
+    );
+    assert_eq!(n3.len(), 1, "lookback=3 should match prior period event");
+}
+
+#[test]
+fn test_context_description_returns_first_match() {
+    use mc_narrative::context_events::ContextEvent;
+
+    let events = vec![ContextEvent {
+        id: "ce-2025-08-001".to_string(),
+        period: "Aug 2025".to_string(),
+        scope: BTreeMap::new(),
+        event_type: "budget_change".to_string(),
+        description: "Budget reduced 40% for Q1 close-out".to_string(),
+        source: None,
+        expires_at: None,
+    }];
+
+    let mut templates = vec![make_template(
+        "ctx_desc",
+        "has_context_event('budget_change') == 1",
+        "event: {event_desc}",
+        None,
+        500,
+    )];
+    templates[0].bindings.insert(
+        "event_desc".to_string(),
+        "context_description('budget_change')".to_string(),
+    );
+
+    let cube = monthly_performance();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, Some(&events));
+
+    assert_eq!(narratives.len(), 1);
+    assert!(
+        narratives[0].text.contains("Budget reduced 40%"),
+        "context_description should interpolate: got {}",
+        narratives[0].text
+    );
+}
+
+#[test]
+fn test_context_event_scope_subset_matching() {
+    use mc_narrative::context_events::ContextEvent;
+
+    // Event scoped to Channel=Targeted Display.
+    let events = vec![ContextEvent {
+        id: "ce-2025-08-001".to_string(),
+        period: "Aug 2025".to_string(),
+        scope: {
+            let mut s = BTreeMap::new();
+            s.insert("channel".to_string(), "Targeted Display".to_string());
+            s
+        },
+        event_type: "budget_change".to_string(),
+        description: "Budget cut".to_string(),
+        source: None,
+        expires_at: None,
+    }];
+
+    let templates = vec![make_template(
+        "ctx_scope",
+        "has_context_event('budget_change') == 1",
+        "scoped event matched",
+        None,
+        500,
+    )];
+
+    let cube = monthly_performance(); // subproduct = "Targeted Display"
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, Some(&events));
+
+    assert_eq!(
+        narratives.len(),
+        1,
+        "scoped event should match when scope is subset of eval scope"
+    );
+}
+
+#[test]
+fn test_context_events_absent_returns_zero() {
+    // No context events → has_context_event always returns 0.
+    let templates = vec![make_template(
+        "no_ctx",
+        "has_context_event('budget_change') == 1",
+        "should not fire",
+        None,
+        500,
+    )];
+
+    let cube = monthly_performance();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, None);
+
+    assert!(
+        narratives.is_empty(),
+        "no context events → template should not fire"
+    );
+}
+
+#[test]
+fn test_mc7051_unknown_period_warning() {
+    use mc_narrative::context_events::{validate_context_events, ContextEvent};
+    use mc_narrative::NarrativeError;
+
+    let events = vec![ContextEvent {
+        id: "ce-2099-01-001".to_string(),
+        period: "2099-01".to_string(),
+        scope: BTreeMap::new(),
+        event_type: "budget_change".to_string(),
+        description: "future event".to_string(),
+        source: None,
+        expires_at: None,
+    }];
+
+    let known_periods = vec!["Aug_2025", "Jul_2025"];
+    let errors = validate_context_events(&events, &known_periods);
+    let has_mc7051 = errors
+        .iter()
+        .any(|e| matches!(e, NarrativeError::ContextEventUnknownPeriod { .. }));
+    assert!(has_mc7051, "MC7051 should fire for unknown period");
+}
+
+#[test]
+fn test_mc7052_expires_before_period_warning() {
+    use mc_narrative::context_events::{validate_context_events, ContextEvent};
+    use mc_narrative::NarrativeError;
+
+    let events = vec![ContextEvent {
+        id: "ce-2025-08-001".to_string(),
+        period: "2025-08".to_string(),
+        scope: BTreeMap::new(),
+        event_type: "budget_change".to_string(),
+        description: "bad expires".to_string(),
+        source: None,
+        expires_at: Some("2025-07".to_string()),
+    }];
+
+    let errors = validate_context_events(&events, &[]);
+    let has_mc7052 = errors
+        .iter()
+        .any(|e| matches!(e, NarrativeError::ContextEventExpiresBeforePeriod { .. }));
+    assert!(has_mc7052, "MC7052 should fire when expires_at < period");
+}
+
+// ─── Phase 7A.5 Session 3: Auto-detection tests ─────────────────────
+
+#[test]
+fn test_auto_detect_budget_decrease_event() {
+    // Cube where Budget dropped >20% → auto-detect budget_decrease event.
+    let cube = CubeData {
+        table_name: "Monthly Performance".into(),
+        subproduct: "Targeted Display".into(),
+        source_file: "report.csv".into(),
+        dimension_name: None,
+        values: BTreeMap::from([
+            (
+                "Budget".into(),
+                vec![
+                    CellEntry {
+                        category: "Jul 2025".into(),
+                        value: 10000.0,
+                    },
+                    CellEntry {
+                        category: "Aug 2025".into(),
+                        value: 5000.0, // 50% decrease
+                    },
+                ],
+            ),
+            (
+                "Impressions".into(),
+                vec![
+                    CellEntry {
+                        category: "Jul 2025".into(),
+                        value: 25000.0,
+                    },
+                    CellEntry {
+                        category: "Aug 2025".into(),
+                        value: 12000.0,
+                    },
+                ],
+            ),
+        ]),
+    };
+
+    // Template checks for auto-detected budget_decrease event.
+    let templates = vec![make_template(
+        "auto_budget",
+        "has_context_event('budget_decrease') == 1",
+        "budget decrease detected",
+        None,
+        500,
+    )];
+
+    // No manual events — should still fire via auto-detection.
+    let empty_events: Vec<mc_narrative::context_events::ContextEvent> = Vec::new();
+    let narratives =
+        mc_narrative::evaluate_all(&templates, &[cube], None, None, Some(&empty_events));
+
+    assert_eq!(
+        narratives.len(),
+        1,
+        "auto-detected budget_decrease event should fire template"
+    );
+}
+
+#[test]
+fn test_auto_detect_single_period_event() {
+    let cube = CubeData {
+        table_name: "Monthly Performance".into(),
+        subproduct: "Targeted Display".into(),
+        source_file: "report.csv".into(),
+        dimension_name: None,
+        values: BTreeMap::from([(
+            "Impressions".into(),
+            vec![CellEntry {
+                category: "Aug 2025".into(),
+                value: 25000.0,
+            }],
+        )]),
+    };
+
+    let templates = vec![make_template(
+        "single_period",
+        "has_context_event('single_period') == 1",
+        "single period",
+        None,
+        500,
+    )];
+
+    let empty_events: Vec<mc_narrative::context_events::ContextEvent> = Vec::new();
+    let narratives =
+        mc_narrative::evaluate_all(&templates, &[cube], None, None, Some(&empty_events));
+
+    assert_eq!(
+        narratives.len(),
+        1,
+        "auto-detected single_period event should fire template"
+    );
+}
+
+#[test]
+fn test_auto_events_coexist_with_manual_events() {
+    use mc_narrative::context_events::ContextEvent;
+
+    let cube = CubeData {
+        table_name: "Monthly Performance".into(),
+        subproduct: "Targeted Display".into(),
+        source_file: "report.csv".into(),
+        dimension_name: None,
+        values: BTreeMap::from([
+            (
+                "Budget".into(),
+                vec![
+                    CellEntry {
+                        category: "Jul 2025".into(),
+                        value: 10000.0,
+                    },
+                    CellEntry {
+                        category: "Aug 2025".into(),
+                        value: 5000.0,
+                    },
+                ],
+            ),
+            (
+                "Impressions".into(),
+                vec![
+                    CellEntry {
+                        category: "Jul 2025".into(),
+                        value: 25000.0,
+                    },
+                    CellEntry {
+                        category: "Aug 2025".into(),
+                        value: 12000.0,
+                    },
+                ],
+            ),
+        ]),
+    };
+
+    // Manual event alongside auto-detected.
+    let events = vec![ContextEvent {
+        id: "ce-manual-001".to_string(),
+        period: "Aug 2025".to_string(),
+        scope: BTreeMap::new(),
+        event_type: "creative_pause".to_string(),
+        description: "3 creatives paused".to_string(),
+        source: None,
+        expires_at: None,
+    }];
+
+    // Two templates: one checks auto-detected, one checks manual.
+    let templates = vec![
+        make_template(
+            "auto_check",
+            "has_context_event('budget_decrease') == 1",
+            "auto",
+            None,
+            500,
+        ),
+        make_template(
+            "manual_check",
+            "has_context_event('creative_pause') == 1",
+            "manual",
+            None,
+            500,
+        ),
+    ];
+
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, Some(&events));
+
+    let ids: Vec<&str> = narratives.iter().map(|n| n.template_id.as_str()).collect();
+    assert!(
+        ids.contains(&"auto_check"),
+        "auto-detected event should fire"
+    );
+    assert!(ids.contains(&"manual_check"), "manual event should fire");
+}
+
+// ─── Phase 7A.5 Session 4: Explanation template tests ────────────────
+
+#[test]
+fn test_explanation_templates_load() {
+    let templates = {
+        let t = mc_narrative::load_templates("demo/narratives");
+        if t.is_empty() {
+            mc_narrative::load_templates("../../demo/narratives")
+        } else {
+            t
+        }
+    };
+
+    // Verify explanation templates loaded.
+    let explanation_templates: Vec<_> = templates
+        .iter()
+        .filter(|t| t.finding_id.is_some())
+        .collect();
+    assert!(
+        explanation_templates.len() >= 8,
+        "expected >= 8 explanation templates, got {}",
+        explanation_templates.len()
+    );
+
+    // Verify each finding_id group has a fallback (priority >= 900).
+    let mut groups: std::collections::HashMap<&str, Vec<u32>> = std::collections::HashMap::new();
+    for t in &explanation_templates {
+        if let Some(ref fid) = t.finding_id {
+            groups
+                .entry(fid.as_str())
+                .or_default()
+                .push(t.explanation_priority);
+        }
+    }
+    for (fid, priorities) in &groups {
+        assert!(
+            priorities.iter().any(|&p| p >= 900),
+            "finding_id '{fid}' has no fallback template (priority >= 900)"
+        );
+    }
+}
+
+#[test]
+fn test_explanation_templates_fire_with_context_event() {
+    use mc_narrative::context_events::ContextEvent;
+
+    let templates = {
+        let t = mc_narrative::load_templates("demo/narratives");
+        if t.is_empty() {
+            mc_narrative::load_templates("../../demo/narratives")
+        } else {
+            t
+        }
+    };
+
+    // Build a cube where impressions declined >15%.
+    let cube = CubeData {
+        table_name: "Monthly Performance".into(),
+        subproduct: "Targeted Display".into(),
+        source_file: "report.csv".into(),
+        dimension_name: None,
+        values: BTreeMap::from([
+            (
+                "Impressions".into(),
+                vec![
+                    CellEntry {
+                        category: "Jul 2025".into(),
+                        value: 30000.0,
+                    },
+                    CellEntry {
+                        category: "Aug 2025".into(),
+                        value: 20000.0, // ~33% decline
+                    },
+                ],
+            ),
+            (
+                "Clicks".into(),
+                vec![
+                    CellEntry {
+                        category: "Jul 2025".into(),
+                        value: 100.0,
+                    },
+                    CellEntry {
+                        category: "Aug 2025".into(),
+                        value: 80.0,
+                    },
+                ],
+            ),
+        ]),
+    };
+
+    // Manual context event for budget_change.
+    let events = vec![ContextEvent {
+        id: "ce-Aug_2025-001".to_string(),
+        period: "Aug 2025".to_string(),
+        scope: BTreeMap::new(),
+        event_type: "budget_change".to_string(),
+        description: "Budget reduced 35% for summer close-out".to_string(),
+        source: None,
+        expires_at: None,
+    }];
+
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, Some(&events));
+
+    // The impressions_declined_context_event template (priority 100) should fire.
+    let ctx_match = narratives
+        .iter()
+        .find(|n| n.template_id == "impressions_declined_context_event");
+    assert!(
+        ctx_match.is_some(),
+        "impressions_declined_context_event should fire with budget_change event; got {:?}",
+        narratives
+            .iter()
+            .map(|n| &n.template_id)
+            .collect::<Vec<_>>()
+    );
+
+    // The unexplained fallback should NOT fire.
+    let fallback = narratives
+        .iter()
+        .find(|n| n.template_id == "impressions_declined_unexplained");
+    assert!(
+        fallback.is_none(),
+        "fallback should be suppressed when context event explanation fires"
+    );
+}
+
+#[test]
+fn test_explanation_fallback_fires_without_context_event() {
+    let templates = {
+        let t = mc_narrative::load_templates("demo/narratives");
+        if t.is_empty() {
+            mc_narrative::load_templates("../../demo/narratives")
+        } else {
+            t
+        }
+    };
+
+    // Cube where impressions declined >15% but NO context events.
+    let cube = CubeData {
+        table_name: "Monthly Performance".into(),
+        subproduct: "Targeted Display".into(),
+        source_file: "report.csv".into(),
+        dimension_name: None,
+        values: BTreeMap::from([(
+            "Impressions".into(),
+            vec![
+                CellEntry {
+                    category: "Jul 2025".into(),
+                    value: 30000.0,
+                },
+                CellEntry {
+                    category: "Aug 2025".into(),
+                    value: 20000.0,
+                },
+            ],
+        )]),
+    };
+
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, None);
+
+    // The unexplained fallback should fire.
+    let fallback = narratives
+        .iter()
+        .find(|n| n.template_id == "impressions_declined_unexplained");
+    assert!(
+        fallback.is_some(),
+        "fallback should fire when no context event matches; got {:?}",
+        narratives
+            .iter()
+            .map(|n| &n.template_id)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ─── Phase 7A.5 Session 5: Ledger integration + performance tests ────
+
+#[test]
+fn test_ledger_records_finding_id_and_explanations() {
+    use mc_narrative::ledger::narratives_to_ledger_entries;
+
+    // Create explanation chain with one rejected, one winner, one skipped.
+    let templates = vec![
+        make_template(
+            "explain_rejected",
+            "current.Impressions < 0",
+            "rejected",
+            Some("finding_ledger"),
+            100,
+        ),
+        make_template(
+            "explain_winner",
+            "current.Impressions > 0",
+            "winner",
+            Some("finding_ledger"),
+            200,
+        ),
+        make_template(
+            "explain_skipped",
+            "current.Impressions > 0",
+            "skipped",
+            Some("finding_ledger"),
+            999,
+        ),
+    ];
+
+    let cube = monthly_performance();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, None);
+    assert_eq!(narratives.len(), 1);
+
+    let scope = BTreeMap::new();
+    let entries = narratives_to_ledger_entries(
+        &narratives,
+        "test-model.yaml",
+        "abc123",
+        "2026-05-08T00:00:00Z",
+        Some("Aug_2025"),
+        &scope,
+    );
+
+    assert_eq!(entries.len(), 1);
+    let entry = &entries[0];
+    assert_eq!(
+        entry.narrative.finding_id.as_deref(),
+        Some("finding_ledger")
+    );
+    assert_eq!(
+        entry.narrative.skipped_explanations,
+        vec!["explain_skipped"]
+    );
+    assert_eq!(
+        entry.narrative.rejected_explanations,
+        vec!["explain_rejected"]
+    );
+}
+
+#[test]
+fn test_ledger_backwards_compat_without_finding_id() {
+    use mc_narrative::ledger::narratives_to_ledger_entries;
+
+    // Standalone template — no finding_id.
+    let templates = vec![make_template(
+        "standalone",
+        "current.Impressions > 0",
+        "standalone text",
+        None,
+        500,
+    )];
+
+    let cube = monthly_performance();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, None);
+    assert_eq!(narratives.len(), 1);
+
+    let scope = BTreeMap::new();
+    let entries = narratives_to_ledger_entries(
+        &narratives,
+        "test-model.yaml",
+        "abc123",
+        "2026-05-08T00:00:00Z",
+        None,
+        &scope,
+    );
+
+    assert_eq!(entries.len(), 1);
+    let entry = &entries[0];
+    assert!(entry.narrative.finding_id.is_none());
+    assert!(entry.narrative.skipped_explanations.is_empty());
+    assert!(entry.narrative.rejected_explanations.is_empty());
+}
+
+#[test]
+fn test_explanation_chain_performance_under_5ms() {
+    use std::time::Instant;
+
+    // Build 50 templates across 10 explanation groups (5 per group).
+    let mut templates = Vec::new();
+    for group in 0..10 {
+        let fid = format!("finding_{group}");
+        for prio_idx in 0..5 {
+            let priority = (prio_idx + 1) * 100;
+            let id = format!("tmpl_{group}_{prio_idx}");
+            let when = if prio_idx < 4 {
+                "current.Impressions < 0" // won't fire
+            } else {
+                "current.Impressions > 0" // fires
+            };
+            templates.push(make_template(
+                &id,
+                when,
+                &format!("output {group} {prio_idx}"),
+                Some(&fid),
+                priority as u32,
+            ));
+        }
+    }
+
+    let cube = monthly_performance();
+
+    // Warm up.
+    let _ = mc_narrative::evaluate_all(&templates, &[cube.clone()], None, None, None);
+
+    // Measure.
+    let iterations = 100;
+    let start = Instant::now();
+    for _ in 0..iterations {
+        let _ = mc_narrative::evaluate_all(&templates, &[cube.clone()], None, None, None);
+    }
+    let elapsed = start.elapsed();
+    let per_call_us = elapsed.as_micros() / iterations;
+
+    eprintln!("[perf] explanation chain eval (50 templates, 10 groups): {per_call_us}µs per call");
+    assert!(
+        per_call_us < 5000,
+        "explanation chain evaluation should be < 5ms; got {per_call_us}µs"
+    );
 }

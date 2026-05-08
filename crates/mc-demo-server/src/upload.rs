@@ -147,7 +147,8 @@ pub fn detect_tactics(registry: &Registry, csvs: &[ParsedCsv]) -> Vec<DetectionR
 
     for csv in csvs {
         // Try filename match first.
-        let spec = registry.detect(&csv.filename)
+        let spec = registry
+            .detect(&csv.filename)
             // Fallback: match by headers (≥60% overlap).
             .or_else(|| registry.detect_by_headers(&csv.headers, 60.0));
 
@@ -338,6 +339,9 @@ fn write_demo_ledger(advertiser: &str, tactics: &[TacticGroup]) {
                     text: n.text.clone(),
                     template_id: n.template_id.clone(),
                     notability_score: None,
+                    finding_id: None,
+                    skipped_explanations: Vec::new(),
+                    rejected_explanations: Vec::new(),
                 },
                 evidence: n.evidence.clone(),
                 benchmarks_referenced: Vec::new(),

@@ -23,6 +23,7 @@ use mc_model::{
 };
 
 mod build_benchmarks;
+mod context_events;
 mod diff;
 mod ledger_export;
 mod loader;
@@ -100,6 +101,10 @@ fn main() {
                     },
                     "show-benchmarks" => match show_benchmarks::parse(&args[3..]) {
                         Ok(cmd) => std::process::exit(show_benchmarks::run(cmd)),
+                        Err(e) => fatal(&e),
+                    },
+                    "context-events" => match context_events::parse(&args[3..]) {
+                        Ok(cmd) => std::process::exit(context_events::run(cmd)),
                         Err(e) => fatal(&e),
                     },
                     _ => {} // Fall through to legacy parse

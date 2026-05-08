@@ -128,6 +128,19 @@ pub struct NarrativeRecord {
     /// Notability score [0, 1] if computed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notability_score: Option<f64>,
+
+    // ─── Phase 7A.5: Explanation chain metadata (ADR-0022 Decision 9) ─
+    /// Finding group that produced this narrative (if any).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub finding_id: Option<String>,
+
+    /// Templates skipped because a higher-priority explanation matched first.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub skipped_explanations: Vec<String>,
+
+    /// Templates evaluated but whose when: predicate returned false.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub rejected_explanations: Vec<String>,
 }
 
 /// A benchmark reference in a ledger entry.
@@ -229,6 +242,9 @@ pub fn narratives_to_ledger_entries(
                     text: n.text.clone(),
                     template_id: n.template_id.clone(),
                     notability_score: None,
+                    finding_id: n.finding_id.clone(),
+                    skipped_explanations: n.skipped_explanations.clone(),
+                    rejected_explanations: n.rejected_explanations.clone(),
                 },
                 evidence: n.evidence.clone(),
                 benchmarks_referenced: Vec::new(),
@@ -607,6 +623,9 @@ mod tests {
                 text: "Test narrative".to_string(),
                 template_id: template_id.to_string(),
                 notability_score: None,
+                finding_id: None,
+                skipped_explanations: Vec::new(),
+                rejected_explanations: Vec::new(),
             },
             evidence: BTreeMap::new(),
             benchmarks_referenced: Vec::new(),
@@ -855,6 +874,9 @@ mod tests {
                 m.insert("Clicks".to_string(), serde_json::json!(8420));
                 m
             },
+            finding_id: None,
+            skipped_explanations: Vec::new(),
+            rejected_explanations: Vec::new(),
         }];
 
         let scope = {

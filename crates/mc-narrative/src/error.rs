@@ -1,9 +1,10 @@
-//! Diagnostic codes MC7001–MC7044 for the narrative template engine.
+//! Diagnostic codes MC7001–MC7055 for the narrative template engine.
 //!
 //! Phase 7A.1: MC7001–MC7010 (template validation).
 //! Phase 7A.2: MC7020–MC7025 (interpretation ledger) — in `ledger.rs`.
 //! Phase 7A.3: MC7030–MC7032 (cross-period analysis).
 //! Phase 7A.4: MC7040–MC7044 (benchmark aggregation) — in `benchmark.rs`.
+//! Phase 7A.5: MC7050–MC7055 (explanation chains + context events).
 
 use thiserror::Error;
 
@@ -83,6 +84,47 @@ pub enum NarrativeError {
     LedgerUnknownTemplateRef {
         template_id: String,
         referenced: String,
+    },
+
+    // ─── Phase 7A.5: Explanation chains (MC7050–MC7055) ─────────────
+    /// MC7050: Two templates share the same `finding_id` AND `explanation_priority`.
+    /// Per ADR-0022 Decision 2: deterministic output requires deterministic order.
+    #[error("MC7050: templates `{template_a}` and `{template_b}` share finding_id `{finding_id}` with same priority {priority}")]
+    ExplanationPriorityCollision {
+        finding_id: String,
+        priority: u32,
+        template_a: String,
+        template_b: String,
+    },
+
+    /// MC7051: Context event references a period not present in any loaded cube.
+    /// Per ADR-0022 Decision 10: warning-level.
+    #[error(
+        "MC7051: context event `{event_id}` references period `{period}` not in any loaded cube"
+    )]
+    ContextEventUnknownPeriod { event_id: String, period: String },
+
+    /// MC7052: Context event `expires_at` is before its `period`.
+    /// Per ADR-0022 Decision 10: warning-level.
+    #[error(
+        "MC7052: context event `{event_id}` expires_at `{expires_at}` is before period `{period}`"
+    )]
+    ContextEventExpiresBeforePeriod {
+        event_id: String,
+        period: String,
+        expires_at: String,
+    },
+
+    /// MC7053: A `finding_id` group has no template with `explanation_priority >= 900`
+    /// (missing fallback). Per ADR-0022 Decision 3: info-level nudge.
+    #[error("MC7053: finding_id `{finding_id}` has no fallback template (priority >= 900)")]
+    ExplanationMissingFallback { finding_id: String },
+
+    /// MC7055: A `finding_id` is referenced by only one template (likely typo).
+    #[error("MC7055: finding_id `{finding_id}` is referenced by only template `{template_id}` (likely typo — intended to be part of a group)")]
+    ExplanationSingletonFindingId {
+        finding_id: String,
+        template_id: String,
     },
 
     /// Template file I/O error.

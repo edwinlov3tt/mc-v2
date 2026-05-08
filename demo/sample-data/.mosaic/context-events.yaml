@@ -1,0 +1,19 @@
+schema_version: "1.0"
+
+events:
+  - id: ce-Aug_2025-001
+    period: "Aug 2025"
+    scope:
+      channel: "Targeted Display"
+    type: budget_change
+    description: "Budget reduced 35% for summer campaign close-out"
+    source: "Account manager"
+
+  - id: ce-Aug_2025-002
+    period: "Aug 2025"
+    scope:
+      channel: "Targeted Display"
+    type: creative_pause
+    description: "2 of 4 creatives paused pending Q3 refresh"
+    source: "Creative team"
+    expires_at: "2025-09-15"

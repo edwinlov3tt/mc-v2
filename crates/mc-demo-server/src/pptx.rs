@@ -180,7 +180,9 @@ fn extract_slide_title(xml: &str) -> String {
 
         // Filter out very short text (single chars, numbers only) and common noise.
         if trimmed.len() > 3
-            && !trimmed.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '%')
+            && !trimmed
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == '.' || c == '%')
             && !trimmed.eq_ignore_ascii_case("title")
         {
             candidate_titles.push(trimmed);
@@ -197,7 +199,9 @@ fn extract_slide_title(xml: &str) -> String {
         let trimmed = text.trim().to_string();
 
         if trimmed.len() > 3
-            && !trimmed.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '%')
+            && !trimmed
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == '.' || c == '%')
             && !trimmed.eq_ignore_ascii_case("title")
         {
             candidate_titles.push(trimmed);
@@ -205,11 +209,7 @@ fn extract_slide_title(xml: &str) -> String {
     }
 
     // Prefer a title that contains " - " (section header pattern) or is the longest.
-    if let Some(sectioned) = candidate_titles
-        .iter()
-        .filter(|t| t.contains(" - "))
-        .last()
-    {
+    if let Some(sectioned) = candidate_titles.iter().filter(|t| t.contains(" - ")).last() {
         return sectioned.clone();
     }
 
@@ -366,13 +366,7 @@ fn sanitize_filename(title: &str) -> String {
     let lower = title.to_lowercase();
     let sanitized: String = lower
         .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c
-            } else {
-                '-'
-            }
-        })
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
 
     // Collapse multiple dashes and trim.
@@ -451,7 +445,10 @@ mod tests {
         let csvs = extract_pptx(&bytes).expect("extraction should succeed");
         assert!(!csvs.is_empty(), "should extract at least one table");
 
-        eprintln!("\n  Extracted {} tables from lumina_charts.pptx:", csvs.len());
+        eprintln!(
+            "\n  Extracted {} tables from lumina_charts.pptx:",
+            csvs.len()
+        );
         for csv in &csvs {
             eprintln!(
                 "    {} — {} cols × {} rows",

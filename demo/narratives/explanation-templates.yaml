@@ -1,0 +1,163 @@
+# Explanation chain templates — Phase 7A.5 (ADR-0022)
+#
+# Templates grouped by `finding_id` form explanation chains.
+# Within each group, templates are evaluated in `explanation_priority` order
+# (lower = fires first). The first match fires; the rest are suppressed.
+#
+# Priority convention (ADR-0022 Decision 6):
+#   ~100: Manual context event explanations (analyst logged it)
+#   ~200: Auto-detected input change explanations (engine sees budget/traffic move)
+#   ~300: Data-driven correlation templates (proportional movement)
+#    999: Bare finding fallback ("investigate")
+#
+# Templates without `finding_id` fire independently (zero behavior change).
+
+narrative_format_version: 1
+
+templates:
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Finding group: impressions_declined_significant
+  # ═══════════════════════════════════════════════════════════════════
+
+  # Priority 100: manual context event explains the decline.
+  - id: impressions_declined_context_event
+    finding_id: impressions_declined_significant
+    explanation_priority: 100
+    family: ["display-like"]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: >
+      current.Impressions < prev.Impressions * 0.85
+      AND has_context_event('budget_change') == 1
+    template: >
+      Impressions declined {change_pct:.0f}%. A budget change was logged for
+      this period: {event_desc}. The decline may be attributable to this
+      operational decision.
+    bindings:
+      change_pct: "(current.Impressions - prev.Impressions) / prev.Impressions * 100"
+      event_desc: "context_description('budget_change')"
+
+  # Priority 200: auto-detected budget decrease.
+  - id: impressions_declined_auto_budget
+    finding_id: impressions_declined_significant
+    explanation_priority: 200
+    family: ["display-like"]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: >
+      current.Impressions < prev.Impressions * 0.85
+      AND has_context_event('budget_decrease') == 1
+    template: >
+      Impressions declined {change_pct:.0f}%. The engine detected a significant
+      budget decrease in this period. Delivery likely scaled with spend.
+    bindings:
+      change_pct: "(current.Impressions - prev.Impressions) / prev.Impressions * 100"
+
+  # Priority 999: bare finding fallback.
+  - id: impressions_declined_unexplained
+    finding_id: impressions_declined_significant
+    explanation_priority: 999
+    family: ["display-like"]
+    severity: warning
+    table_types: ["Monthly Performance"]
+    when: "current.Impressions < prev.Impressions * 0.85"
+    template: >
+      Impressions declined {change_pct:.0f}% from {prev_period} to
+      {current_period}. No clear explanation detected — manual review
+      recommended.
+    bindings:
+      change_pct: "(current.Impressions - prev.Impressions) / prev.Impressions * 100"
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Finding group: ctr_declined_significant
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: ctr_declined_context_event
+    finding_id: ctr_declined_significant
+    explanation_priority: 100
+    family: ["display-like"]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: >
+      current.CTR < prev.CTR * 0.85
+      AND has_context_event('creative_pause') == 1
+    template: >
+      CTR dropped {change_pct:.0f}%. A creative pause was logged: {event_desc}.
+      Reduced creative variety typically depresses click-through rates.
+    bindings:
+      change_pct: "(current.CTR - prev.CTR) / prev.CTR * 100"
+      event_desc: "context_description('creative_pause')"
+
+  - id: ctr_declined_unexplained
+    finding_id: ctr_declined_significant
+    explanation_priority: 999
+    family: ["display-like"]
+    severity: warning
+    table_types: ["Monthly Performance"]
+    when: "current.CTR < prev.CTR * 0.85"
+    template: >
+      CTR declined {change_pct:.0f}% from {prev_period} to {current_period}.
+      No clear explanation detected — review creative rotation and targeting.
+    bindings:
+      change_pct: "(current.CTR - prev.CTR) / prev.CTR * 100"
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Finding group: clicks_declined_significant
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: clicks_declined_budget_proportional
+    finding_id: clicks_declined_significant
+    explanation_priority: 200
+    family: ["display-like"]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: >
+      current.Clicks < prev.Clicks * 0.85
+      AND has_context_event('budget_decrease') == 1
+    template: >
+      Clicks declined {change_pct:.0f}%, consistent with the detected budget
+      decrease. Click volume typically scales with impression delivery.
+    bindings:
+      change_pct: "(current.Clicks - prev.Clicks) / prev.Clicks * 100"
+
+  - id: clicks_declined_unexplained
+    finding_id: clicks_declined_significant
+    explanation_priority: 999
+    family: ["display-like"]
+    severity: warning
+    table_types: ["Monthly Performance"]
+    when: "current.Clicks < prev.Clicks * 0.85"
+    template: >
+      Clicks declined {change_pct:.0f}% from {prev_period} to {current_period}.
+      No clear explanation detected — review creative engagement and delivery.
+    bindings:
+      change_pct: "(current.Clicks - prev.Clicks) / prev.Clicks * 100"
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Finding group: conversions_zero_alarm
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: conversions_zero_single_period
+    finding_id: conversions_zero_alarm
+    explanation_priority: 150
+    family: ["display-like"]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: >
+      current.Conversions == 0
+      AND has_context_event('single_period') == 1
+    template: >
+      Zero conversions recorded, but only one reporting period is available.
+      Insufficient data for trend analysis — monitor in subsequent periods.
+
+  - id: conversions_zero_unexplained
+    finding_id: conversions_zero_alarm
+    explanation_priority: 999
+    family: ["display-like"]
+    severity: critical
+    table_types: ["Monthly Performance"]
+    when: "current.Conversions == 0"
+    template: >
+      Zero conversions for {current_period}. No context events explain the
+      gap — verify conversion tracking is operational.

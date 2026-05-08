@@ -23,7 +23,7 @@ pub fn evaluate_all(
     cubes: &[IngestedCube],
 ) -> Vec<NarrativeOutput> {
     let cube_data: Vec<mc_narrative::CubeData> = cubes.iter().map(convert_cube).collect();
-    mc_narrative::evaluate_all(templates, &cube_data, None, None)
+    mc_narrative::evaluate_all(templates, &cube_data, None, None, None)
 }
 
 /// Evaluate templates with ledger context (Phase 7A.3 cross-period analysis).
@@ -35,7 +35,7 @@ pub fn evaluate_all_with_ledger(
     ledger: Option<&[mc_narrative::LedgerEntry]>,
 ) -> Vec<NarrativeOutput> {
     let cube_data: Vec<mc_narrative::CubeData> = cubes.iter().map(convert_cube).collect();
-    mc_narrative::evaluate_all(templates, &cube_data, ledger, None)
+    mc_narrative::evaluate_all(templates, &cube_data, ledger, None, None)
 }
 
 /// Evaluate templates with ledger + benchmark context (Phase 7A.4).
@@ -46,7 +46,19 @@ pub fn evaluate_all_with_benchmark(
     benchmark: Option<&mc_narrative::BenchmarkLibrary>,
 ) -> Vec<NarrativeOutput> {
     let cube_data: Vec<mc_narrative::CubeData> = cubes.iter().map(convert_cube).collect();
-    mc_narrative::evaluate_all(templates, &cube_data, ledger, benchmark)
+    mc_narrative::evaluate_all(templates, &cube_data, ledger, benchmark, None)
+}
+
+/// Evaluate templates with full context: ledger + benchmark + context events (Phase 7A.5).
+pub fn evaluate_all_with_context(
+    templates: &[TemplateDefinition],
+    cubes: &[IngestedCube],
+    ledger: Option<&[mc_narrative::LedgerEntry]>,
+    benchmark: Option<&mc_narrative::BenchmarkLibrary>,
+    context_events: Option<&[mc_narrative::ContextEvent]>,
+) -> Vec<NarrativeOutput> {
+    let cube_data: Vec<mc_narrative::CubeData> = cubes.iter().map(convert_cube).collect();
+    mc_narrative::evaluate_all(templates, &cube_data, ledger, benchmark, context_events)
 }
 
 /// Convert an `IngestedCube` (demo server type) to `CubeData` (narrative engine type).
@@ -91,8 +103,8 @@ mod tests {
         };
         assert!(!templates.is_empty(), "should load at least 1 template");
         assert!(
-            templates.len() >= 13,
-            "expected >= 13 templates, got {}",
+            templates.len() >= 20,
+            "expected >= 20 templates (13 original + explanation chain templates), got {}",
             templates.len()
         );
     }
