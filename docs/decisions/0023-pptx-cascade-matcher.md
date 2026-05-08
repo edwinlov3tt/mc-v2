@@ -14,13 +14,13 @@ Phase 6D shipped a PPTX table extractor that pulls tables from PowerPoint slides
 
 Analysis of four Lumina PPTX decks revealed three signals the matcher wasn't using: first-column tactic names (ground truth for pivot tables), section dividers (propagate product context to subsequent slides), and the discriminating power of rare headers vs. common ones. Additionally, the report system is **modular**: every deck combines a different mix of product-section blocks depending on which tactics the advertiser ran. Slide-index mapping is therefore the wrong primary strategy.
 
-This ADR specifies a cascade matcher that uses six signals in priority order, a profile system for persistent learning, and an explicit duplicate/continuation/skip handling strategy.
+This ADR specifies a cascade matcher with 7 ordered steps (skip gate + 6 matching/review signals), a profile system for persistent learning, and an explicit duplicate/continuation/skip handling strategy with a binding ingestion invariant.
 
 ---
 
 ## Decisions
 
-### Decision 1: Cascade architecture (6 signals, priority order)
+### Decision 1: Cascade architecture (7 ordered steps: skip gate + 6 matching/review signals)
 
 The matcher runs these steps in order for each extracted table. The first step that produces a result above the confidence threshold wins.
 
@@ -79,6 +79,8 @@ Before per-table matching, scan the first 10 slides for "Product Performance" / 
 2. Auto-bootstraps profiles — when no profile exists, the manifest proposes the sections list
 3. Coverage check — warns when declared tactics have no section, or sections appear that aren't in the manifest
 
+**Empty manifest is not an error.** If a deck has no rollup pivots in the first 10 slides, the manifest is empty. Divider detection still operates via the registry and profile resolution paths — the manifest is one signal, not a gate. The cascade produces correct results for non-Lumina decks that lack rollup slides; it just has one fewer signal to work with.
+
 **Why:** the rollup is the deck telling you what it contains. Ignoring it and reverse-engineering structure from dividers does extra work and produces false positives.
 
 ---
@@ -110,7 +112,7 @@ Aliases are separated by purpose because they apply at different cascade steps:
 | `aliases.header` | Header tokenization, before IDF scoring | "Campaign" → "Campaign Name" |
 | `aliases.registry` | Tie-breaking when scores are within 0.001 | Meta/Link Click ↔ Meta/Facebook - Link Click |
 
-**Tactic aliases** have two output forms: `canonical` (single target, resolves immediately) and `expands_to` (multiple candidates, downstream cascade narrows).
+**Tactic aliases** have two output forms: `canonical` (single target, resolves immediately) and `expands_to` (multiple candidates). When `expands_to` fires during first-column lookup, it **narrows the candidate pool for downstream cascade steps** to just those expanded entries, rather than falling through to the full registry. This prevents the TF-IDF step from doing unnecessary work and picking a non-matching tactic on a tie.
 
 **Why separate:** conflating them produces false matches. A header alias that's too aggressive ("Click" → "Clicks") corrupts IDF scoring. A tactic alias that's too narrow misses the "Sponsored Social Mentions" → {Link Click, Awareness, ThruPlay} expansion.
 
@@ -144,6 +146,8 @@ Thresholds are configurable per profile.
 
 **Section-pair awareness:** profiles declare `duplicate_section_pairs` — dedup only fires between known overlapping sections. The SEM/Search & Intent Media overlap is the verified case: both sections contain identical Monthly/Campaign/Keyword tables in the same deck.
 
+**Conservative by default:** duplicate suppression only auto-excludes when BOTH conditions hold: (1) identical fingerprint AND (2) both tables map to the same normalized `table_name` AND the sections are a profile-declared `duplicate_section_pair`. Without a declared pair, duplicate-looking tables across different sections are flagged for review, not auto-excluded. This prevents legitimate same-shape tables in unrelated sections from being silently dropped.
+
 **Why all three fingerprint components:** headers alone are too lax (every monthly table has the same headers). Adding first-column values catches identity. Adding row_count catches different time windows that shouldn't be considered duplicates.
 
 ---
@@ -155,6 +159,16 @@ Thresholds are configurable per profile.
 **Continuation tables** are detected at Step 2: same section context, no header row, column count matches the previous table. They are flagged for review (`status = ContinuationCandidate`) but NOT auto-merged in v1. Auto-merge is Phase 7C after observing false-positive rates.
 
 **Why not auto-merge:** silent auto-merge of misidentified continuations is a data corruption risk. A table that looks like a continuation but is actually a separate breakdown (different tactic, same columns) would corrupt the cube. The review queue is the honest path.
+
+**Ingestion invariant (binding):** only `status = Matched` results are eligible for cube ingestion. `Skipped`, `Duplicate`, `ContinuationCandidate`, `TfidfUncertain`, and `Unresolved` are excluded unless the user explicitly confirms them in the review UI. This invariant is enforced at the **ingestion adapter** — the function that converts `Vec<MatchResult>` into `Vec<ParsedCsv>` for the downstream pipeline. Debug builds assert that no non-Matched result passes through.
+
+**Skip diagnostics:** skipped tables are excluded silently from the user-facing review panel, but their counts are included in the diagnostic/JSON output:
+
+```
+Skipped: 17 tables (Reach & Frequency: 3, KPI cards: 8, ...)
+```
+
+Silent for users. Visible for developers.
 
 ---
 
@@ -171,11 +185,42 @@ pub fn match_deck(
     profile: Option<&PptxProfile>,
     idf: &IdfTable,
 ) -> DeckMatchResult
+
+pub struct MatchResult {
+    pub table: ExtractedTable,
+    pub mapping: Option<RegistryMapping>,
+    pub confidence: f64,
+    pub status: MatchStatus,
+    pub alternatives: Vec<(RegistryMapping, f64)>,
+    pub flag_for_review: bool,
+    pub duplicate_of: Option<TableRef>,
+    pub evidence: MatchEvidence,      // required debug payload
+}
+
+/// Debug/introspection payload — shipped from day 1 for cascade debugging.
+pub struct MatchEvidence {
+    pub normalized_headers: Vec<String>,
+    pub section_context: Option<String>,
+    pub table_family: Option<String>,
+    pub manifest_candidates: Vec<String>,
+    pub candidate_count_before_narrowing: usize,
+    pub candidate_count_after_narrowing: usize,
+    pub top_scores: Vec<ScoredCandidate>,
+    pub fired_step: MatchSource,      // which cascade step produced this result
+}
 ```
+
+`MatchSource` (ProfileOverride, SectionFamily, FirstColumnExact, etc.) lives on `MatchEvidence.fired_step`, not duplicated on `MatchResult`. The evidence struct is the single source of truth for how the match was produced.
 
 **Why:** the matcher's eventual home is a Tessera driver (`mc-drivers/pptx`), not the demo server. Building it independent from day 1 means the Tessera lift is a file move, not a rewrite. The demo server calls `match_deck` from its upload handler; the Tessera driver calls the same function from its recipe executor.
 
 **v1 location:** `crates/mc-demo-server/src/pptx_match.rs` (adjacent to the existing `pptx.rs` extractor). Moves to `crates/mc-drivers/` when the Tessera driver ships.
+
+**Binding independence test:** even while located under `mc-demo-server`, `pptx_match.rs` must define its own input/output structs or use only shared registry/extractor structs passed in by value/reference. It must not reference `axum`, upload handlers, request/response types, server state, workspace routing, or demo UI types. `grep -rn "axum\|upload::\|server::\|workspace::" crates/mc-demo-server/src/pptx_match.rs` must return zero matches.
+
+**`table_title` extraction rule:** `table_title` is the nearest non-date, non-KPI text shape above the table within the same slide, preferring the closest text vertically above the table element. Fallback to `slide_title` when no nearby title text is found. This is a source of extraction risk — different PPTX generators place title text differently. The extractor's `table_title` inference is best-effort, and the cascade's later steps (TF-IDF, section context) compensate when it's wrong.
+
+**IDF table sharing:** the `IdfTable` is built once at registry load and is immutable. Implementation should use `Arc<IdfTable>` or equivalent to avoid rebuilding per `match_deck` call.
 
 ---
 
@@ -226,12 +271,17 @@ Session B:
 - Stats block telemetry
 - Coverage warnings surfaced in upload result
 
+**v1 profile authoring scope:** v1 ships with `lumina-charts.yaml` as a checked-in fixture (authored by the PM, not user-editable via UI). User-authored profiles via the review UI are Session B scope. The review UI in Session B writes back to the profile; v1 Session A reads profiles only.
+
+**Test corpus note:** the four Lumina decks contain real advertiser data (impressions counts, keywords, campaign names). Before checking PPTX files into test fixtures, either (a) confirm with the agency that fixture use is permitted, or (b) sanitize metric values and keywords. The structural matching tests (section detection, divider guards, cascade step coverage) don't need real numbers — synthetic data preserves all matching signals.
+
 **v1 does NOT ship:**
 - Continuation-table auto-merge (Phase 7C)
 - Profile auto-selection by deck fingerprint (Phase 7C)
 - Python/Tessera extractor scripts (Phase 7C)
 - Profile sharing/publishing (Phase 7C+)
 - Multilingual support (out of scope)
+- User-editable profiles from the UI (Session B, not Session A)
 
 ---
 
@@ -260,6 +310,8 @@ Combine all signals into one weighted score. Rejected because first-column exact
 ## Success criteria
 
 - [ ] Lumina deck (original): ≥80% of tables auto-resolved (source ≠ Unmatched/TfidfUncertain)
+- [ ] Auto-resolved mappings spot-checked against golden fixtures with ≥95% precision (wrong ingestion is worse than unresolved)
+- [ ] No table with `status ≠ Matched` is ingested without explicit user confirmation (ingestion invariant)
 - [ ] Lumina deck 1 (627917): SEM duplicate correctly suppressed
 - [ ] Lumina deck 2 (792946): 3-tactic rollup manifest built correctly
 - [ ] Lumina deck 3 (959819): false-positive divider ("Day_Video_04.20-2026") rejected
@@ -267,7 +319,8 @@ Combine all signals into one weighted score. Rejected because first-column exact
 - [ ] First-column lookup resolves "Targeted Display" → exact registry match
 - [ ] Skip rule fires on Reach & Frequency tables
 - [ ] MC7060-MC7067 codes swept free before implementation, then shipped
-- [ ] Matcher module has zero imports from `mc-demo-server` (module-independent)
+- [ ] Matcher module has zero imports from `mc-demo-server` (`grep` clean for axum/upload/server/workspace)
+- [ ] Performance: `match_deck` completes in <50ms for a 100-slide, 50-table deck
 - [ ] `cargo test --workspace` passes (1031 → expect ~+10 = ~1041)
 - [ ] Locked surfaces (mc-core, mc-model, mc-fixtures, mc-recipe, mc-drivers, mc-tessera): zero diff
 
