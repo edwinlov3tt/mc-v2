@@ -855,6 +855,9 @@ mod tests {
                 m.insert("Clicks".to_string(), serde_json::json!(8420));
                 m
             },
+            finding_id: None,
+            skipped_explanations: Vec::new(),
+            rejected_explanations: Vec::new(),
         }];
 
         let scope = {

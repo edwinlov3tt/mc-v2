@@ -53,6 +53,221 @@ impl BenchmarkIndex {
     }
 }
 
+// ─── Context event index for explanation chains (Phase 7A.5) ────────
+
+/// Pre-built index over context events for efficient lookup during evaluation.
+///
+/// Built once per cube in `evaluate_all`. Indexes events by `event_type`
+/// for O(1) lookup during evaluation. Includes both manual events (from
+/// `.mosaic/context-events.yaml`) and auto-detected events (ephemeral).
+/// Per ADR-0022 Decisions 5 and 6.
+#[derive(Debug)]
+pub struct ContextIndex {
+    /// Events grouped by event_type.
+    entries: HashMap<String, Vec<ContextIndexEntry>>,
+    /// The current evaluation period.
+    pub current_period: Option<String>,
+}
+
+/// A lightweight view of a context event for index queries.
+#[derive(Debug, Clone)]
+struct ContextIndexEntry {
+    period: String,
+    scope: std::collections::BTreeMap<String, String>,
+    description: String,
+    #[allow(dead_code)] // Used for expiry filtering in matches_lookback.
+    expires_at: Option<String>,
+}
+
+impl ContextIndex {
+    /// Build a context index from a slice of events with current period context.
+    ///
+    /// Also synthesizes auto-detected events from cube data (budget ±20%,
+    /// single-period). Auto-detected events are ephemeral and never written to disk.
+    /// Per ADR-0022 Decision 6.
+    pub fn build(
+        events: &[crate::context_events::ContextEvent],
+        current_period: Option<String>,
+        cube: &CubeData,
+    ) -> Self {
+        let mut entries: HashMap<String, Vec<ContextIndexEntry>> = HashMap::new();
+
+        // Index manual events.
+        for event in events {
+            // Skip expired events.
+            if let Some(ref expires) = event.expires_at {
+                if let Some(ref cur) = current_period {
+                    if expires.as_str() < cur.as_str() {
+                        continue;
+                    }
+                }
+            }
+            entries
+                .entry(event.event_type.clone())
+                .or_default()
+                .push(ContextIndexEntry {
+                    period: event.period.clone(),
+                    scope: event.scope.clone(),
+                    description: event.description.clone(),
+                    expires_at: event.expires_at.clone(),
+                });
+        }
+
+        // Auto-detect budget changes from cube data.
+        // Per ADR-0022 Decision 6: thresholds are v1 constants.
+        // TODO(cartridge-config): make thresholds configurable per-cartridge.
+        const BUDGET_DECREASE_THRESHOLD: f64 = 0.80;
+        const BUDGET_INCREASE_THRESHOLD: f64 = 1.20;
+
+        if let (Some(cur_budget), Some(prev_budget)) = (
+            cube.values
+                .get("Budget")
+                .and_then(|v| v.last())
+                .map(|e| e.value),
+            cube.values.get("Budget").and_then(|v| {
+                if v.len() >= 2 {
+                    Some(v[v.len() - 2].value)
+                } else {
+                    None
+                }
+            }),
+        ) {
+            if prev_budget.abs() > 1e-300 {
+                let ratio = cur_budget / prev_budget;
+                if let Some(ref period) = current_period {
+                    let prev_period = cube
+                        .values
+                        .get("Budget")
+                        .and_then(|v| {
+                            if v.len() >= 2 {
+                                Some(v[v.len() - 2].category.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_else(|| "prior".to_string());
+
+                    if ratio < BUDGET_DECREASE_THRESHOLD {
+                        let pct = ((1.0 - ratio) * 100.0).round();
+                        entries
+                            .entry("budget_decrease".to_string())
+                            .or_default()
+                            .push(ContextIndexEntry {
+                                period: period.clone(),
+                                scope: std::collections::BTreeMap::new(),
+                                description: format!(
+                                    "Budget decreased {pct:.0}% from {prev_period}"
+                                ),
+                                expires_at: None,
+                            });
+                    } else if ratio > BUDGET_INCREASE_THRESHOLD {
+                        let pct = ((ratio - 1.0) * 100.0).round();
+                        entries
+                            .entry("budget_increase".to_string())
+                            .or_default()
+                            .push(ContextIndexEntry {
+                                period: period.clone(),
+                                scope: std::collections::BTreeMap::new(),
+                                description: format!(
+                                    "Budget increased {pct:.0}% from {prev_period}"
+                                ),
+                                expires_at: None,
+                            });
+                    }
+                }
+            }
+        }
+
+        // Auto-detect single period.
+        let period_count = cube.values.values().map(|v| v.len()).max().unwrap_or(0);
+        if period_count <= 1 {
+            if let Some(ref period) = current_period {
+                entries
+                    .entry("single_period".to_string())
+                    .or_default()
+                    .push(ContextIndexEntry {
+                        period: period.clone(),
+                        scope: std::collections::BTreeMap::new(),
+                        description: "Only one reporting period available".to_string(),
+                        expires_at: None,
+                    });
+            }
+        }
+
+        ContextIndex {
+            entries,
+            current_period,
+        }
+    }
+
+    /// Check if a context event of the given type exists for the current scope.
+    ///
+    /// `lookback` is the number of periods to search (1 = current only,
+    /// 3 = current + 2 prior). Per ADR-0022 Decision 5.
+    pub fn has_event(&self, event_type: &str, scope_key: &str, lookback: usize) -> bool {
+        self.count_events(event_type, scope_key, lookback) > 0
+    }
+
+    /// Count matching context events for the given type and scope.
+    pub fn count_events(&self, event_type: &str, scope_key: &str, lookback: usize) -> usize {
+        let events = match self.entries.get(event_type) {
+            Some(v) => v,
+            None => return 0,
+        };
+        events
+            .iter()
+            .filter(|e| self.matches_scope(e, scope_key) && self.matches_lookback(e, lookback))
+            .count()
+    }
+
+    /// Get the description of the first matching context event.
+    ///
+    /// Per ADR-0022 Decision 5: first by deterministic order (period then scope key).
+    pub fn description(&self, event_type: &str, scope_key: &str) -> Option<String> {
+        let events = self.entries.get(event_type)?;
+        let mut matches: Vec<_> = events
+            .iter()
+            .filter(|e| self.matches_scope(e, scope_key) && self.matches_lookback(e, 1))
+            .collect();
+        matches.sort_by(|a, b| a.period.cmp(&b.period));
+        matches.first().map(|e| e.description.clone())
+    }
+
+    /// Check if an event's scope is a subset of the current evaluation scope.
+    fn matches_scope(&self, event: &ContextIndexEntry, scope_key: &str) -> bool {
+        if event.scope.is_empty() {
+            return true; // Empty scope matches everything.
+        }
+        // Build scope_key from event scope for comparison.
+        let event_scope_key: String = event
+            .scope
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        // Event scope must be a subset: each k=v pair in event scope
+        // must appear in the evaluation scope_key.
+        event_scope_key.split(',').all(|kv| scope_key.contains(kv))
+    }
+
+    /// Check if an event falls within the lookback window.
+    fn matches_lookback(&self, event: &ContextIndexEntry, lookback: usize) -> bool {
+        if lookback == 0 {
+            return false;
+        }
+        let current = match &self.current_period {
+            Some(p) => p.as_str(),
+            None => return true, // No current period means accept all.
+        };
+        if lookback == 1 {
+            return event.period.as_str() == current;
+        }
+        // For lookback > 1, accept events in [current - (lookback-1), current].
+        // Periods are ISO strings (e.g., "2026-04") — lexicographic comparison works.
+        event.period.as_str() <= current
+    }
+}
+
 // ─── Ledger index for cross-period queries (Phase 7A.3) ──────────────
 
 /// Pre-built index over ledger entries for efficient cross-period queries.
@@ -302,7 +517,7 @@ pub fn eval_expr(expr: &str, ctx: &Ctx) -> Val {
 /// by iterating over dimension elements. When `cube` is `None`,
 /// falls back to context variable lookup (backward compat).
 pub fn eval_expr_with_cube(expr: &str, ctx: &Ctx, cube: Option<&CubeData>) -> Val {
-    eval_expr_full(expr, ctx, cube, None, None, "")
+    eval_expr_full(expr, ctx, cube, None, None, None, "")
 }
 
 /// Evaluate an expression with full context: cube + ledger + scope.
@@ -316,7 +531,7 @@ pub fn eval_expr_with_ledger(
     ledger: Option<&LedgerIndex>,
     scope_key: &str,
 ) -> Val {
-    eval_expr_full(expr, ctx, cube, ledger, None, scope_key)
+    eval_expr_full(expr, ctx, cube, ledger, None, None, scope_key)
 }
 
 /// Evaluate an expression with full context: cube + ledger + benchmark + scope.
@@ -330,7 +545,24 @@ pub fn eval_expr_with_benchmark(
     benchmark: Option<&BenchmarkIndex>,
     scope_key: &str,
 ) -> Val {
-    eval_expr_full(expr, ctx, cube, ledger, benchmark, scope_key)
+    eval_expr_full(expr, ctx, cube, ledger, benchmark, None, scope_key)
+}
+
+/// Evaluate an expression with full context including context events.
+/// Per ADR-0022 Decision 5.
+///
+/// Phase 7A.5: adds context event query capability alongside ledger + benchmark.
+/// `has_context_event()`, `context_description()`, `context_event_count()`.
+pub fn eval_expr_with_context(
+    expr: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    benchmark: Option<&BenchmarkIndex>,
+    context: Option<&ContextIndex>,
+    scope_key: &str,
+) -> Val {
+    eval_expr_full(expr, ctx, cube, ledger, benchmark, context, scope_key)
 }
 
 fn eval_expr_full(
@@ -339,6 +571,7 @@ fn eval_expr_full(
     cube: Option<&CubeData>,
     ledger: Option<&LedgerIndex>,
     benchmark: Option<&BenchmarkIndex>,
+    context: Option<&ContextIndex>,
     scope_key: &str,
 ) -> Val {
     // Normalize whitespace: YAML folded scalars can embed newlines.
@@ -361,32 +594,32 @@ fn eval_expr_full(
         .strip_prefix("NOT ")
         .or_else(|| expr.strip_prefix("not "))
     {
-        let val = eval_expr_full(rest, ctx, cube, ledger, benchmark, scope_key);
+        let val = eval_expr_full(rest, ctx, cube, ledger, benchmark, context, scope_key);
         return Val::Bool(!val.is_truthy());
     }
 
     // AND / OR (lowest precedence, split from left)
-    if let Some(val) = try_logical(expr, ctx, cube, ledger, benchmark, scope_key) {
+    if let Some(val) = try_logical(expr, ctx, cube, ledger, benchmark, context, scope_key) {
         return val;
     }
 
     // Comparisons: >=, <=, !=, ==, >, <
-    if let Some(val) = try_comparison(expr, ctx, cube, ledger, benchmark, scope_key) {
+    if let Some(val) = try_comparison(expr, ctx, cube, ledger, benchmark, context, scope_key) {
         return val;
     }
 
     // Addition / subtraction (left-to-right, respecting parens)
-    if let Some(val) = try_additive(expr, ctx, cube, ledger, benchmark, scope_key) {
+    if let Some(val) = try_additive(expr, ctx, cube, ledger, benchmark, context, scope_key) {
         return val;
     }
 
     // Multiplication / division
-    if let Some(val) = try_multiplicative(expr, ctx, cube, ledger, benchmark, scope_key) {
+    if let Some(val) = try_multiplicative(expr, ctx, cube, ledger, benchmark, context, scope_key) {
         return val;
     }
 
     // Unary / atoms
-    eval_atom(expr, ctx, cube, ledger, benchmark, scope_key)
+    eval_atom(expr, ctx, cube, ledger, benchmark, context, scope_key)
 }
 
 fn try_logical(
@@ -395,17 +628,27 @@ fn try_logical(
     cube: Option<&CubeData>,
     ledger: Option<&LedgerIndex>,
     benchmark: Option<&BenchmarkIndex>,
+    context: Option<&ContextIndex>,
     scope_key: &str,
 ) -> Option<Val> {
     for keyword in &[" AND ", " OR "] {
         if let Some(pos) = find_top_level(expr, keyword) {
-            let left = eval_expr_full(&expr[..pos], ctx, cube, ledger, benchmark, scope_key);
+            let left = eval_expr_full(
+                &expr[..pos],
+                ctx,
+                cube,
+                ledger,
+                benchmark,
+                context,
+                scope_key,
+            );
             let right = eval_expr_full(
                 &expr[pos + keyword.len()..],
                 ctx,
                 cube,
                 ledger,
                 benchmark,
+                context,
                 scope_key,
             );
             return Some(match *keyword {
@@ -424,17 +667,27 @@ fn try_comparison(
     cube: Option<&CubeData>,
     ledger: Option<&LedgerIndex>,
     benchmark: Option<&BenchmarkIndex>,
+    context: Option<&ContextIndex>,
     scope_key: &str,
 ) -> Option<Val> {
     for op in &[">=", "<=", "!=", "==", ">", "<"] {
         if let Some(pos) = find_top_level(expr, op) {
-            let left = eval_expr_full(&expr[..pos], ctx, cube, ledger, benchmark, scope_key);
+            let left = eval_expr_full(
+                &expr[..pos],
+                ctx,
+                cube,
+                ledger,
+                benchmark,
+                context,
+                scope_key,
+            );
             let right = eval_expr_full(
                 &expr[pos + op.len()..],
                 ctx,
                 cube,
                 ledger,
                 benchmark,
+                context,
                 scope_key,
             );
             let (l, r) = match (left.as_num(), right.as_num()) {
@@ -461,6 +714,7 @@ fn try_additive(
     cube: Option<&CubeData>,
     ledger: Option<&LedgerIndex>,
     benchmark: Option<&BenchmarkIndex>,
+    context: Option<&ContextIndex>,
     scope_key: &str,
 ) -> Option<Val> {
     let bytes = expr.as_bytes();
@@ -480,8 +734,24 @@ fn try_additive(
         }
     }
     if let Some((pos, op)) = last_pos {
-        let left = eval_expr_full(&expr[..pos], ctx, cube, ledger, benchmark, scope_key);
-        let right = eval_expr_full(&expr[pos + 1..], ctx, cube, ledger, benchmark, scope_key);
+        let left = eval_expr_full(
+            &expr[..pos],
+            ctx,
+            cube,
+            ledger,
+            benchmark,
+            context,
+            scope_key,
+        );
+        let right = eval_expr_full(
+            &expr[pos + 1..],
+            ctx,
+            cube,
+            ledger,
+            benchmark,
+            context,
+            scope_key,
+        );
         if let (Some(l), Some(r)) = (left.as_num(), right.as_num()) {
             return Some(Val::Num(if op == b'+' { l + r } else { l - r }));
         }
@@ -495,6 +765,7 @@ fn try_multiplicative(
     cube: Option<&CubeData>,
     ledger: Option<&LedgerIndex>,
     benchmark: Option<&BenchmarkIndex>,
+    context: Option<&ContextIndex>,
     scope_key: &str,
 ) -> Option<Val> {
     let bytes = expr.as_bytes();
@@ -511,8 +782,24 @@ fn try_multiplicative(
         }
     }
     if let Some((pos, op)) = last_pos {
-        let left = eval_expr_full(&expr[..pos], ctx, cube, ledger, benchmark, scope_key);
-        let right = eval_expr_full(&expr[pos + 1..], ctx, cube, ledger, benchmark, scope_key);
+        let left = eval_expr_full(
+            &expr[..pos],
+            ctx,
+            cube,
+            ledger,
+            benchmark,
+            context,
+            scope_key,
+        );
+        let right = eval_expr_full(
+            &expr[pos + 1..],
+            ctx,
+            cube,
+            ledger,
+            benchmark,
+            context,
+            scope_key,
+        );
         if let (Some(l), Some(r)) = (left.as_num(), right.as_num()) {
             return Some(Val::Num(if op == b'*' {
                 l * r
@@ -532,6 +819,7 @@ fn eval_atom(
     cube: Option<&CubeData>,
     ledger: Option<&LedgerIndex>,
     benchmark: Option<&BenchmarkIndex>,
+    context: Option<&ContextIndex>,
     scope_key: &str,
 ) -> Val {
     let expr = expr.trim();
@@ -544,6 +832,7 @@ fn eval_atom(
             cube,
             ledger,
             benchmark,
+            context,
             scope_key,
         );
     }
@@ -560,18 +849,20 @@ fn eval_atom(
 
     // Function calls.
     if let Some(inner) = strip_func(expr, "abs") {
-        return match eval_expr_full(inner, ctx, cube, ledger, benchmark, scope_key).as_num() {
+        return match eval_expr_full(inner, ctx, cube, ledger, benchmark, context, scope_key)
+            .as_num()
+        {
             Some(n) => Val::Num(n.abs()),
             None => Val::Null,
         };
     }
     if let Some(inner) = strip_func(expr, "not") {
         // Finding #4: NOT operator as function call.
-        let val = eval_expr_full(inner, ctx, cube, ledger, benchmark, scope_key);
+        let val = eval_expr_full(inner, ctx, cube, ledger, benchmark, context, scope_key);
         return Val::Bool(!val.is_truthy());
     }
     if let Some(inner) = strip_func(expr, "if") {
-        return eval_if(inner, ctx, cube, ledger, benchmark, scope_key);
+        return eval_if(inner, ctx, cube, ledger, benchmark, context, scope_key);
     }
     if let Some(inner) = strip_func(expr, "element_count") {
         let key = format!("element_count({})", inner.trim());
@@ -600,34 +891,38 @@ fn eval_atom(
 
     // ─── Benchmark query functions (Phase 7A.4) ──────────────────────
     if let Some(inner) = strip_func(expr, "benchmark_p10") {
-        return eval_benchmark_field(inner, benchmark, scope_key, |b| b.p10);
+        return eval_benchmark_field(inner, benchmark, context, scope_key, |b| b.p10);
     }
     if let Some(inner) = strip_func(expr, "benchmark_p25") {
-        return eval_benchmark_field(inner, benchmark, scope_key, |b| b.p25);
+        return eval_benchmark_field(inner, benchmark, context, scope_key, |b| b.p25);
     }
     if let Some(inner) = strip_func(expr, "benchmark_p50") {
-        return eval_benchmark_field(inner, benchmark, scope_key, |b| b.p50);
+        return eval_benchmark_field(inner, benchmark, context, scope_key, |b| b.p50);
     }
     if let Some(inner) = strip_func(expr, "benchmark_p75") {
-        return eval_benchmark_field(inner, benchmark, scope_key, |b| b.p75);
+        return eval_benchmark_field(inner, benchmark, context, scope_key, |b| b.p75);
     }
     if let Some(inner) = strip_func(expr, "benchmark_p90") {
-        return eval_benchmark_field(inner, benchmark, scope_key, |b| b.p90);
+        return eval_benchmark_field(inner, benchmark, context, scope_key, |b| b.p90);
     }
     if let Some(inner) = strip_func(expr, "benchmark_mean") {
-        return eval_benchmark_field(inner, benchmark, scope_key, |b| b.mean);
+        return eval_benchmark_field(inner, benchmark, context, scope_key, |b| b.mean);
     }
     if let Some(inner) = strip_func(expr, "benchmark_sample_count") {
-        return eval_benchmark_field(inner, benchmark, scope_key, |b| b.sample_count as f64);
+        return eval_benchmark_field(inner, benchmark, context, scope_key, |b| {
+            b.sample_count as f64
+        });
     }
     if let Some(inner) = strip_func(expr, "benchmark_percentile") {
-        return eval_benchmark_percentile(inner, ctx, cube, ledger, benchmark, scope_key);
+        return eval_benchmark_percentile(inner, ctx, cube, ledger, benchmark, context, scope_key);
     }
     if let Some(inner) = strip_func(expr, "benchmark_above_median") {
-        return eval_benchmark_above_median(inner, ctx, cube, ledger, benchmark, scope_key);
+        return eval_benchmark_above_median(
+            inner, ctx, cube, ledger, benchmark, context, scope_key,
+        );
     }
     if let Some(inner) = strip_func(expr, "benchmark_z_score") {
-        return eval_benchmark_z_score(inner, ctx, cube, ledger, benchmark, scope_key);
+        return eval_benchmark_z_score(inner, ctx, cube, ledger, benchmark, context, scope_key);
     }
 
     // Generic aggregate functions (Finding #1: evaluate arbitrary predicates).
@@ -673,17 +968,18 @@ fn eval_if(
     cube: Option<&CubeData>,
     ledger: Option<&LedgerIndex>,
     benchmark: Option<&BenchmarkIndex>,
+    context: Option<&ContextIndex>,
     scope_key: &str,
 ) -> Val {
     let parts = split_top_level_commas(args_str);
     if parts.len() < 3 {
         return Val::Null;
     }
-    let cond = eval_expr_full(parts[0], ctx, cube, ledger, benchmark, scope_key);
+    let cond = eval_expr_full(parts[0], ctx, cube, ledger, benchmark, context, scope_key);
     if cond.is_truthy() {
-        eval_expr_full(parts[1], ctx, cube, ledger, benchmark, scope_key)
+        eval_expr_full(parts[1], ctx, cube, ledger, benchmark, context, scope_key)
     } else {
-        eval_expr_full(parts[2], ctx, cube, ledger, benchmark, scope_key)
+        eval_expr_full(parts[2], ctx, cube, ledger, benchmark, context, scope_key)
     }
 }
 
@@ -900,9 +1196,17 @@ fn eval_ledger_count(
         return Val::Num(0.0);
     }
     let template_id = extract_string_arg(parts[0], ctx, cube, ledger, scope_key);
-    let lookback = eval_expr_full(parts[1].trim(), ctx, cube, Some(ledger), None, scope_key)
-        .as_num()
-        .unwrap_or(6.0) as usize;
+    let lookback = eval_expr_full(
+        parts[1].trim(),
+        ctx,
+        cube,
+        Some(ledger),
+        None,
+        None,
+        scope_key,
+    )
+    .as_num()
+    .unwrap_or(6.0) as usize;
 
     Val::Num(ledger.count(&template_id, scope_key, lookback) as f64)
 }
@@ -927,9 +1231,17 @@ fn eval_ledger_has(
         return Val::Num(0.0);
     }
     let template_id = extract_string_arg(parts[0], ctx, cube, ledger, scope_key);
-    let lookback = eval_expr_full(parts[1].trim(), ctx, cube, Some(ledger), None, scope_key)
-        .as_num()
-        .unwrap_or(6.0) as usize;
+    let lookback = eval_expr_full(
+        parts[1].trim(),
+        ctx,
+        cube,
+        Some(ledger),
+        None,
+        None,
+        scope_key,
+    )
+    .as_num()
+    .unwrap_or(6.0) as usize;
 
     Val::Num(if ledger.has(&template_id, scope_key, lookback) {
         1.0
@@ -971,9 +1283,17 @@ fn eval_ledger_evidence(
     }
     let template_id = extract_string_arg(parts[0], ctx, cube, ledger, scope_key);
     let field_name = extract_string_arg(parts[1], ctx, cube, ledger, scope_key);
-    let periods_ago = eval_expr_full(parts[2].trim(), ctx, cube, Some(ledger), None, scope_key)
-        .as_num()
-        .unwrap_or(0.0) as usize;
+    let periods_ago = eval_expr_full(
+        parts[2].trim(),
+        ctx,
+        cube,
+        Some(ledger),
+        None,
+        None,
+        scope_key,
+    )
+    .as_num()
+    .unwrap_or(0.0) as usize;
 
     ledger.evidence(&template_id, scope_key, &field_name, periods_ago)
 }
@@ -997,9 +1317,17 @@ fn eval_ledger_first_period(
         return Val::Null;
     }
     let template_id = extract_string_arg(parts[0], ctx, cube, ledger, scope_key);
-    let lookback = eval_expr_full(parts[1].trim(), ctx, cube, Some(ledger), None, scope_key)
-        .as_num()
-        .unwrap_or(6.0) as usize;
+    let lookback = eval_expr_full(
+        parts[1].trim(),
+        ctx,
+        cube,
+        Some(ledger),
+        None,
+        None,
+        scope_key,
+    )
+    .as_num()
+    .unwrap_or(6.0) as usize;
 
     ledger.first_period(&template_id, scope_key, lookback)
 }
@@ -1023,9 +1351,17 @@ fn eval_ledger_last_period(
         return Val::Null;
     }
     let template_id = extract_string_arg(parts[0], ctx, cube, ledger, scope_key);
-    let lookback = eval_expr_full(parts[1].trim(), ctx, cube, Some(ledger), None, scope_key)
-        .as_num()
-        .unwrap_or(6.0) as usize;
+    let lookback = eval_expr_full(
+        parts[1].trim(),
+        ctx,
+        cube,
+        Some(ledger),
+        None,
+        None,
+        scope_key,
+    )
+    .as_num()
+    .unwrap_or(6.0) as usize;
 
     ledger.last_period(&template_id, scope_key, lookback)
 }
@@ -1039,6 +1375,7 @@ fn eval_ledger_last_period(
 fn eval_benchmark_field(
     args: &str,
     benchmark: Option<&BenchmarkIndex>,
+    _context: Option<&ContextIndex>,
     scope_key: &str,
     field_fn: impl Fn(&MetricBenchmark) -> f64,
 ) -> Val {
@@ -1064,6 +1401,7 @@ fn eval_benchmark_percentile(
     cube: Option<&CubeData>,
     ledger: Option<&LedgerIndex>,
     benchmark: Option<&BenchmarkIndex>,
+    context: Option<&ContextIndex>,
     scope_key: &str,
 ) -> Val {
     let benchmark = match benchmark {
@@ -1081,6 +1419,7 @@ fn eval_benchmark_percentile(
         cube,
         ledger,
         Some(benchmark),
+        context,
         scope_key,
     )
     .as_num()
@@ -1102,6 +1441,7 @@ fn eval_benchmark_above_median(
     cube: Option<&CubeData>,
     ledger: Option<&LedgerIndex>,
     benchmark: Option<&BenchmarkIndex>,
+    context: Option<&ContextIndex>,
     scope_key: &str,
 ) -> Val {
     let benchmark = match benchmark {
@@ -1117,9 +1457,17 @@ fn eval_benchmark_above_median(
         .and_then(|v| v.as_num())
         .unwrap_or_else(|| {
             // Fallback: evaluate the expression "current.{metric}" against the context.
-            eval_expr_full(&current_key, ctx, cube, ledger, Some(benchmark), scope_key)
-                .as_num()
-                .unwrap_or(0.0)
+            eval_expr_full(
+                &current_key,
+                ctx,
+                cube,
+                ledger,
+                Some(benchmark),
+                context,
+                scope_key,
+            )
+            .as_num()
+            .unwrap_or(0.0)
         });
 
     match benchmark.lookup(metric, scope_key) {
@@ -1138,6 +1486,7 @@ fn eval_benchmark_z_score(
     cube: Option<&CubeData>,
     ledger: Option<&LedgerIndex>,
     benchmark: Option<&BenchmarkIndex>,
+    context: Option<&ContextIndex>,
     scope_key: &str,
 ) -> Val {
     let benchmark = match benchmark {
@@ -1155,6 +1504,7 @@ fn eval_benchmark_z_score(
         cube,
         ledger,
         Some(benchmark),
+        context,
         scope_key,
     )
     .as_num()
@@ -1207,7 +1557,7 @@ fn extract_string_arg(
         return arg[1..arg.len() - 1].to_string();
     }
     // Otherwise evaluate and convert to string.
-    eval_expr_full(arg, ctx, cube, Some(ledger), None, scope_key).to_display()
+    eval_expr_full(arg, ctx, cube, Some(ledger), None, None, scope_key).to_display()
 }
 
 // ─── Parsing helpers ────────────────────────────────────────────────

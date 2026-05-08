@@ -55,6 +55,23 @@ pub struct TemplateDefinition {
     /// deviation magnitude from the `when:` predicate's values.
     #[serde(default)]
     pub notability_base: Option<f64>,
+
+    // ─── Phase 7A.5: Explanation chains (ADR-0022) ───────────────────
+    /// Finding group — templates sharing the same `finding_id` form an
+    /// explanation chain evaluated in priority order. Templates without
+    /// `finding_id` fire independently (zero behavior change).
+    #[serde(default)]
+    pub finding_id: Option<String>,
+
+    /// Priority within an explanation group (lower = fires first).
+    /// Default: 500. Templates without `finding_id` ignore this field.
+    #[serde(default = "default_explanation_priority")]
+    pub explanation_priority: u32,
+}
+
+/// Default explanation priority for templates that don't specify one.
+fn default_explanation_priority() -> u32 {
+    500
 }
 
 /// Severity level for a narrative output.
@@ -85,4 +102,19 @@ pub struct NarrativeOutput {
     pub template_id: String,
     /// Evidence: binding values that contributed to this narrative.
     pub evidence: BTreeMap<String, serde_json::Value>,
+
+    // ─── Phase 7A.5: Explanation chain metadata (ADR-0022 Decision 9) ─
+    /// Which finding group produced this narrative (if any).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finding_id: Option<String>,
+
+    /// Templates skipped because a higher-priority explanation matched
+    /// first (never evaluated). Per ADR-0022 Decision 9.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped_explanations: Vec<String>,
+
+    /// Templates evaluated but whose `when:` predicate returned false
+    /// (considered and rejected). Per ADR-0022 Decision 9.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rejected_explanations: Vec<String>,
 }

@@ -147,7 +147,8 @@ pub fn detect_tactics(registry: &Registry, csvs: &[ParsedCsv]) -> Vec<DetectionR
 
     for csv in csvs {
         // Try filename match first.
-        let spec = registry.detect(&csv.filename)
+        let spec = registry
+            .detect(&csv.filename)
             // Fallback: match by headers (≥60% overlap).
             .or_else(|| registry.detect_by_headers(&csv.headers, 60.0));
 

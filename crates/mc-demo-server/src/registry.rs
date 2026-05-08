@@ -150,17 +150,22 @@ impl Registry {
     /// tables where filenames are derived from slide titles, not registry names).
     /// Returns the spec with the highest header match percentage, provided it
     /// exceeds `min_match_pct` (0-100).
-    pub fn detect_by_headers(&self, actual_headers: &[String], min_match_pct: f64) -> Option<&TacticSpec> {
+    pub fn detect_by_headers(
+        &self,
+        actual_headers: &[String],
+        min_match_pct: f64,
+    ) -> Option<&TacticSpec> {
         let mut best: Option<(&TacticSpec, f64)> = None;
 
         for spec in &self.all {
             let (pct, _, _) = Self::match_headers(spec, actual_headers);
-            if pct >= min_match_pct {
-                if best.map_or(true, |(_, prev_pct)| pct > prev_pct
-                    || (pct == prev_pct && spec.headers.len() > best.unwrap().0.headers.len()))
-                {
-                    best = Some((spec, pct));
-                }
+            if pct >= min_match_pct
+                && best.map_or(true, |(_, prev_pct)| {
+                    pct > prev_pct
+                        || (pct == prev_pct && spec.headers.len() > best.unwrap().0.headers.len())
+                })
+            {
+                best = Some((spec, pct));
             }
         }
 

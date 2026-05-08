@@ -6,6 +6,7 @@
 
 pub mod benchmark;
 pub mod context;
+pub mod context_events;
 pub mod error;
 pub mod evaluator;
 pub mod ledger;
@@ -14,8 +15,9 @@ pub mod schema;
 
 pub use benchmark::{BenchmarkError, BenchmarkLibrary, MetricBenchmark};
 pub use context::{CellEntry, CubeData};
+pub use context_events::ContextEvent;
 pub use error::NarrativeError;
-pub use evaluator::{BenchmarkIndex, Ctx, LedgerIndex, Val};
+pub use evaluator::{BenchmarkIndex, ContextIndex, Ctx, LedgerIndex, Val};
 pub use ledger::LedgerEntry;
 pub use renderer::{format_comma, format_val, readable_name};
 pub use schema::{NarrativeOutput, Severity, TemplateDefinition, TemplateFile};
@@ -58,7 +60,7 @@ pub fn load_templates(dir: &str) -> Vec<TemplateDefinition> {
     all
 }
 
-/// Validate loaded templates, returning any MC7001-MC7010 errors.
+/// Validate loaded templates, returning any MC7001-MC7010 + MC7050-MC7055 errors.
 pub fn validate_templates(templates: &[TemplateDefinition]) -> Vec<NarrativeError> {
     let mut errors = Vec::new();
     let mut seen_ids: HashSet<&str> = HashSet::new();
@@ -92,6 +94,7 @@ pub fn validate_templates(templates: &[TemplateDefinition]) -> Vec<NarrativeErro
             "prev_period",
             "current_period",
             "period_count",
+            "event_desc",
         ]
         .into_iter()
         .collect();
@@ -134,6 +137,51 @@ pub fn validate_templates(templates: &[TemplateDefinition]) -> Vec<NarrativeErro
                     placeholder: binding_name.clone(),
                 });
             }
+        }
+    }
+
+    // ─── Phase 7A.5: Explanation chain validation (ADR-0022) ─────────
+
+    // Group templates by finding_id for chain-level validation.
+    let mut finding_groups: HashMap<&str, Vec<&TemplateDefinition>> = HashMap::new();
+    for tmpl in templates {
+        if let Some(ref fid) = tmpl.finding_id {
+            finding_groups.entry(fid.as_str()).or_default().push(tmpl);
+        }
+    }
+
+    for (fid, group) in &finding_groups {
+        // MC7050: priority collision within a finding_id group.
+        // Per ADR-0022 Decision 2: deterministic output requires deterministic order.
+        let mut seen_priorities: HashMap<u32, &str> = HashMap::new();
+        for tmpl in group {
+            if let Some(&prior_id) = seen_priorities.get(&tmpl.explanation_priority) {
+                errors.push(NarrativeError::ExplanationPriorityCollision {
+                    finding_id: fid.to_string(),
+                    priority: tmpl.explanation_priority,
+                    template_a: prior_id.to_string(),
+                    template_b: tmpl.id.clone(),
+                });
+            } else {
+                seen_priorities.insert(tmpl.explanation_priority, &tmpl.id);
+            }
+        }
+
+        // MC7053: missing fallback (no template with priority >= 900).
+        // Per ADR-0022 Decision 3: info-level nudge.
+        let has_fallback = group.iter().any(|t| t.explanation_priority >= 900);
+        if !has_fallback {
+            errors.push(NarrativeError::ExplanationMissingFallback {
+                finding_id: fid.to_string(),
+            });
+        }
+
+        // MC7055: singleton finding_id (only one template — likely typo).
+        if group.len() == 1 {
+            errors.push(NarrativeError::ExplanationSingletonFindingId {
+                finding_id: fid.to_string(),
+                template_id: group[0].id.clone(),
+            });
         }
     }
 
@@ -182,11 +230,17 @@ fn extract_placeholders(template: &str) -> Vec<String> {
 /// When `Some`, benchmark query functions (`benchmark_p50`, `benchmark_percentile`,
 /// etc.) have data to query. When `None`, they return 0.0 and templates with
 /// benchmark predicates in `when:` silently don't fire.
+///
+/// Phase 7A.5: optional `context_events` parameter enables explanation chains
+/// with context event queries. Templates with `finding_id` are grouped and
+/// evaluated in `explanation_priority` order (first match fires, rest suppressed).
+/// Per ADR-0022 Decision 1.
 pub fn evaluate_all(
     templates: &[TemplateDefinition],
     cubes: &[CubeData],
     ledger: Option<&[LedgerEntry]>,
     benchmark: Option<&benchmark::BenchmarkLibrary>,
+    context_events: Option<&[crate::context_events::ContextEvent]>,
 ) -> Vec<NarrativeOutput> {
     let mut narratives = Vec::new();
     let mut fired_ids: HashSet<String> = HashSet::new();
@@ -194,6 +248,26 @@ pub fn evaluate_all(
     // Build benchmark index once per evaluate_all call (not per cube).
     let benchmark_index = benchmark.map(BenchmarkIndex::build);
     let benchmark_ref = benchmark_index.as_ref();
+
+    // Phase 7A.5: Pre-group templates by finding_id.
+    // Templates without finding_id go in standalone (evaluated as before).
+    // Templates with finding_id are grouped and sorted by explanation_priority.
+    let mut standalone: Vec<&TemplateDefinition> = Vec::new();
+    let mut explanation_groups: HashMap<&str, Vec<&TemplateDefinition>> = HashMap::new();
+    for tmpl in templates {
+        if let Some(ref fid) = tmpl.finding_id {
+            explanation_groups
+                .entry(fid.as_str())
+                .or_default()
+                .push(tmpl);
+        } else {
+            standalone.push(tmpl);
+        }
+    }
+    // Sort each explanation group by priority (lower = fires first).
+    for group in explanation_groups.values_mut() {
+        group.sort_by_key(|t| t.explanation_priority);
+    }
 
     for cube in cubes {
         let ctx = context::build_context(cube);
@@ -209,77 +283,197 @@ pub fn evaluate_all(
         });
 
         // Build ledger index with current period context.
-        let ledger_index = ledger.map(|entries| LedgerIndex::build(entries, current_period));
+        let ledger_index =
+            ledger.map(|entries| LedgerIndex::build(entries, current_period.clone()));
         let ledger_ref = ledger_index.as_ref();
 
-        for tmpl in templates {
-            // Table type filter.
-            let table_match = tmpl
-                .table_types
-                .iter()
-                .any(|t| table_lower.contains(&t.to_lowercase()));
-            if !table_match {
-                continue;
-            }
+        // Build context index with current period + auto-detected events.
+        let context_index = context_events
+            .map(|events| evaluator::ContextIndex::build(events, current_period.clone(), cube));
+        let context_ref = context_index.as_ref();
 
-            // Deduplicate: templates with `deduplicate: true` fire at most once.
-            if tmpl.deduplicate && fired_ids.contains(&tmpl.id) {
-                continue;
-            }
-
-            // Evaluate when predicate (with ledger + benchmark access).
-            let when_val = evaluator::eval_expr_with_benchmark(
-                &tmpl.when,
-                &ctx,
-                Some(cube),
-                ledger_ref,
-                benchmark_ref,
-                &scope_key,
-            );
-            if !when_val.is_truthy() {
-                continue;
-            }
-
-            // DAG-ordered binding resolution (Finding #3) with ledger + benchmark access.
-            let resolved = resolve_bindings_dag(
-                &tmpl.bindings,
-                &ctx,
+        // ─── Evaluate standalone templates (current behavior, unchanged) ─
+        for tmpl in &standalone {
+            if let Some(output) = evaluate_single_template(
+                tmpl,
                 cube,
+                &ctx,
+                &table_lower,
                 ledger_ref,
                 benchmark_ref,
+                context_ref,
                 &scope_key,
-            );
+                &mut fired_ids,
+                None, // no finding_id
+                &[],  // no skipped
+                &[],  // no rejected
+            ) {
+                narratives.push(output);
+            }
+        }
 
-            // Add tactic_name to resolved bindings.
-            let mut resolved = resolved;
-            resolved.insert("tactic_name".to_string(), Val::Str(cube.subproduct.clone()));
+        // ─── Evaluate explanation groups (Phase 7A.5) ────────────────────
+        // Per ADR-0022 Decision 1: evaluate in priority order, first match fires.
+        for (fid, group) in &explanation_groups {
+            let mut rejected: Vec<String> = Vec::new();
 
-            // Substitute into template string with format hints.
-            let text = renderer::substitute(&tmpl.template, &resolved, &ctx, &tmpl.format);
+            let mut matched_idx: Option<usize> = None;
+            for (i, tmpl) in group.iter().enumerate() {
+                // Table type filter.
+                let table_match = tmpl
+                    .table_types
+                    .iter()
+                    .any(|t| table_lower.contains(&t.to_lowercase()));
+                if !table_match {
+                    continue;
+                }
 
-            // Build evidence from numeric bindings.
-            let mut evidence = BTreeMap::new();
-            for (k, v) in &resolved {
-                if let Val::Num(n) = v {
-                    evidence.insert(k.clone(), serde_json::json!(n));
+                // Evaluate when predicate.
+                let when_val = evaluator::eval_expr_with_context(
+                    &tmpl.when,
+                    &ctx,
+                    Some(cube),
+                    ledger_ref,
+                    benchmark_ref,
+                    context_ref,
+                    &scope_key,
+                );
+                if when_val.is_truthy() {
+                    matched_idx = Some(i);
+                    break;
+                } else {
+                    rejected.push(tmpl.id.clone());
                 }
             }
 
-            narratives.push(NarrativeOutput {
-                id: format!("{}_{}", tmpl.id, cube.source_file.replace(".csv", "")),
-                severity: tmpl.severity,
-                text,
-                template_id: tmpl.id.clone(),
-                evidence,
-            });
+            if let Some(idx) = matched_idx {
+                let tmpl = group[idx];
+                // Collect skipped templates (all after matched, never evaluated).
+                let skipped: Vec<String> = group[idx + 1..]
+                    .iter()
+                    .filter(|t| {
+                        t.table_types
+                            .iter()
+                            .any(|tt| table_lower.contains(&tt.to_lowercase()))
+                    })
+                    .map(|t| t.id.clone())
+                    .collect();
 
-            if tmpl.deduplicate {
-                fired_ids.insert(tmpl.id.clone());
+                if let Some(output) = evaluate_single_template(
+                    tmpl,
+                    cube,
+                    &ctx,
+                    &table_lower,
+                    ledger_ref,
+                    benchmark_ref,
+                    context_ref,
+                    &scope_key,
+                    &mut fired_ids,
+                    Some(fid),
+                    &skipped,
+                    &rejected,
+                ) {
+                    narratives.push(output);
+                }
             }
+            // If no template matched, the group produces no output.
         }
     }
 
     narratives
+}
+
+/// Evaluate a single template and produce a NarrativeOutput if it fires.
+///
+/// Used by both standalone evaluation and explanation-chain evaluation.
+/// For standalone templates, the `when:` predicate is checked here.
+/// For explanation-chain templates, the caller has already verified `when:`.
+#[allow(clippy::too_many_arguments)]
+fn evaluate_single_template(
+    tmpl: &TemplateDefinition,
+    cube: &CubeData,
+    ctx: &Ctx,
+    table_lower: &str,
+    ledger: Option<&LedgerIndex>,
+    benchmark: Option<&BenchmarkIndex>,
+    context: Option<&evaluator::ContextIndex>,
+    scope_key: &str,
+    fired_ids: &mut HashSet<String>,
+    finding_id: Option<&&str>,
+    skipped: &[String],
+    rejected: &[String],
+) -> Option<NarrativeOutput> {
+    // Table type filter.
+    let table_match = tmpl
+        .table_types
+        .iter()
+        .any(|t| table_lower.contains(&t.to_lowercase()));
+    if !table_match {
+        return None;
+    }
+
+    // Deduplicate: templates with `deduplicate: true` fire at most once.
+    if tmpl.deduplicate && fired_ids.contains(&tmpl.id) {
+        return None;
+    }
+
+    // For standalone templates, evaluate when predicate.
+    // For explanation-chain templates, caller already checked when:.
+    if finding_id.is_none() {
+        let when_val = evaluator::eval_expr_with_context(
+            &tmpl.when,
+            ctx,
+            Some(cube),
+            ledger,
+            benchmark,
+            context,
+            scope_key,
+        );
+        if !when_val.is_truthy() {
+            return None;
+        }
+    }
+
+    // DAG-ordered binding resolution with ledger + benchmark + context access.
+    let resolved = resolve_bindings_dag(
+        &tmpl.bindings,
+        ctx,
+        cube,
+        ledger,
+        benchmark,
+        context,
+        scope_key,
+    );
+
+    // Add tactic_name to resolved bindings.
+    let mut resolved = resolved;
+    resolved.insert("tactic_name".to_string(), Val::Str(cube.subproduct.clone()));
+
+    // Substitute into template string with format hints.
+    let text = renderer::substitute(&tmpl.template, &resolved, ctx, &tmpl.format);
+
+    // Build evidence from numeric bindings.
+    let mut evidence = BTreeMap::new();
+    for (k, v) in &resolved {
+        if let Val::Num(n) = v {
+            evidence.insert(k.clone(), serde_json::json!(n));
+        }
+    }
+
+    if tmpl.deduplicate {
+        fired_ids.insert(tmpl.id.clone());
+    }
+
+    Some(NarrativeOutput {
+        id: format!("{}_{}", tmpl.id, cube.source_file.replace(".csv", "")),
+        severity: tmpl.severity,
+        text,
+        template_id: tmpl.id.clone(),
+        evidence,
+        finding_id: finding_id.map(|s| s.to_string()),
+        skipped_explanations: skipped.to_vec(),
+        rejected_explanations: rejected.to_vec(),
+    })
 }
 
 // ─── DAG-ordered binding resolution (Finding #3) ───────────────────
@@ -296,6 +490,7 @@ fn resolve_bindings_dag(
     cube: &CubeData,
     ledger: Option<&LedgerIndex>,
     benchmark: Option<&BenchmarkIndex>,
+    context: Option<&evaluator::ContextIndex>,
     scope_key: &str,
 ) -> HashMap<String, Val> {
     if bindings.is_empty() {
@@ -326,12 +521,13 @@ fn resolve_bindings_dag(
 
     for name in &order {
         if let Some(expr) = bindings.get(*name) {
-            let val = evaluator::eval_expr_with_benchmark(
+            let val = evaluator::eval_expr_with_context(
                 expr,
                 &eval_ctx,
                 Some(cube),
                 ledger,
                 benchmark,
+                context,
                 scope_key,
             );
             eval_ctx.insert(name.to_string(), val.clone());

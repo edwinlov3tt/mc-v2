@@ -117,6 +117,9 @@ pub fn build_summary(advertiser: &str, groups: &[TacticGroup]) -> WorkspaceSumma
             ),
             template_id: "workspace_overview".into(),
             evidence: BTreeMap::new(),
+            finding_id: None,
+            skipped_explanations: Vec::new(),
+            rejected_explanations: Vec::new(),
         });
     }
 
@@ -167,6 +170,9 @@ pub fn build_summary(advertiser: &str, groups: &[TacticGroup]) -> WorkspaceSumma
                     e.insert("avg_ctr".into(), serde_json::json!(avg_ctr));
                     e
                 },
+                finding_id: None,
+                skipped_explanations: Vec::new(),
+                rejected_explanations: Vec::new(),
             });
         }
     }
@@ -192,6 +198,9 @@ pub fn build_summary(advertiser: &str, groups: &[TacticGroup]) -> WorkspaceSumma
                 e.insert("alert_count".into(), serde_json::json!(warning_count));
                 e
             },
+            finding_id: None,
+            skipped_explanations: Vec::new(),
+            rejected_explanations: Vec::new(),
         });
     }
 
