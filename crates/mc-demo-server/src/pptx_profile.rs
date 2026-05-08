@@ -4,11 +4,11 @@
 //! (family). The cross-product of sections and families produces the full
 //! mapping space. Profiles live at `.mosaic/pptx-profiles/<profile-id>.yaml`.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// A PPTX matching profile — declares sections, table families, aliases,
 /// skip rules, and duplicate pairs for a specific reporting template.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PptxProfile {
     pub schema_version: String,
     pub profile_id: String,
@@ -31,7 +31,7 @@ pub struct PptxProfile {
 }
 
 /// Confidence threshold overrides — configurable per profile.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MatchThresholds {
     #[serde(default = "default_030")]
     pub auto_match_min_score: f64,
@@ -65,7 +65,7 @@ fn default_020() -> f64 {
 }
 
 /// Three kinds of aliases — applied at different cascade steps.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct AliasConfig {
     #[serde(default)]
     pub tactic: Vec<TacticAlias>,
@@ -77,7 +77,7 @@ pub struct AliasConfig {
 
 /// Tactic-name normalization — used by first-column lookup AND rollup parsing.
 /// Has two output forms: `canonical` (single target) or `expands_to` (multiple).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TacticAlias {
     pub input: String,
     #[serde(default)]
@@ -87,7 +87,7 @@ pub struct TacticAlias {
 }
 
 /// Header-token normalization — applied before IDF scoring.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HeaderAlias {
     pub input: String,
     pub canonical: String,
@@ -95,21 +95,21 @@ pub struct HeaderAlias {
 
 /// Registry duplicate patches — different entries that should be treated
 /// as the same logical tactic.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RegistryAlias {
     pub canonical: RegistryRef,
     pub duplicates_of: Vec<RegistryRef>,
 }
 
 /// A reference to a specific registry entry by product + subproduct.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RegistryRef {
     pub product_name: String,
     pub subproduct_name: String,
 }
 
 /// A section definition — what propagates as context after a divider.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SectionDef {
     pub id: String,
     pub title_matchers: Vec<TitleMatcher>,
@@ -117,14 +117,14 @@ pub struct SectionDef {
 }
 
 /// What a section divider propagates to subsequent slides.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SectionPropagates {
     pub product_name: String,
     pub default_subproduct: String,
 }
 
 /// A table family definition — what kind of table this is.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TableFamilyDef {
     pub id: String,
     pub title_matchers: Vec<TitleMatcher>,
@@ -138,7 +138,7 @@ pub struct TableFamilyDef {
 /// Title matching predicate — multiple variants for flexibility.
 /// A matcher is satisfied if ANY of its conditions match.
 /// Deserialized from YAML maps like `{ equals: "Meta" }` or `{ contains_any: [...] }`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TitleMatcher {
     #[serde(default)]
     pub equals: Option<String>,
@@ -211,7 +211,7 @@ impl TitleMatcher {
 }
 
 /// Skip rule — tables matching these patterns are excluded silently.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SkipRule {
     pub when: SkipCondition,
     #[serde(default)]
@@ -219,16 +219,22 @@ pub struct SkipRule {
 }
 
 /// Conditions for skip rules.
-#[derive(Debug, Clone, Deserialize)]
+/// Supports both title-based matching (profile-authored) and positional
+/// matching (review UI save-back). Positional fields are optional.
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SkipCondition {
     #[serde(default)]
     pub table_title_contains_any: Vec<String>,
     #[serde(default)]
     pub slide_title_contains: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slide_index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table_index: Option<u32>,
 }
 
 /// Known duplicate section pairs for dedup.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DuplicatePair {
     pub sections: Vec<String>,
     #[serde(default)]
@@ -240,13 +246,33 @@ pub struct DuplicatePair {
 }
 
 /// Hard override — pinned (slide_index, table_index) → mapping.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OverrideDef {
     pub slide_index: u32,
     pub table_index: u32,
     pub product_name: String,
     pub subproduct_name: String,
     pub table_name: String,
+}
+
+/// Save a profile to `<dir>/.mosaic/pptx-profiles/<profile_id>.yaml`.
+/// Uses atomic write (tmp + rename) to avoid partial writes.
+pub fn save_profile(dir: &std::path::Path, profile: &PptxProfile) -> Result<(), String> {
+    let profiles_dir = dir.join(".mosaic").join("pptx-profiles");
+    std::fs::create_dir_all(&profiles_dir)
+        .map_err(|e| format!("failed to create profile directory: {e}"))?;
+
+    let path = profiles_dir.join(format!("{}.yaml", profile.profile_id));
+    let tmp_path = profiles_dir.join(format!(".{}.yaml.tmp", profile.profile_id));
+
+    let content =
+        serde_yaml::to_string(profile).map_err(|e| format!("failed to serialize profile: {e}"))?;
+
+    std::fs::write(&tmp_path, content).map_err(|e| format!("failed to write temp profile: {e}"))?;
+
+    std::fs::rename(&tmp_path, path).map_err(|e| format!("failed to rename temp profile: {e}"))?;
+
+    Ok(())
 }
 
 /// Load a profile from `<dir>/.mosaic/pptx-profiles/<profile_id>.yaml`.
@@ -368,5 +394,79 @@ title_matchers:
     fn test_load_profile_nonexistent() {
         let result = load_profile(std::path::Path::new("/nonexistent"), "foo");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_save_and_reload_profile() {
+        let tmp = std::env::temp_dir().join("mosaic-test-save-profile");
+        // Clean up from any previous run.
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let profile = PptxProfile {
+            schema_version: "2.0".to_string(),
+            profile_id: "test-save".to_string(),
+            description: "test".to_string(),
+            thresholds: MatchThresholds::default(),
+            aliases: AliasConfig::default(),
+            sections: vec![],
+            table_families: vec![],
+            skip_tables: vec![],
+            duplicate_section_pairs: vec![],
+            overrides: vec![OverrideDef {
+                slide_index: 5,
+                table_index: 0,
+                product_name: "Meta".to_string(),
+                subproduct_name: "Facebook - Link Click".to_string(),
+                table_name: "Monthly Performance".to_string(),
+            }],
+        };
+
+        save_profile(&tmp, &profile).expect("save should succeed");
+
+        let loaded = load_profile(&tmp, "test-save").expect("reload should find profile");
+        assert_eq!(loaded.profile_id, "test-save");
+        assert_eq!(loaded.overrides.len(), 1);
+        assert_eq!(loaded.overrides[0].slide_index, 5);
+        assert_eq!(loaded.overrides[0].product_name, "Meta");
+
+        // Clean up.
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_save_profile_with_positional_skip() {
+        let tmp = std::env::temp_dir().join("mosaic-test-save-skip");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let profile = PptxProfile {
+            schema_version: "2.0".to_string(),
+            profile_id: "test-skip".to_string(),
+            description: "test".to_string(),
+            thresholds: MatchThresholds::default(),
+            aliases: AliasConfig::default(),
+            sections: vec![],
+            table_families: vec![],
+            skip_tables: vec![SkipRule {
+                when: SkipCondition {
+                    table_title_contains_any: vec![],
+                    slide_title_contains: None,
+                    slide_index: Some(12),
+                    table_index: Some(0),
+                },
+                reason: "User skipped".to_string(),
+            }],
+            duplicate_section_pairs: vec![],
+            overrides: vec![],
+        };
+
+        save_profile(&tmp, &profile).expect("save should succeed");
+
+        let loaded = load_profile(&tmp, "test-skip").expect("reload should find profile");
+        assert_eq!(loaded.skip_tables.len(), 1);
+        assert_eq!(loaded.skip_tables[0].when.slide_index, Some(12));
+        assert_eq!(loaded.skip_tables[0].when.table_index, Some(0));
+        assert_eq!(loaded.skip_tables[0].reason, "User skipped");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

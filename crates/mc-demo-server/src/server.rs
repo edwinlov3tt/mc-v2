@@ -12,6 +12,7 @@ use axum::http::StatusCode;
 use axum::response::Json;
 use axum::routing::{get, post};
 use axum::Router;
+use serde::Deserialize;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
@@ -94,6 +95,7 @@ pub async fn start(port: u16, static_dir: Option<&str>) {
     let mut app = Router::new()
         .route("/api/registry", get(handle_registry))
         .route("/api/upload", post(handle_upload))
+        .route("/api/pptx-review", post(handle_pptx_review))
         .route("/api/health", get(handle_health))
         .route("/api/benchmarks", get(handle_benchmarks))
         // Template editor route deferred to Phase 7B.
@@ -198,6 +200,115 @@ async fn handle_upload(
     .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
 
     Ok(Json(response))
+}
+
+// ─── PPTX Review Endpoint ───────────────────────────────────────────────────
+
+/// A single review decision from the frontend.
+#[derive(Debug, Deserialize)]
+struct ReviewDecision {
+    slide_index: u32,
+    table_index: u32,
+    action: ReviewAction,
+}
+
+/// What the user decided for this table.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "action")]
+enum ReviewAction {
+    #[serde(rename = "confirm")]
+    Confirm {
+        product_name: String,
+        subproduct_name: String,
+        table_name: String,
+    },
+    #[serde(rename = "skip")]
+    Skip { reason: String },
+}
+
+/// POST /api/pptx-review — accepts user decisions for unmatched PPTX tables
+/// and writes them back to the profile as overrides/skip rules.
+async fn handle_pptx_review(
+    State(_state): State<Arc<AppState>>,
+    Json(decisions): Json<Vec<ReviewDecision>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if decisions.is_empty() {
+        return Ok(Json(
+            serde_json::json!({ "saved": 0, "profile": "lumina-charts" }),
+        ));
+    }
+
+    // Load existing profile (try demo/sample-data first, then cwd).
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let profile_dirs = [std::path::Path::new("demo/sample-data"), cwd.as_path()];
+    let (profile_dir, mut profile) = profile_dirs
+        .iter()
+        .find_map(|d| crate::pptx_profile::load_profile(d, "lumina-charts").map(|p| (*d, p)))
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            "lumina-charts profile not found".to_string(),
+        ))?;
+
+    let mut saved = 0usize;
+    for decision in &decisions {
+        match &decision.action {
+            ReviewAction::Confirm {
+                product_name,
+                subproduct_name,
+                table_name,
+            } => {
+                // Add override to profile (avoid duplicates for same position).
+                let already = profile.overrides.iter().any(|o| {
+                    o.slide_index == decision.slide_index && o.table_index == decision.table_index
+                });
+                if !already {
+                    profile.overrides.push(crate::pptx_profile::OverrideDef {
+                        slide_index: decision.slide_index,
+                        table_index: decision.table_index,
+                        product_name: product_name.clone(),
+                        subproduct_name: subproduct_name.clone(),
+                        table_name: table_name.clone(),
+                    });
+                }
+                saved += 1;
+            }
+            ReviewAction::Skip { reason } => {
+                // Add positional skip rule to profile.
+                let already = profile.skip_tables.iter().any(|s| {
+                    s.when.slide_index == Some(decision.slide_index)
+                        && s.when.table_index == Some(decision.table_index)
+                });
+                if !already {
+                    profile.skip_tables.push(crate::pptx_profile::SkipRule {
+                        when: crate::pptx_profile::SkipCondition {
+                            table_title_contains_any: vec![],
+                            slide_title_contains: None,
+                            slide_index: Some(decision.slide_index),
+                            table_index: Some(decision.table_index),
+                        },
+                        reason: reason.clone(),
+                    });
+                }
+                saved += 1;
+            }
+        }
+    }
+
+    // Atomic write back to profile.
+    crate::pptx_profile::save_profile(profile_dir, &profile)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    eprintln!(
+        "  [pptx-review] Saved {saved} decisions to profile ({})",
+        profile_dir
+            .join(".mosaic/pptx-profiles/lumina-charts.yaml")
+            .display()
+    );
+
+    Ok(Json(serde_json::json!({
+        "saved": saved,
+        "profile": "lumina-charts",
+    })))
 }
 
 /// Find the registry CSV file, checking several likely locations.

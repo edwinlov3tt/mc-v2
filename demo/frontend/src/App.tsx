@@ -70,6 +70,37 @@ interface WorkspaceSummary {
   summary_narratives: NarrativeOutput[]
 }
 
+interface ReviewCandidate {
+  product_name: string
+  subproduct_name: string
+  table_name: string
+  confidence: number
+  source: string
+}
+
+interface ReviewItem {
+  slide_index: number
+  table_index: number
+  slide_title: string | null
+  table_title: string | null
+  headers: string[]
+  row_count: number
+  first_row: string[]
+  status: string
+  best_guess: ReviewCandidate | null
+  alternatives: ReviewCandidate[]
+}
+
+interface PptxMatchSummary {
+  total_tables: number
+  auto_resolved: number
+  skipped: number
+  duplicates: number
+  review_needed: number
+  unmatched: number
+  review_items: ReviewItem[]
+}
+
 interface UploadResponse {
   schema_version: string
   processing_time_ms: number
@@ -80,6 +111,7 @@ interface UploadResponse {
   detections: Detection[]
   tactics: TacticGroup[]
   summary: WorkspaceSummary
+  pptx_match_summary?: PptxMatchSummary
 }
 
 type ViewState = 'upload' | 'loading' | 'results'
@@ -317,6 +349,16 @@ function ResultsView({
         </div>
       </div>
 
+      {/* PPTX match summary banner */}
+      {response.pptx_match_summary && (
+        <PptxMatchBanner summary={response.pptx_match_summary} />
+      )}
+
+      {/* PPTX review panel */}
+      {response.pptx_match_summary && response.pptx_match_summary.review_needed > 0 && (
+        <ReviewPanel summary={response.pptx_match_summary} />
+      )}
+
       {/* Summary narratives — cross-tactic overview */}
       {response.summary.summary_narratives.length > 0 && (
         <div className="mb-6">
@@ -479,6 +521,220 @@ function ROICalculator({ processingTimeMs }: { processingTimeMs: number }) {
         </div>
         <div className="mt-2 text-xs text-green-600">
           Zero hallucination risk &middot; No context window needed &middot; Deterministic &middot; Auditable
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PptxMatchBanner({ summary }: { summary: PptxMatchSummary }) {
+  return (
+    <div className="mb-6 p-4 bg-neutral-50 border border-neutral-200 rounded-lg">
+      <div className="flex items-center gap-3 text-sm flex-wrap">
+        <span className="font-semibold text-neutral-900">PPTX: {summary.total_tables} tables</span>
+        <span className="text-neutral-300">—</span>
+        <span className="text-green-700 font-medium">{summary.auto_resolved} matched</span>
+        {summary.skipped > 0 && <span className="text-neutral-400">{summary.skipped} skipped</span>}
+        {summary.duplicates > 0 && <span className="text-neutral-400">{summary.duplicates} duplicates</span>}
+        {summary.review_needed > 0 && <span className="text-amber-600 font-medium">{summary.review_needed} need review</span>}
+        {summary.unmatched > 0 && <span className="text-neutral-500">{summary.unmatched} unmatched</span>}
+      </div>
+    </div>
+  )
+}
+
+type ReviewDecisionMap = Record<string, { action: 'confirm' | 'skip'; candidate?: ReviewCandidate }>
+
+function ReviewPanel({ summary }: { summary: PptxMatchSummary }) {
+  const [decisions, setDecisions] = useState<ReviewDecisionMap>({})
+  const [saving, setSaving] = useState(false)
+  const [saveResult, setSaveResult] = useState<string | null>(null)
+
+  const itemKey = (item: ReviewItem) => `${item.slide_index}-${item.table_index}`
+
+  const setConfirm = (item: ReviewItem, candidate: ReviewCandidate) => {
+    setDecisions(prev => ({
+      ...prev,
+      [itemKey(item)]: { action: 'confirm', candidate },
+    }))
+  }
+
+  const setSkip = (item: ReviewItem) => {
+    setDecisions(prev => ({
+      ...prev,
+      [itemKey(item)]: { action: 'skip' },
+    }))
+  }
+
+  const handleSave = async () => {
+    const payload = summary.review_items
+      .filter(item => decisions[itemKey(item)])
+      .map(item => {
+        const dec = decisions[itemKey(item)]
+        if (dec.action === 'confirm' && dec.candidate) {
+          return {
+            slide_index: item.slide_index,
+            table_index: item.table_index,
+            action: 'confirm',
+            product_name: dec.candidate.product_name,
+            subproduct_name: dec.candidate.subproduct_name,
+            table_name: dec.candidate.table_name,
+          }
+        }
+        return {
+          slide_index: item.slide_index,
+          table_index: item.table_index,
+          action: 'skip',
+          reason: 'User skipped',
+        }
+      })
+
+    if (payload.length === 0) return
+
+    setSaving(true)
+    setSaveResult(null)
+    try {
+      const res = await fetch('/api/pptx-review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) {
+        const text = await res.text()
+        throw new Error(text || `HTTP ${res.status}`)
+      }
+      const data = await res.json()
+      setSaveResult(`Saved ${data.saved} decision(s) to profile. Re-upload to see updated results.`)
+    } catch (e) {
+      setSaveResult(`Error: ${e instanceof Error ? e.message : 'Save failed'}`)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const decidedCount = Object.keys(decisions).length
+
+  return (
+    <div className="mb-6 border border-amber-200 rounded-lg overflow-hidden">
+      <div className="px-5 py-4 bg-amber-50 border-b border-amber-200">
+        <h3 className="text-lg font-semibold text-amber-800">
+          PPTX Review — {summary.review_needed} table{summary.review_needed !== 1 ? 's' : ''} need confirmation
+        </h3>
+        <p className="text-sm text-amber-600 mt-1">
+          Confirm a mapping or skip each table. Save decisions to the profile so future uploads resolve automatically.
+        </p>
+      </div>
+
+      <div className="divide-y divide-neutral-200">
+        {summary.review_items.map((item) => {
+          const key = itemKey(item)
+          const dec = decisions[key]
+          const allCandidates = [
+            ...(item.best_guess ? [item.best_guess] : []),
+            ...item.alternatives.filter(a =>
+              !item.best_guess || a.product_name !== item.best_guess.product_name
+              || a.subproduct_name !== item.best_guess.subproduct_name
+              || a.table_name !== item.best_guess.table_name
+            ),
+          ].slice(0, 3)
+
+          return (
+            <div key={key} className={`px-5 py-4 ${dec?.action === 'skip' ? 'bg-neutral-50 opacity-60' : 'bg-white'}`}>
+              <div className="flex items-start justify-between mb-2">
+                <div>
+                  <span className="font-medium text-sm">
+                    Slide {item.slide_index}, Table {item.table_index}
+                  </span>
+                  {item.table_title && (
+                    <span className="text-neutral-500 text-sm ml-2">— {item.table_title}</span>
+                  )}
+                  <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
+                    {item.status}
+                  </span>
+                </div>
+              </div>
+
+              <div className="text-xs text-neutral-500 mb-2">
+                <span className="font-mono">{item.headers.slice(0, 6).join(', ')}{item.headers.length > 6 ? ', ...' : ''}</span>
+                <span className="ml-2">{item.row_count} row{item.row_count !== 1 ? 's' : ''}</span>
+              </div>
+              {item.first_row.length > 0 && (
+                <div className="text-xs text-neutral-400 font-mono mb-3 truncate">
+                  Row 1: {item.first_row.slice(0, 6).join(', ')}{item.first_row.length > 6 ? ', ...' : ''}
+                </div>
+              )}
+
+              <div className="flex items-center gap-2 flex-wrap">
+                {allCandidates.length > 0 ? (
+                  <select
+                    className="text-sm border border-neutral-300 rounded-lg px-3 py-1.5 bg-white min-w-[280px]"
+                    value={dec?.action === 'confirm' && dec.candidate
+                      ? `${dec.candidate.product_name}/${dec.candidate.subproduct_name}/${dec.candidate.table_name}`
+                      : ''}
+                    onChange={(e) => {
+                      const val = e.target.value
+                      if (!val) return
+                      const match = allCandidates.find(c =>
+                        `${c.product_name}/${c.subproduct_name}/${c.table_name}` === val
+                      )
+                      if (match) setConfirm(item, match)
+                    }}
+                  >
+                    <option value="">Select mapping...</option>
+                    {allCandidates.map((c, ci) => (
+                      <option
+                        key={ci}
+                        value={`${c.product_name}/${c.subproduct_name}/${c.table_name}`}
+                      >
+                        {c.product_name} / {c.subproduct_name} / {c.table_name} ({(c.confidence * 100).toFixed(0)}%)
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="text-sm text-neutral-400">No candidates found</span>
+                )}
+                <button
+                  onClick={() => setSkip(item)}
+                  className={`text-sm px-3 py-1.5 rounded-lg border transition-colors ${
+                    dec?.action === 'skip'
+                      ? 'bg-neutral-200 border-neutral-300 text-neutral-600'
+                      : 'border-neutral-300 text-neutral-500 hover:bg-neutral-100'
+                  }`}
+                >
+                  {dec?.action === 'skip' ? 'Skipped' : 'Skip'}
+                </button>
+                {dec?.action === 'confirm' && dec.candidate && (
+                  <span className="text-xs text-green-600">
+                    Confirmed: {dec.candidate.subproduct_name} / {dec.candidate.table_name}
+                  </span>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="px-5 py-4 bg-neutral-50 border-t border-neutral-200 flex items-center justify-between">
+        <span className="text-sm text-neutral-500">
+          {decidedCount} of {summary.review_items.length} decided
+        </span>
+        <div className="flex items-center gap-3">
+          {saveResult && (
+            <span className={`text-sm ${saveResult.startsWith('Error') ? 'text-red-600' : 'text-green-600'}`}>
+              {saveResult}
+            </span>
+          )}
+          <button
+            onClick={handleSave}
+            disabled={saving || decidedCount === 0}
+            className={`px-4 py-2 text-sm rounded-lg transition-colors ${
+              saving || decidedCount === 0
+                ? 'bg-neutral-200 text-neutral-400 cursor-not-allowed'
+                : 'bg-neutral-900 text-white hover:bg-neutral-700'
+            }`}
+          >
+            {saving ? 'Saving...' : 'Save All Decisions'}
+          </button>
         </div>
       </div>
     </div>

@@ -37,6 +37,47 @@ pub struct UploadResponse {
     pub tactics: Vec<TacticGroup>,
     /// Cross-tactic summary (Session 4).
     pub summary: WorkspaceSummary,
+    /// PPTX match results (None for CSV uploads).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pptx_match_summary: Option<PptxMatchSummary>,
+}
+
+/// Summary of PPTX cascade matching — sent to the frontend for the review panel.
+#[derive(Debug, Serialize)]
+pub struct PptxMatchSummary {
+    pub total_tables: usize,
+    pub auto_resolved: usize,
+    pub skipped: usize,
+    pub duplicates: usize,
+    pub review_needed: usize,
+    pub unmatched: usize,
+    /// Tables needing review (status != Matched && status != Skipped && status != Duplicate).
+    pub review_items: Vec<ReviewItem>,
+}
+
+/// A single table that needs user review.
+#[derive(Debug, Serialize)]
+pub struct ReviewItem {
+    pub slide_index: u32,
+    pub table_index: u32,
+    pub slide_title: Option<String>,
+    pub table_title: Option<String>,
+    pub headers: Vec<String>,
+    pub row_count: usize,
+    pub first_row: Vec<String>,
+    pub status: String,
+    pub best_guess: Option<ReviewCandidate>,
+    pub alternatives: Vec<ReviewCandidate>,
+}
+
+/// A candidate mapping for a review item dropdown.
+#[derive(Debug, Serialize)]
+pub struct ReviewCandidate {
+    pub product_name: String,
+    pub subproduct_name: String,
+    pub table_name: String,
+    pub confidence: f64,
+    pub source: String,
 }
 
 /// A parsed CSV from the zip archive.
@@ -235,7 +276,7 @@ pub fn process_upload(
 
     // Detect file type: PPTX or ZIP-of-CSVs, then extract accordingly.
     // PPTX uses the cascade matcher (ADR-0023); CSV zip uses the existing path.
-    let csvs = if crate::pptx::is_pptx(bytes) {
+    let (csvs, pptx_match_summary) = if crate::pptx::is_pptx(bytes) {
         let tables = crate::pptx::extract_pptx_tables(bytes)?;
         let slide_infos = crate::pptx::extract_slide_infos(bytes)?;
         let cwd = std::env::current_dir().unwrap_or_default();
@@ -267,9 +308,11 @@ pub fn process_upload(
             eprintln!("  [pptx] {w}");
         }
 
-        pptx_matches_to_csvs(&deck_result.matches)
+        let summary = build_pptx_match_summary(&deck_result);
+        let csvs = pptx_matches_to_csvs(&deck_result.matches);
+        (csvs, Some(summary))
     } else {
-        extract_zip(bytes)?
+        (extract_zip(bytes)?, None)
     };
 
     // Detect tactics against registry
@@ -316,7 +359,74 @@ pub fn process_upload(
         detections,
         tactics,
         summary,
+        pptx_match_summary,
     })
+}
+
+/// Build a `PptxMatchSummary` from cascade match results for the frontend review panel.
+fn build_pptx_match_summary(deck: &crate::pptx_match::DeckMatchResult) -> PptxMatchSummary {
+    use crate::pptx_match::MatchStatus;
+
+    let review_items: Vec<ReviewItem> = deck
+        .matches
+        .iter()
+        .filter(|m| {
+            m.status != MatchStatus::Matched
+                && m.status != MatchStatus::Skipped
+                && m.status != MatchStatus::Duplicate
+        })
+        .map(|m| {
+            let best_guess = m.mapping.as_ref().map(|mapping| ReviewCandidate {
+                product_name: mapping.product_name.clone(),
+                subproduct_name: mapping.subproduct_name.clone(),
+                table_name: mapping.table_name.clone(),
+                confidence: m.confidence,
+                source: m.evidence.fired_step.to_string(),
+            });
+
+            let alternatives: Vec<ReviewCandidate> = m
+                .alternatives
+                .iter()
+                .take(3)
+                .map(|(mapping, score)| ReviewCandidate {
+                    product_name: mapping.product_name.clone(),
+                    subproduct_name: mapping.subproduct_name.clone(),
+                    table_name: mapping.table_name.clone(),
+                    confidence: *score,
+                    source: m.evidence.fired_step.to_string(),
+                })
+                .collect();
+
+            let status_str = match m.status {
+                MatchStatus::Unresolved => "unresolved",
+                MatchStatus::ContinuationCandidate => "continuation_candidate",
+                _ => "uncertain",
+            };
+
+            ReviewItem {
+                slide_index: m.table.slide_index,
+                table_index: m.table.table_index,
+                slide_title: m.table.slide_title.clone(),
+                table_title: m.table.table_title.clone(),
+                headers: m.table.headers.clone(),
+                row_count: m.table.rows.len(),
+                first_row: m.table.rows.first().cloned().unwrap_or_default(),
+                status: status_str.to_string(),
+                best_guess,
+                alternatives,
+            }
+        })
+        .collect();
+
+    PptxMatchSummary {
+        total_tables: deck.stats.total_tables,
+        auto_resolved: deck.stats.auto_resolved,
+        skipped: deck.stats.skipped,
+        duplicates: deck.stats.duplicates,
+        review_needed: deck.stats.review_needed,
+        unmatched: deck.stats.unmatched,
+        review_items,
+    }
 }
 
 /// Phase 7A.2: write all narrative outputs from this upload to the

@@ -811,6 +811,12 @@ fn try_skip_rule(table: &ExtractedTable, profile: Option<&PptxProfile>) -> Optio
     let table_title = normalize_title(table.table_title.as_deref().unwrap_or(""));
 
     for rule in &prof.skip_tables {
+        // Check positional skip (from review UI save-back).
+        if let (Some(si), Some(ti)) = (rule.when.slide_index, rule.when.table_index) {
+            if si == table.slide_index && ti == table.table_index {
+                return Some(());
+            }
+        }
         // Check table_title_contains_any.
         for pattern in &rule.when.table_title_contains_any {
             let p = pattern.to_lowercase();
@@ -1573,6 +1579,8 @@ mod tests {
                 when: crate::pptx_profile::SkipCondition {
                     table_title_contains_any: vec!["Reach & Frequency".to_string()],
                     slide_title_contains: None,
+                    slide_index: None,
+                    table_index: None,
                 },
                 reason: "test".to_string(),
             }],
