@@ -2293,3 +2293,222 @@ fn test_explanation_group_no_match_produces_no_output() {
         "explanation group with no matches should produce no output"
     );
 }
+
+// ─── Phase 7A.5 Session 2: Context event evaluator function tests ────
+
+#[test]
+fn test_has_context_event_matches_current_period() {
+    use mc_narrative::context_events::ContextEvent;
+
+    let events = vec![ContextEvent {
+        id: "ce-2025-08-001".to_string(),
+        period: "Aug 2025".to_string(),
+        scope: BTreeMap::new(),
+        event_type: "budget_change".to_string(),
+        description: "Budget reduced 40%".to_string(),
+        source: None,
+        expires_at: None,
+    }];
+
+    // Template checks has_context_event('budget_change') == 1.
+    let templates = vec![make_template(
+        "test_ctx",
+        "has_context_event('budget_change') == 1",
+        "context matched",
+        None,
+        500,
+    )];
+
+    let cube = monthly_performance();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, Some(&events));
+
+    assert_eq!(
+        narratives.len(),
+        1,
+        "template should fire when context event matches"
+    );
+    assert_eq!(narratives[0].text, "context matched");
+}
+
+#[test]
+fn test_has_context_event_lookback_3_periods() {
+    use mc_narrative::context_events::ContextEvent;
+
+    // Event is for Jul_2025, current period is Aug_2025. Lookback=3 should match.
+    let events = vec![ContextEvent {
+        id: "ce-2025-07-001".to_string(),
+        period: "Jul 2025".to_string(),
+        scope: BTreeMap::new(),
+        event_type: "creative_pause".to_string(),
+        description: "3 creatives paused".to_string(),
+        source: None,
+        expires_at: None,
+    }];
+
+    // Lookback=1 should NOT match (current period only).
+    let templates_1 = vec![make_template(
+        "ctx_lb1",
+        "has_context_event('creative_pause') == 1",
+        "should not fire",
+        None,
+        500,
+    )];
+
+    // Lookback=3 should match.
+    let templates_3 = vec![make_template(
+        "ctx_lb3",
+        "has_context_event('creative_pause', 3) == 1",
+        "lookback matched",
+        None,
+        500,
+    )];
+
+    let cube = monthly_performance();
+    let n1 = mc_narrative::evaluate_all(&templates_1, &[cube.clone()], None, None, Some(&events));
+    let n3 = mc_narrative::evaluate_all(&templates_3, &[cube], None, None, Some(&events));
+
+    assert!(
+        n1.is_empty(),
+        "lookback=1 should not match prior period event"
+    );
+    assert_eq!(n3.len(), 1, "lookback=3 should match prior period event");
+}
+
+#[test]
+fn test_context_description_returns_first_match() {
+    use mc_narrative::context_events::ContextEvent;
+
+    let events = vec![ContextEvent {
+        id: "ce-2025-08-001".to_string(),
+        period: "Aug 2025".to_string(),
+        scope: BTreeMap::new(),
+        event_type: "budget_change".to_string(),
+        description: "Budget reduced 40% for Q1 close-out".to_string(),
+        source: None,
+        expires_at: None,
+    }];
+
+    let mut templates = vec![make_template(
+        "ctx_desc",
+        "has_context_event('budget_change') == 1",
+        "event: {event_desc}",
+        None,
+        500,
+    )];
+    templates[0].bindings.insert(
+        "event_desc".to_string(),
+        "context_description('budget_change')".to_string(),
+    );
+
+    let cube = monthly_performance();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, Some(&events));
+
+    assert_eq!(narratives.len(), 1);
+    assert!(
+        narratives[0].text.contains("Budget reduced 40%"),
+        "context_description should interpolate: got {}",
+        narratives[0].text
+    );
+}
+
+#[test]
+fn test_context_event_scope_subset_matching() {
+    use mc_narrative::context_events::ContextEvent;
+
+    // Event scoped to Channel=Targeted Display.
+    let events = vec![ContextEvent {
+        id: "ce-2025-08-001".to_string(),
+        period: "Aug 2025".to_string(),
+        scope: {
+            let mut s = BTreeMap::new();
+            s.insert("channel".to_string(), "Targeted Display".to_string());
+            s
+        },
+        event_type: "budget_change".to_string(),
+        description: "Budget cut".to_string(),
+        source: None,
+        expires_at: None,
+    }];
+
+    let templates = vec![make_template(
+        "ctx_scope",
+        "has_context_event('budget_change') == 1",
+        "scoped event matched",
+        None,
+        500,
+    )];
+
+    let cube = monthly_performance(); // subproduct = "Targeted Display"
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, Some(&events));
+
+    assert_eq!(
+        narratives.len(),
+        1,
+        "scoped event should match when scope is subset of eval scope"
+    );
+}
+
+#[test]
+fn test_context_events_absent_returns_zero() {
+    // No context events → has_context_event always returns 0.
+    let templates = vec![make_template(
+        "no_ctx",
+        "has_context_event('budget_change') == 1",
+        "should not fire",
+        None,
+        500,
+    )];
+
+    let cube = monthly_performance();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, None);
+
+    assert!(
+        narratives.is_empty(),
+        "no context events → template should not fire"
+    );
+}
+
+#[test]
+fn test_mc7051_unknown_period_warning() {
+    use mc_narrative::context_events::{validate_context_events, ContextEvent};
+    use mc_narrative::NarrativeError;
+
+    let events = vec![ContextEvent {
+        id: "ce-2099-01-001".to_string(),
+        period: "2099-01".to_string(),
+        scope: BTreeMap::new(),
+        event_type: "budget_change".to_string(),
+        description: "future event".to_string(),
+        source: None,
+        expires_at: None,
+    }];
+
+    let known_periods = vec!["Aug_2025", "Jul_2025"];
+    let errors = validate_context_events(&events, &known_periods);
+    let has_mc7051 = errors
+        .iter()
+        .any(|e| matches!(e, NarrativeError::ContextEventUnknownPeriod { .. }));
+    assert!(has_mc7051, "MC7051 should fire for unknown period");
+}
+
+#[test]
+fn test_mc7052_expires_before_period_warning() {
+    use mc_narrative::context_events::{validate_context_events, ContextEvent};
+    use mc_narrative::NarrativeError;
+
+    let events = vec![ContextEvent {
+        id: "ce-2025-08-001".to_string(),
+        period: "2025-08".to_string(),
+        scope: BTreeMap::new(),
+        event_type: "budget_change".to_string(),
+        description: "bad expires".to_string(),
+        source: None,
+        expires_at: Some("2025-07".to_string()),
+    }];
+
+    let errors = validate_context_events(&events, &[]);
+    let has_mc7052 = errors
+        .iter()
+        .any(|e| matches!(e, NarrativeError::ContextEventExpiresBeforePeriod { .. }));
+    assert!(has_mc7052, "MC7052 should fire when expires_at < period");
+}

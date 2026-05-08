@@ -97,6 +97,24 @@ pub enum NarrativeError {
         template_b: String,
     },
 
+    /// MC7051: Context event references a period not present in any loaded cube.
+    /// Per ADR-0022 Decision 10: warning-level.
+    #[error(
+        "MC7051: context event `{event_id}` references period `{period}` not in any loaded cube"
+    )]
+    ContextEventUnknownPeriod { event_id: String, period: String },
+
+    /// MC7052: Context event `expires_at` is before its `period`.
+    /// Per ADR-0022 Decision 10: warning-level.
+    #[error(
+        "MC7052: context event `{event_id}` expires_at `{expires_at}` is before period `{period}`"
+    )]
+    ContextEventExpiresBeforePeriod {
+        event_id: String,
+        period: String,
+        expires_at: String,
+    },
+
     /// MC7053: A `finding_id` group has no template with `explanation_priority >= 900`
     /// (missing fallback). Per ADR-0022 Decision 3: info-level nudge.
     #[error("MC7053: finding_id `{finding_id}` has no fallback template (priority >= 900)")]

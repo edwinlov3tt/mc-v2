@@ -65,3 +65,55 @@ pub fn read_context_events(dir: &std::path::Path) -> Vec<ContextEvent> {
         }
     }
 }
+
+/// Write context events to `.mosaic/context-events.yaml`.
+pub fn write_context_events(
+    dir: &std::path::Path,
+    events: &[ContextEvent],
+) -> Result<(), std::io::Error> {
+    let mosaic_dir = dir.join(".mosaic");
+    std::fs::create_dir_all(&mosaic_dir)?;
+    let path = mosaic_dir.join("context-events.yaml");
+    let file = ContextEventsFile {
+        schema_version: "1.0".to_string(),
+        events: events.to_vec(),
+    };
+    let yaml = serde_yaml::to_string(&file).map_err(|e| {
+        std::io::Error::new(std::io::ErrorKind::Other, format!("YAML serialize: {e}"))
+    })?;
+    std::fs::write(path, yaml)
+}
+
+/// Validate context events, returning MC7051/MC7052 diagnostics.
+///
+/// - MC7051: event references a period not in any loaded cube.
+/// - MC7052: event `expires_at` is before its `period`.
+pub fn validate_context_events(
+    events: &[ContextEvent],
+    known_periods: &[&str],
+) -> Vec<crate::NarrativeError> {
+    let mut errors = Vec::new();
+
+    for event in events {
+        // MC7051: period not in any loaded cube.
+        if !known_periods.is_empty() && !known_periods.contains(&event.period.as_str()) {
+            errors.push(crate::NarrativeError::ContextEventUnknownPeriod {
+                event_id: event.id.clone(),
+                period: event.period.clone(),
+            });
+        }
+
+        // MC7052: expires_at before period.
+        if let Some(ref expires) = event.expires_at {
+            if expires.as_str() < event.period.as_str() {
+                errors.push(crate::NarrativeError::ContextEventExpiresBeforePeriod {
+                    event_id: event.id.clone(),
+                    period: event.period.clone(),
+                    expires_at: expires.clone(),
+                });
+            }
+        }
+    }
+
+    errors
+}

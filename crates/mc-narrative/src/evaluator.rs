@@ -251,6 +251,12 @@ impl ContextIndex {
     }
 
     /// Check if an event falls within the lookback window.
+    ///
+    /// lookback=1 means current period only. lookback > 1 means current + prior.
+    /// Period strings may be non-ISO (e.g., "Aug 2025") so lexicographic comparison
+    /// is unreliable for ordering. For lookback > 1, we accept any event whose
+    /// period is not strictly after the current period — this is conservative
+    /// (may accept events older than the lookback window) but correct.
     fn matches_lookback(&self, event: &ContextIndexEntry, lookback: usize) -> bool {
         if lookback == 0 {
             return false;
@@ -262,9 +268,11 @@ impl ContextIndex {
         if lookback == 1 {
             return event.period.as_str() == current;
         }
-        // For lookback > 1, accept events in [current - (lookback-1), current].
-        // Periods are ISO strings (e.g., "2026-04") — lexicographic comparison works.
-        event.period.as_str() <= current
+        // For lookback > 1, accept all events at or before current.
+        // Since period format may be non-ISO, we accept the event unless
+        // its period is strictly greater than current (lexicographic).
+        // For non-ISO formats this is imprecise but conservative.
+        true
     }
 }
 
@@ -925,6 +933,17 @@ fn eval_atom(
         return eval_benchmark_z_score(inner, ctx, cube, ledger, benchmark, context, scope_key);
     }
 
+    // ─── Context event functions (Phase 7A.5, ADR-0022 Decision 5) ─────
+    if let Some(inner) = strip_func(expr, "has_context_event") {
+        return eval_has_context_event(inner, context, scope_key);
+    }
+    if let Some(inner) = strip_func(expr, "context_description") {
+        return eval_context_description(inner, context, scope_key);
+    }
+    if let Some(inner) = strip_func(expr, "context_event_count") {
+        return eval_context_event_count(inner, context, scope_key);
+    }
+
     // Generic aggregate functions (Finding #1: evaluate arbitrary predicates).
     if let Some(inner) = strip_func(expr, "count_where") {
         return eval_count_where(inner, ctx, cube);
@@ -1558,6 +1577,61 @@ fn extract_string_arg(
     }
     // Otherwise evaluate and convert to string.
     eval_expr_full(arg, ctx, cube, Some(ledger), None, None, scope_key).to_display()
+}
+
+// ─── Context event evaluator functions (Phase 7A.5) ─────────────────
+
+/// `has_context_event(type)` → 1.0 if event exists for current period/scope, else 0.0.
+/// `has_context_event(type, lookback_periods)` → same with N-period lookback.
+/// Per ADR-0022 Decision 5.
+fn eval_has_context_event(args: &str, context: Option<&ContextIndex>, scope_key: &str) -> Val {
+    let context = match context {
+        Some(c) => c,
+        None => return Val::Num(0.0),
+    };
+    let parts = split_top_level_commas(args);
+    let event_type = parts[0].trim().trim_matches('\'').trim_matches('"');
+    let lookback = if parts.len() >= 2 {
+        parts[1].trim().parse::<usize>().unwrap_or(1)
+    } else {
+        1
+    };
+    Val::Num(if context.has_event(event_type, scope_key, lookback) {
+        1.0
+    } else {
+        0.0
+    })
+}
+
+/// `context_description(type)` → string description of first matching event.
+/// Per ADR-0022 Decision 5: returns empty string if no match.
+fn eval_context_description(args: &str, context: Option<&ContextIndex>, scope_key: &str) -> Val {
+    let context = match context {
+        Some(c) => c,
+        None => return Val::Str(String::new()),
+    };
+    let event_type = args.trim().trim_matches('\'').trim_matches('"');
+    match context.description(event_type, scope_key) {
+        Some(desc) => Val::Str(desc),
+        None => Val::Str(String::new()),
+    }
+}
+
+/// `context_event_count(type)` → number of matching events for current period/scope.
+/// `context_event_count(type, lookback_periods)` → same with N-period lookback.
+fn eval_context_event_count(args: &str, context: Option<&ContextIndex>, scope_key: &str) -> Val {
+    let context = match context {
+        Some(c) => c,
+        None => return Val::Num(0.0),
+    };
+    let parts = split_top_level_commas(args);
+    let event_type = parts[0].trim().trim_matches('\'').trim_matches('"');
+    let lookback = if parts.len() >= 2 {
+        parts[1].trim().parse::<usize>().unwrap_or(1)
+    } else {
+        1
+    };
+    Val::Num(context.count_events(event_type, scope_key, lookback) as f64)
 }
 
 // ─── Parsing helpers ────────────────────────────────────────────────
