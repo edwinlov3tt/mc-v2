@@ -428,6 +428,28 @@ pub fn read_benchmark_library(model_dir: &Path) -> Result<BenchmarkLibrary, Benc
     Ok(lib)
 }
 
+/// MC7042: Check if the benchmark library is stale relative to the ledger.
+///
+/// Compares the ledger's latest `report_period` against the library's
+/// `period_range.to`. If the ledger has newer entries, the library is stale
+/// and should be rebuilt with `mc model build-benchmarks`.
+pub fn check_staleness(lib: &BenchmarkLibrary, ledger: &[LedgerEntry]) -> Option<BenchmarkError> {
+    let ledger_latest = ledger
+        .iter()
+        .filter_map(|e| e.report_period.as_deref())
+        .max();
+
+    if let Some(latest) = ledger_latest {
+        if latest > lib.period_range.to.as_str() {
+            return Some(BenchmarkError::StaleLibrary {
+                ledger_latest: latest.to_string(),
+                library_latest: lib.period_range.to.clone(),
+            });
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

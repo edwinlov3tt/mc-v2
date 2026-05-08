@@ -126,6 +126,13 @@ pub fn run(cmd: NarrateTrendsCommand) -> i32 {
     let model_dir = model_file.parent().unwrap_or(std::path::Path::new("."));
     let benchmark_lib = mc_narrative::benchmark::read_benchmark_library(model_dir).ok();
 
+    // MC7042: check for stale benchmark library.
+    if let Some(ref lib) = benchmark_lib {
+        if let Some(warning) = mc_narrative::benchmark::check_staleness(lib, &ledger_entries) {
+            eprintln!("[warn {warning}]");
+        }
+    }
+
     // 7. Evaluate templates with ledger + benchmark context.
     let ledger_slice = if ledger_entries.is_empty() {
         None

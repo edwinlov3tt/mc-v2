@@ -1803,3 +1803,205 @@ fn test_benchmark_templates_skip_without_library() {
         );
     }
 }
+
+// ─── Phase 7A.4 Session 4: Diagnostic code tests ────────────────────
+
+#[test]
+fn test_mc7042_stale_library_warning() {
+    use mc_narrative::benchmark::{check_staleness, BenchmarkLibrary, PeriodRange};
+    use mc_narrative::ledger::{LedgerEntry, NarrativeRecord};
+    use std::collections::BTreeMap;
+
+    let lib = BenchmarkLibrary {
+        schema_version: "1.0".to_string(),
+        generated_at: "2026-05-01T10:00:00Z".to_string(),
+        workspace: "test".to_string(),
+        period_range: PeriodRange {
+            from: "2025-11".to_string(),
+            to: "2026-04".to_string(),
+        },
+        period_count: 6,
+        benchmarks: BTreeMap::new(),
+    };
+
+    // Ledger has an entry for 2026-05 — newer than library's 2026-04.
+    let ledger = vec![LedgerEntry {
+        schema_version: "1.0".to_string(),
+        ledger_entry_id: "test".to_string(),
+        generated_at: "2026-05-07T10:00:00Z".to_string(),
+        model: "model.yaml".to_string(),
+        model_hash: "sha256:test".to_string(),
+        report_period: Some("2026-05".to_string()),
+        scope: BTreeMap::new(),
+        narrative: NarrativeRecord {
+            id: "test".to_string(),
+            section: None,
+            severity: "info".to_string(),
+            text: "test".to_string(),
+            template_id: "test".to_string(),
+            notability_score: None,
+        },
+        evidence: BTreeMap::new(),
+        benchmarks_referenced: vec![],
+    }];
+
+    let warning = check_staleness(&lib, &ledger);
+    assert!(warning.is_some(), "should detect stale library");
+    let msg = warning.unwrap().to_string();
+    assert!(msg.contains("MC7042"), "should contain MC7042 code: {msg}");
+    assert!(
+        msg.contains("2026-05"),
+        "should mention ledger latest: {msg}"
+    );
+    assert!(
+        msg.contains("2026-04"),
+        "should mention library latest: {msg}"
+    );
+
+    // Not stale when ledger period <= library range.
+    let ledger_current = vec![LedgerEntry {
+        schema_version: "1.0".to_string(),
+        ledger_entry_id: "test2".to_string(),
+        generated_at: "2026-04-15T10:00:00Z".to_string(),
+        model: "model.yaml".to_string(),
+        model_hash: "sha256:test".to_string(),
+        report_period: Some("2026-04".to_string()),
+        scope: BTreeMap::new(),
+        narrative: NarrativeRecord {
+            id: "test".to_string(),
+            section: None,
+            severity: "info".to_string(),
+            text: "test".to_string(),
+            template_id: "test".to_string(),
+            notability_score: None,
+        },
+        evidence: BTreeMap::new(),
+        benchmarks_referenced: vec![],
+    }];
+    assert!(
+        check_staleness(&lib, &ledger_current).is_none(),
+        "should not warn when ledger period <= library range"
+    );
+}
+
+#[test]
+fn test_mc7041_missing_metric_returns_zero() {
+    use mc_narrative::benchmark::{BenchmarkLibrary, MetricBenchmark, PeriodRange};
+    use std::collections::BTreeMap;
+
+    // Library with only Impressions, no CTR.
+    let mut benchmarks = BTreeMap::new();
+    benchmarks.insert(
+        "Impressions::channel=Targeted Display".to_string(),
+        MetricBenchmark {
+            metric: "Impressions".to_string(),
+            scope: {
+                let mut s = BTreeMap::new();
+                s.insert("channel".to_string(), "Targeted Display".to_string());
+                s
+            },
+            p10: 10000.0,
+            p25: 20000.0,
+            p50: 50000.0,
+            p75: 80000.0,
+            p90: 100000.0,
+            mean: 50000.0,
+            stddev: 25000.0,
+            sample_count: 6,
+        },
+    );
+    let lib = BenchmarkLibrary {
+        schema_version: "1.0".to_string(),
+        generated_at: "2026-05-07T10:00:00Z".to_string(),
+        workspace: "test".to_string(),
+        period_range: PeriodRange {
+            from: "2025-11".to_string(),
+            to: "2026-04".to_string(),
+        },
+        period_count: 6,
+        benchmarks,
+    };
+
+    // Template asks for CTR benchmark which doesn't exist — should return 0.
+    let templates = vec![mc_narrative::TemplateDefinition {
+        id: "mc7041_test".to_string(),
+        family: vec!["display-like".to_string()],
+        severity: mc_narrative::Severity::Info,
+        table_types: vec!["Monthly Performance".to_string()],
+        sort_order: 0,
+        when: "benchmark_p50('CTR') > 0".to_string(),
+        template: "should not render".to_string(),
+        bindings: BTreeMap::new(),
+        deduplicate: false,
+        format: BTreeMap::new(),
+        notability_base: None,
+    }];
+
+    let cube = monthly_performance();
+    // CTR not in benchmark library → benchmark_p50('CTR') returns 0.0 → template skips.
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, Some(&lib));
+    assert!(
+        narratives.iter().all(|n| n.template_id != "mc7041_test"),
+        "template should skip when metric not found in benchmark library (MC7041)"
+    );
+}
+
+#[test]
+fn test_benchmark_lookup_performance() {
+    use mc_narrative::benchmark::{BenchmarkLibrary, MetricBenchmark, PeriodRange};
+    use mc_narrative::BenchmarkIndex;
+    use std::collections::BTreeMap;
+    use std::time::Instant;
+
+    // Build a library with 1000 metrics to verify O(1) lookup.
+    let mut benchmarks = BTreeMap::new();
+    for i in 0..1000 {
+        benchmarks.insert(
+            format!("Metric{i}::channel=Targeted Display"),
+            MetricBenchmark {
+                metric: format!("Metric{i}"),
+                scope: {
+                    let mut s = BTreeMap::new();
+                    s.insert("channel".to_string(), "Targeted Display".to_string());
+                    s
+                },
+                p10: 0.0,
+                p25: 0.0,
+                p50: i as f64,
+                p75: 0.0,
+                p90: 0.0,
+                mean: 0.0,
+                stddev: 0.0,
+                sample_count: 6,
+            },
+        );
+    }
+    let lib = BenchmarkLibrary {
+        schema_version: "1.0".to_string(),
+        generated_at: "2026-05-07T10:00:00Z".to_string(),
+        workspace: "test".to_string(),
+        period_range: PeriodRange {
+            from: "2025-11".to_string(),
+            to: "2026-04".to_string(),
+        },
+        period_count: 6,
+        benchmarks,
+    };
+
+    let index = BenchmarkIndex::build(&lib);
+
+    let start = Instant::now();
+    let iterations = 10000;
+    for i in 0..iterations {
+        let metric = format!("Metric{}", i % 1000);
+        let _ = index.lookup(&metric, "channel=Targeted Display");
+    }
+    let elapsed = start.elapsed();
+    let per_lookup_ns = elapsed.as_nanos() / iterations;
+
+    assert!(
+        per_lookup_ns < 1_000_000, // < 1ms per lookup
+        "benchmark lookup should be < 1ms; got {per_lookup_ns}ns"
+    );
+    eprintln!("[perf] benchmark lookup: {per_lookup_ns}ns avg over {iterations} lookups");
+}
