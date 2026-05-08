@@ -1,6 +1,6 @@
 # ADR-0022 — Phase 7A.5: Explanation Chains + Context Events
 
-**Status:** Proposed  
+**Status:** Accepted (2026-05-08)  
 **Date:** 2026-05-08  
 **Author:** Edwin Lovett III  
 **Depends on:** ADR-0020 (Phase 7A narrative engine plan), Phase 7A.4 (benchmark aggregation)  
