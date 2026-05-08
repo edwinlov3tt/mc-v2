@@ -96,12 +96,7 @@ pub async fn start(port: u16, static_dir: Option<&str>) {
         .route("/api/upload", post(handle_upload))
         .route("/api/health", get(handle_health))
         .route("/api/benchmarks", get(handle_benchmarks))
-        .route(
-            "/template-editor",
-            get(|| async {
-                axum::response::Html(include_str!("../../../demo/template-editor-prototype.html"))
-            }),
-        )
+        // Template editor route deferred to Phase 7B.
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // 50MB
         .layer(cors)
         .with_state(state);
