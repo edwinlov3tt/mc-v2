@@ -1383,6 +1383,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mc-diagnostics"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "mc-drivers"
 version = "0.1.0"
 dependencies = [
