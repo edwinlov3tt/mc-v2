@@ -1,8 +1,9 @@
-//! Diagnostic codes MC7001–MC7032 for the narrative template engine.
+//! Diagnostic codes MC7001–MC7044 for the narrative template engine.
 //!
 //! Phase 7A.1: MC7001–MC7010 (template validation).
 //! Phase 7A.2: MC7020–MC7025 (interpretation ledger) — in `ledger.rs`.
 //! Phase 7A.3: MC7030–MC7032 (cross-period analysis).
+//! Phase 7A.4: MC7040–MC7044 (benchmark aggregation) — in `benchmark.rs`.
 
 use thiserror::Error;
 

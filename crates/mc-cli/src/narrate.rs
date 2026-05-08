@@ -123,8 +123,14 @@ pub fn run_captured(cmd: NarrateCommand) -> (i32, String) {
         return (0, render_empty(cmd.format));
     }
 
-    // 5. Evaluate templates.
-    let narratives = mc_narrative::evaluate_all(&templates, &cube_data, None);
+    // 5. Load benchmark library if present (Phase 7A.4).
+    let model_file = std::path::Path::new(&cmd.path);
+    let model_dir = model_file.parent().unwrap_or(std::path::Path::new("."));
+    let benchmark_lib = mc_narrative::benchmark::read_benchmark_library(model_dir).ok();
+
+    // 6. Evaluate templates.
+    let narratives =
+        mc_narrative::evaluate_all(&templates, &cube_data, None, benchmark_lib.as_ref());
 
     // 6. Phase 7A.2: write ledger entries if --save-ledger is set.
     if cmd.save_ledger && !narratives.is_empty() {

@@ -38,6 +38,7 @@ pub fn build_tactic_groups(
     detections: &[DetectionResult],
     ids: &mut IdGen,
     templates: &[TemplateDefinition],
+    benchmark: Option<&mc_narrative::BenchmarkLibrary>,
 ) -> Vec<TacticGroup> {
     // Group by (product, subproduct).
     let mut groups: BTreeMap<(String, String), Vec<(usize, &ParsedCsv)>> = BTreeMap::new();
@@ -73,8 +74,8 @@ pub fn build_tactic_groups(
             }
         }
 
-        // Evaluate narratives for this tactic's cubes.
-        let narratives = narrative::evaluate_all(templates, &cubes);
+        // Evaluate narratives for this tactic's cubes (with benchmark if available).
+        let narratives = narrative::evaluate_all_with_benchmark(templates, &cubes, None, benchmark);
 
         tactic_groups.push(TacticGroup {
             product: product.clone(),

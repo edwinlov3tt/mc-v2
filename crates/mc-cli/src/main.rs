@@ -22,6 +22,7 @@ use mc_model::{
     ModelPath, Severity, ValidatedModel, ValidationError, SCHEMA_VERSION,
 };
 
+mod build_benchmarks;
 mod diff;
 mod ledger_export;
 mod loader;
@@ -30,6 +31,7 @@ mod narrate;
 mod narrate_trends;
 mod query;
 mod query_ledger;
+mod show_benchmarks;
 mod sweep;
 mod tessera;
 mod trace;
@@ -90,6 +92,14 @@ fn main() {
                     },
                     "ledger-export" => match ledger_export::parse(&args[3..]) {
                         Ok(cmd) => std::process::exit(ledger_export::run(cmd)),
+                        Err(e) => fatal(&e),
+                    },
+                    "build-benchmarks" => match build_benchmarks::parse(&args[3..]) {
+                        Ok(cmd) => std::process::exit(build_benchmarks::run(cmd)),
+                        Err(e) => fatal(&e),
+                    },
+                    "show-benchmarks" => match show_benchmarks::parse(&args[3..]) {
+                        Ok(cmd) => std::process::exit(show_benchmarks::run(cmd)),
                         Err(e) => fatal(&e),
                     },
                     _ => {} // Fall through to legacy parse

@@ -121,13 +121,26 @@ pub fn run(cmd: NarrateTrendsCommand) -> i32 {
         return 0;
     }
 
-    // 6. Evaluate templates with ledger context.
+    // 6. Load benchmark library if present (Phase 7A.4).
+    let model_file = std::path::Path::new(&cmd.path);
+    let model_dir = model_file.parent().unwrap_or(std::path::Path::new("."));
+    let benchmark_lib = mc_narrative::benchmark::read_benchmark_library(model_dir).ok();
+
+    // MC7042: check for stale benchmark library.
+    if let Some(ref lib) = benchmark_lib {
+        if let Some(warning) = mc_narrative::benchmark::check_staleness(lib, &ledger_entries) {
+            eprintln!("[warn {warning}]");
+        }
+    }
+
+    // 7. Evaluate templates with ledger + benchmark context.
     let ledger_slice = if ledger_entries.is_empty() {
         None
     } else {
         Some(ledger_entries.as_slice())
     };
-    let narratives = mc_narrative::evaluate_all(&templates, &cube_data, ledger_slice);
+    let narratives =
+        mc_narrative::evaluate_all(&templates, &cube_data, ledger_slice, benchmark_lib.as_ref());
 
     // 7. Optionally filter to trend templates only.
     let narratives = if cmd.trends_only {
