@@ -71,10 +71,19 @@ pub async fn start(port: u16, static_dir: Option<&str>) {
         }
     };
 
+    // ADR-0023 Decision 9: build IDF table once at startup, share via Arc.
+    let idf_table = Arc::new(crate::pptx_match::IdfTable::build(&registry));
+    println!(
+        "  {GREEN}IDF table built:{RESET} {BOLD}{}{RESET} tokens from {} registry entries",
+        idf_table.registry_size(),
+        registry.len()
+    );
+
     let state = Arc::new(AppState {
         registry,
         templates,
         benchmark_library,
+        idf_table,
     });
 
     let cors = CorsLayer::new()
@@ -189,6 +198,7 @@ async fn handle_upload(
         &state.templates,
         &bytes,
         state.benchmark_library.as_ref(),
+        &state.idf_table,
     )
     .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
 

@@ -18,6 +18,9 @@ pub struct AppState {
     pub templates: Vec<TemplateDefinition>,
     /// Phase 7A.4: workspace-local benchmark library (loaded at startup if present).
     pub benchmark_library: Option<mc_narrative::BenchmarkLibrary>,
+    /// Pre-computed IDF weights for PPTX cascade matcher (ADR-0023 Decision 9).
+    /// Built once at startup, shared via Arc.
+    pub idf_table: std::sync::Arc<crate::pptx_match::IdfTable>,
 }
 
 /// Response from POST /api/upload.
@@ -226,12 +229,45 @@ pub fn process_upload(
     templates: &[TemplateDefinition],
     bytes: &[u8],
     benchmark: Option<&mc_narrative::BenchmarkLibrary>,
+    idf_table: &crate::pptx_match::IdfTable,
 ) -> Result<UploadResponse, String> {
     let mut timer = PipelineTimer::start();
 
     // Detect file type: PPTX or ZIP-of-CSVs, then extract accordingly.
+    // PPTX uses the cascade matcher (ADR-0023); CSV zip uses the existing path.
     let csvs = if crate::pptx::is_pptx(bytes) {
-        crate::pptx::extract_pptx(bytes)?
+        let tables = crate::pptx::extract_pptx_tables(bytes)?;
+        let slide_infos = crate::pptx::extract_slide_infos(bytes)?;
+        let cwd = std::env::current_dir().unwrap_or_default();
+        // Try loading profile from demo/sample-data first, then cwd.
+        let profile_dirs = [std::path::Path::new("demo/sample-data"), cwd.as_path()];
+        let profile = profile_dirs
+            .iter()
+            .find_map(|d| crate::pptx_profile::load_profile(d, "lumina-charts"));
+
+        let deck_result = crate::pptx_match::match_deck_with_slides(
+            &tables,
+            &slide_infos,
+            registry,
+            profile.as_ref(),
+            idf_table,
+        );
+
+        // Print diagnostic summary to terminal.
+        eprintln!(
+            "  [pptx] {} tables: {} matched, {} skipped, {} review, {} dup, {} unmatched",
+            deck_result.stats.total_tables,
+            deck_result.stats.auto_resolved,
+            deck_result.stats.skipped,
+            deck_result.stats.review_needed,
+            deck_result.stats.duplicates,
+            deck_result.stats.unmatched,
+        );
+        for w in &deck_result.coverage_warnings {
+            eprintln!("  [pptx] {w}");
+        }
+
+        pptx_matches_to_csvs(&deck_result.matches)
     } else {
         extract_zip(bytes)?
     };
@@ -286,6 +322,42 @@ pub fn process_upload(
 /// Phase 7A.2: write all narrative outputs from this upload to the
 /// interpretation ledger. Uses the current working directory as the
 /// workspace root.
+/// Convert PPTX cascade match results into `ParsedCsv` for the existing pipeline.
+///
+/// **INVARIANT (ADR-0023 Decision 8):** only `status = Matched` results pass through.
+/// Debug builds assert this.
+fn pptx_matches_to_csvs(results: &[crate::pptx_match::MatchResult]) -> Vec<ParsedCsv> {
+    use crate::pptx_match::{sanitize_for_filename, MatchStatus};
+
+    let matched: Vec<&crate::pptx_match::MatchResult> = results
+        .iter()
+        .filter(|r| r.status == MatchStatus::Matched)
+        .collect();
+
+    // Debug-assert the ingestion invariant.
+    debug_assert!(
+        matched.iter().all(|r| r.status == MatchStatus::Matched),
+        "ingestion invariant violated: non-Matched result in pipeline"
+    );
+
+    matched
+        .into_iter()
+        .filter_map(|r| {
+            let mapping = r.mapping.as_ref()?;
+            let filename = format!(
+                "report-{}-{}.csv",
+                sanitize_for_filename(&mapping.subproduct_name),
+                sanitize_for_filename(&mapping.table_name),
+            );
+            Some(ParsedCsv {
+                filename,
+                headers: r.table.headers.clone(),
+                rows: r.table.rows.clone(),
+            })
+        })
+        .collect()
+}
+
 fn write_demo_ledger(advertiser: &str, tactics: &[TacticGroup]) {
     use mc_narrative::ledger;
     use std::collections::BTreeMap;
