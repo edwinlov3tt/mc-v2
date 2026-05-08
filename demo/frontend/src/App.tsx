@@ -203,7 +203,7 @@ function UploadView({
         <input
           id="file-input"
           type="file"
-          accept=".zip,.pptx"
+          accept=".zip,.pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/zip"
           className="hidden"
           onChange={onFileSelect}
         />
