@@ -65,15 +65,21 @@ pub fn build_context(cube: &CubeData) -> Ctx {
     ctx.insert("period_count".into(), Val::Num(period_count as f64));
 
     // Per-measure aggregates.
+    // Sort entries chronologically to ensure "current" = latest period and
+    // "prev" = second-latest, regardless of source row order (PPTX tables
+    // may be newest-first while CSVs are typically oldest-first).
     for (measure, entries) in &cube.values {
-        let n = entries.len();
+        let mut sorted: Vec<&CellEntry> = entries.iter().collect();
+        sorted.sort_by(|a, b| date_sort_key(&a.category).cmp(&date_sort_key(&b.category)));
+
+        let n = sorted.len();
         if n == 0 {
             continue;
         }
 
-        // current (last) and prev (second-to-last).
-        let current = entries[n - 1].value;
-        let prev = if n >= 2 { entries[n - 2].value } else { 0.0 };
+        // current (last = latest chronologically) and prev (second-to-last).
+        let current = sorted[n - 1].value;
+        let prev = if n >= 2 { sorted[n - 2].value } else { 0.0 };
         ctx.insert(format!("current.{measure}"), Val::Num(current));
         ctx.insert(format!("prev.{measure}"), Val::Num(prev));
 
@@ -81,20 +87,20 @@ pub fn build_context(cube: &CubeData) -> Ctx {
         if !ctx.contains_key("current.period_name") {
             ctx.insert(
                 "current.period_name".into(),
-                Val::Str(readable_name(&entries[n - 1].category)),
+                Val::Str(readable_name(&sorted[n - 1].category)),
             );
             ctx.insert(
                 "current_period".into(),
-                Val::Str(readable_name(&entries[n - 1].category)),
+                Val::Str(readable_name(&sorted[n - 1].category)),
             );
             if n >= 2 {
                 ctx.insert(
                     "prev.period_name".into(),
-                    Val::Str(readable_name(&entries[n - 2].category)),
+                    Val::Str(readable_name(&sorted[n - 2].category)),
                 );
                 ctx.insert(
                     "prev_period".into(),
-                    Val::Str(readable_name(&entries[n - 2].category)),
+                    Val::Str(readable_name(&sorted[n - 2].category)),
                 );
             }
         }
@@ -192,6 +198,70 @@ fn infer_dimension_name(table_name: &str) -> &'static str {
     } else {
         "Category"
     }
+}
+
+/// Convert a sanitized date category (e.g., "Jul_2025", "Aug_2025",
+/// "01-2026", "05-2026") to a sortable numeric key so entries sort
+/// chronologically regardless of source row order.
+///
+/// Handles: "Mon_YYYY" (sanitized), "MM-YYYY" (raw), "MM/YYYY",
+/// "YYYY-MM", "YYYY-MM-DD", "WW/DD/YYYY" (weekly). Falls back to
+/// the original string for non-date categories (Device, City, etc.),
+/// which preserves insertion order.
+fn date_sort_key(category: &str) -> String {
+    // Try "Mon_YYYY" (sanitized dates like "Jul_2025")
+    let month_names = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    if category.len() >= 8 {
+        for (i, name) in month_names.iter().enumerate() {
+            if category.starts_with(name) {
+                if let Some(year_str) = category.get(4..) {
+                    let year = year_str.trim_start_matches('_');
+                    if year.len() == 4 && year.chars().all(|c| c.is_ascii_digit()) {
+                        return format!("{year}-{:02}", i + 1);
+                    }
+                }
+            }
+        }
+    }
+
+    // Try "MM-YYYY" or "MM/YYYY" (raw dates like "05-2026")
+    if category.len() >= 7 {
+        let sep = if category.contains('-') {
+            '-'
+        } else if category.contains('/') {
+            '/'
+        } else {
+            '\0'
+        };
+        if sep != '\0' {
+            let parts: Vec<&str> = category.splitn(2, sep).collect();
+            if parts.len() == 2 {
+                let (a, b) = (parts[0], parts[1]);
+                // MM-YYYY
+                if a.len() <= 2 && b.len() == 4 {
+                    if let (Ok(month), Ok(_year)) = (a.parse::<u32>(), b.parse::<u32>()) {
+                        if (1..=12).contains(&month) {
+                            return format!("{b}-{month:02}");
+                        }
+                    }
+                }
+                // YYYY-MM
+                if a.len() == 4 && b.len() <= 2 {
+                    if let (Ok(_year), Ok(month)) = (a.parse::<u32>(), b.parse::<u32>()) {
+                        if (1..=12).contains(&month) {
+                            return format!("{a}-{month:02}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Non-date categories: return as-is (preserves insertion order).
+    category.to_string()
 }
 
 /// Get the resolved dimension name for a cube data source.
