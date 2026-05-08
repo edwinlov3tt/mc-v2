@@ -930,7 +930,11 @@ fn print_mixed_errors(
     sort_diagnostics(&mut diags);
 
     // Phase 7A.6: render rich diagnostics with source context for text output.
+    // Only use the rich renderer when a diagnostic actually has a SourceSpan.
+    // Spanless diagnostics fall back to the existing flat format so they don't
+    // lose the `in:`, `pointer:`, `suggestion:` lines (audit finding B1).
     if let (OutputFormat::Text, Some(map)) = (format, loc_map) {
+        let mut spanless: Vec<&Diagnostic> = Vec::new();
         for (diag, err) in diags.iter().zip(errs.iter()) {
             let mut rich = diag.to_rich(Some(map));
 
@@ -946,18 +950,28 @@ fn print_mixed_errors(
                 }
             }
 
-            let rendered = mc_diagnostics::render_diagnostic(
-                &rich,
-                |file_path| {
-                    if file_path == map.file_path() {
-                        Some(map.source_text().to_string())
-                    } else {
-                        std::fs::read_to_string(file_path).ok()
-                    }
-                },
-                detect_color_mode(),
-            );
-            eprint!("{}", rendered);
+            // Only use rich rendering when we actually have a source span.
+            // Otherwise fall back to flat format to preserve information density.
+            if rich.primary_span.is_some() {
+                let rendered = mc_diagnostics::render_diagnostic(
+                    &rich,
+                    |file_path| {
+                        if file_path == map.file_path() {
+                            Some(map.source_text().to_string())
+                        } else {
+                            std::fs::read_to_string(file_path).ok()
+                        }
+                    },
+                    detect_color_mode(),
+                );
+                eprint!("{}", rendered);
+            } else {
+                spanless.push(diag);
+            }
+        }
+        if !spanless.is_empty() {
+            let owned: Vec<Diagnostic> = spanless.into_iter().cloned().collect();
+            eprint!("{}", diagnostics_to_text(&owned));
         }
         return;
     }
