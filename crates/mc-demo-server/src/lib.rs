@@ -9,6 +9,8 @@ pub mod banner;
 pub mod ingest;
 pub mod narrative;
 pub mod pptx;
+pub mod pptx_match;
+pub mod pptx_profile;
 pub mod registry;
 pub mod server;
 pub mod timing;

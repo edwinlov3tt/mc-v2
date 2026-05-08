@@ -4,6 +4,7 @@
 //! so they can flow through the same detection/ingest pipeline as CSV uploads.
 //! PPTX files are ZIP archives containing XML slides at `ppt/slides/slideN.xml`.
 
+use crate::pptx_match::ExtractedTable;
 use crate::upload::ParsedCsv;
 use std::io::Cursor;
 
@@ -62,6 +63,253 @@ pub fn extract_pptx(bytes: &[u8]) -> Result<Vec<ParsedCsv>, String> {
     }
 
     Ok(csvs)
+}
+
+/// Extract tables from a PPTX file as enriched `ExtractedTable` structs
+/// with slide_index, table_index, slide_title, and table_title metadata.
+///
+/// This is the richer extraction path used by the cascade matcher. The
+/// original `extract_pptx` is a thin wrapper for backwards compat.
+pub fn extract_pptx_tables(bytes: &[u8]) -> Result<Vec<ExtractedTable>, String> {
+    let cursor = Cursor::new(bytes);
+    let mut archive =
+        zip::ZipArchive::new(cursor).map_err(|e| format!("invalid PPTX/zip file: {e}"))?;
+
+    // Collect slide entry names and sort by slide number.
+    let mut slide_names: Vec<String> = Vec::new();
+    for i in 0..archive.len() {
+        let file = archive
+            .by_index(i)
+            .map_err(|e| format!("zip entry {i}: {e}"))?;
+        let name = file.name().to_string();
+        if name.starts_with("ppt/slides/slide") && name.ends_with(".xml") {
+            slide_names.push(name);
+        }
+    }
+
+    slide_names.sort_by_key(|name| {
+        let num_part = name
+            .trim_start_matches("ppt/slides/slide")
+            .trim_end_matches(".xml");
+        num_part.parse::<u32>().unwrap_or(0)
+    });
+
+    let mut tables = Vec::new();
+
+    for slide_name in &slide_names {
+        let mut file = archive
+            .by_name(slide_name)
+            .map_err(|e| format!("reading {slide_name}: {e}"))?;
+
+        let mut content = String::new();
+        use std::io::Read;
+        file.read_to_string(&mut content)
+            .map_err(|e| format!("reading {slide_name}: {e}"))?;
+
+        let slide_num = slide_name
+            .trim_start_matches("ppt/slides/slide")
+            .trim_end_matches(".xml")
+            .parse::<u32>()
+            .unwrap_or(0);
+
+        let extracted = extract_enriched_tables(&content, slide_num);
+        tables.extend(extracted);
+    }
+
+    Ok(tables)
+}
+
+/// Extract enriched tables from a single slide's XML content.
+fn extract_enriched_tables(xml: &str, slide_num: u32) -> Vec<ExtractedTable> {
+    let mut results = Vec::new();
+
+    let slide_title = extract_slide_title(xml);
+    let slide_title_opt = if slide_title.is_empty() {
+        None
+    } else {
+        Some(slide_title.clone())
+    };
+
+    // Split on <a:tbl to find table blocks.
+    let table_splits: Vec<&str> = xml.split("<a:tbl").collect();
+
+    for (table_idx, table_chunk) in table_splits.iter().enumerate().skip(1) {
+        let table_xml = if let Some(end_pos) = table_chunk.find("</a:tbl>") {
+            &table_chunk[..end_pos]
+        } else {
+            continue;
+        };
+
+        let raw_rows = extract_table_rows(table_xml);
+        if raw_rows.is_empty() {
+            continue;
+        }
+
+        let rows = clean_table_rows(raw_rows);
+        if rows.is_empty() {
+            continue;
+        }
+
+        let headers = rows[0].clone();
+        let data_rows: Vec<Vec<String>> = rows[1..].to_vec();
+
+        if headers.is_empty() || data_rows.is_empty() {
+            continue;
+        }
+
+        // Try to find a table-specific title (text nearest above this table).
+        // For now, use the slide-level title logic. The table_title is the
+        // nearest text shape that looks like a table heading.
+        let table_title = extract_table_specific_title(xml, table_idx);
+
+        results.push(ExtractedTable {
+            slide_index: slide_num,
+            table_index: (table_idx - 1) as u32, // 0-based
+            slide_title: slide_title_opt.clone(),
+            table_title: if table_title.is_empty() {
+                slide_title_opt.clone()
+            } else {
+                Some(table_title)
+            },
+            headers,
+            rows: data_rows,
+        });
+    }
+
+    results
+}
+
+/// Extract a table-specific title — look for text content between the previous
+/// table (or start of slide) and this table's position.
+fn extract_table_specific_title(xml: &str, table_idx: usize) -> String {
+    // Find the position of the nth <a:tbl in the XML.
+    let mut search_from = 0;
+    for _ in 0..table_idx {
+        if let Some(pos) = xml[search_from..].find("<a:tbl") {
+            search_from += pos + 6;
+        } else {
+            return String::new();
+        }
+    }
+
+    // Look backwards from the table position for text in shapes.
+    let before = &xml[..search_from.saturating_sub(6)];
+
+    // Find the last text shape before this table.
+    let mut candidates: Vec<String> = Vec::new();
+
+    // Look at <p:sp> shapes in the region just before this table.
+    // Use the last 2000 chars as the search window.
+    let window_start = before.len().saturating_sub(2000);
+    let window = &before[window_start..];
+
+    for shape_tag in ["<p:sp>", "<p:sp "] {
+        let shape_splits: Vec<&str> = window.split(shape_tag).collect();
+        for chunk in shape_splits.iter().skip(1) {
+            let end = chunk.find("</p:sp>").unwrap_or(chunk.len());
+            let shape_xml = &chunk[..end];
+            let text = collect_text_runs(shape_xml);
+            let trimmed = text.trim().to_string();
+
+            if trimmed.len() > 3
+                && !trimmed
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c == '.' || c == '%')
+                && !trimmed.eq_ignore_ascii_case("title")
+            {
+                candidates.push(trimmed);
+            }
+        }
+    }
+
+    // Return the last candidate (closest to the table), with XML entity decoding.
+    candidates
+        .iter()
+        .filter(|t| t.len() > 5)
+        .last()
+        .map(|t| decode_xml_entities(t))
+        .unwrap_or_default()
+}
+
+/// Extract slide-level metadata for ALL slides (including those without tables).
+/// Used by the cascade matcher for section divider detection.
+pub fn extract_slide_infos(bytes: &[u8]) -> Result<Vec<crate::pptx_match::SlideInfo>, String> {
+    let cursor = Cursor::new(bytes);
+    let mut archive =
+        zip::ZipArchive::new(cursor).map_err(|e| format!("invalid PPTX/zip file: {e}"))?;
+
+    let mut slide_names: Vec<String> = Vec::new();
+    for i in 0..archive.len() {
+        let file = archive
+            .by_index(i)
+            .map_err(|e| format!("zip entry {i}: {e}"))?;
+        let name = file.name().to_string();
+        if name.starts_with("ppt/slides/slide") && name.ends_with(".xml") {
+            slide_names.push(name);
+        }
+    }
+
+    slide_names.sort_by_key(|name| {
+        let num_part = name
+            .trim_start_matches("ppt/slides/slide")
+            .trim_end_matches(".xml");
+        num_part.parse::<u32>().unwrap_or(0)
+    });
+
+    let mut infos = Vec::new();
+
+    for slide_name in &slide_names {
+        let mut file = archive
+            .by_name(slide_name)
+            .map_err(|e| format!("reading {slide_name}: {e}"))?;
+
+        let mut content = String::new();
+        use std::io::Read;
+        file.read_to_string(&mut content)
+            .map_err(|e| format!("reading {slide_name}: {e}"))?;
+
+        let slide_num = slide_name
+            .trim_start_matches("ppt/slides/slide")
+            .trim_end_matches(".xml")
+            .parse::<u32>()
+            .unwrap_or(0);
+
+        // For slide_infos, extract ALL text from the slide (not just pre-table text).
+        let title = extract_all_slide_text(&content);
+        let title_opt = if title.is_empty() { None } else { Some(title) };
+
+        // Check if slide has data tables (tables with >1 column and data rows).
+        let table_splits: Vec<&str> = content.split("<a:tbl").collect();
+        let mut has_data_tables = false;
+        for chunk in table_splits.iter().skip(1) {
+            let table_xml = if let Some(end) = chunk.find("</a:tbl>") {
+                &chunk[..end]
+            } else {
+                continue;
+            };
+            let rows = extract_table_rows(table_xml);
+            if rows.len() > 1 {
+                // Has header + data rows
+                let cleaned = clean_table_rows(rows);
+                if cleaned.len() > 1 && cleaned[0].len() > 1 {
+                    has_data_tables = true;
+                    break;
+                }
+            }
+        }
+
+        // Count text lines (approximate).
+        let text_count = content.matches("<a:t>").count() + content.matches("<a:t ").count();
+
+        infos.push(crate::pptx_match::SlideInfo {
+            slide_index: slide_num,
+            title: title_opt,
+            has_data_tables,
+            text_line_count: text_count,
+        });
+    }
+
+    Ok(infos)
 }
 
 /// Check if a byte slice looks like a PPTX file (ZIP with ppt/slides/ entries).
@@ -156,6 +404,53 @@ fn extract_tables_from_slide(xml: &str, slide_num: u32) -> Vec<ParsedCsv> {
 /// Extract the slide title — looks for text in shapes that precede tables.
 /// Targets section header text like "Display Ads - Overall Performance" or
 /// "Display - Product Performance".
+/// Extract the most prominent text from a slide — searches all shape text,
+/// not just pre-table content. Used for divider detection where slides may
+/// have no tables at all.
+fn extract_all_slide_text(xml: &str) -> String {
+    let mut candidates: Vec<String> = Vec::new();
+
+    for shape_tag in ["<p:sp>", "<p:sp "] {
+        let shape_splits: Vec<&str> = xml.split(shape_tag).collect();
+        for chunk in shape_splits.iter().skip(1) {
+            let end = chunk.find("</p:sp>").unwrap_or(chunk.len());
+            let shape_xml = &chunk[..end];
+            let text = collect_text_runs(shape_xml);
+            let trimmed = text.trim().to_string();
+
+            if trimmed.len() > 2
+                && !trimmed
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c == '.' || c == '%' || c == '/')
+                && !trimmed.eq_ignore_ascii_case("title")
+            {
+                candidates.push(trimmed);
+            }
+        }
+    }
+
+    // Decode XML entities in all candidates.
+    let candidates: Vec<String> = candidates
+        .into_iter()
+        .map(|c| decode_xml_entities(&c))
+        .collect();
+
+    // Prefer a title that contains " - " (section header pattern like "Display Ads - Overall Performance")
+    if let Some(sectioned) = candidates.iter().filter(|t| t.contains(" - ")).last() {
+        return sectioned.clone();
+    }
+
+    // Then prefer the shortest substantial candidate (likely the section name
+    // rather than a longer description paragraph).
+    let mut sorted = candidates;
+    sorted.sort_by_key(|t| t.len());
+    sorted
+        .iter()
+        .find(|t| t.len() >= 3 && t.len() < 80)
+        .cloned()
+        .unwrap_or_default()
+}
+
 fn extract_slide_title(xml: &str) -> String {
     // Strategy: find text content from <p:sp> shapes that appear before any <a:tbl>.
     // We look for the most descriptive title text (longest non-trivial text).
@@ -207,6 +502,12 @@ fn extract_slide_title(xml: &str) -> String {
             candidate_titles.push(trimmed);
         }
     }
+
+    // Decode XML entities in all candidates.
+    let candidate_titles: Vec<String> = candidate_titles
+        .into_iter()
+        .map(|c| decode_xml_entities(&c))
+        .collect();
 
     // Prefer a title that contains " - " (section header pattern) or is the longest.
     if let Some(sectioned) = candidate_titles.iter().filter(|t| t.contains(" - ")).last() {

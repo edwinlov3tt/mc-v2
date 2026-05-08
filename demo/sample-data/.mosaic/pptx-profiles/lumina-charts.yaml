@@ -1,0 +1,285 @@
+schema_version: "2.0"
+profile_id: lumina-charts
+description: |
+  PulseMax / Lumina Charts PPTX export template. Modular product-section
+  blocks; each section combines an Overview slide, optional Monthly,
+  Campaign, Tactic, Creative, Geo, Device, Demographic, and Conversion
+  tables in varying combinations.
+
+thresholds:
+  auto_match_min_score: 0.30
+  auto_match_min_margin: 0.05
+  auto_match_min_relative_margin: 0.20
+  flag_for_review_min_score: 0.20
+
+aliases:
+  tactic:
+    - input: "Link Clicks"
+      canonical: "Link Click"
+    - input: "Geo-Fencing w/ Foot Traffic"
+      canonical: "Geofencing with Foot Traffic"
+    - input: "Geo-Fencing w/Foot Traffic"
+      canonical: "Geofencing with Foot Traffic"
+    - input: "Sponsored Social Mentions"
+      expands_to:
+        - "Sponsored Social Mentions - Link Click"
+        - "Sponsored Social Mentions - Awareness"
+        - "Sponsored Social Mentions - ThruPlay"
+  header:
+    - input: "campaign"
+      canonical: "campaign name"
+    - input: "platform"
+      canonical: "platform"
+  registry:
+    - canonical:
+        product_name: "Meta"
+        subproduct_name: "Facebook - Link Click"
+      duplicates_of:
+        - product_name: "Meta"
+          subproduct_name: "Link Click"
+
+sections:
+  - id: meta
+    title_matchers:
+      - equals: "Meta"
+      - starts_with: "Facebook Overview"
+    propagates:
+      product_name: "Meta"
+      default_subproduct: "Facebook - Link Click"
+
+  - id: addressable_display
+    title_matchers:
+      - equals: "Addressable Display"
+      - starts_with: "Addressable Display Overview"
+    propagates:
+      product_name: "Blended Tactics"
+      default_subproduct: "Addressable Display"
+
+  - id: targeted_display
+    title_matchers:
+      - equals: "Targeted Display"
+      - starts_with: "Targeted Display Overview"
+    propagates:
+      product_name: "Blended Tactics"
+      default_subproduct: "Targeted Display"
+
+  - id: targeted_native
+    title_matchers:
+      - equals: "Targeted Native"
+      - starts_with: "Targeted Native Overview"
+    propagates:
+      product_name: "Blended Tactics"
+      default_subproduct: "Targeted Native"
+
+  - id: geofencing
+    title_matchers:
+      - equals_any:
+          - "Geo-Fencing w/Foot Traffic"
+          - "Geo-Fencing w/ Foot Traffic"
+      - starts_with: "Geo-Fencing w/Foot Traffic Overview"
+    propagates:
+      product_name: "Addressable Solutions"
+      default_subproduct: "Geofencing with Foot Traffic"
+
+  - id: search_intent_media
+    title_matchers:
+      - equals_any:
+          - "Search & Intent Media"
+          - "SEM"
+      - contains: "Search Engine Marketing"
+    propagates:
+      product_name: "SEM"
+      default_subproduct: "SEM"
+
+  - id: sponsored_social
+    title_matchers:
+      - equals: "Sponsored Social Mentions"
+    propagates:
+      product_name: "SSM"
+      default_subproduct: "Sponsored Social Mentions - Link Click"
+
+  - id: email_marketing
+    title_matchers:
+      - equals_any:
+          - "E-Mail Marketing"
+          - "E-mail Marketing"
+      - starts_with: "E-Mail Marketing Overview"
+    propagates:
+      product_name: "Email Marketing"
+      default_subproduct: "1:1 Marketing"
+
+  - id: streaming_tv
+    title_matchers:
+      - equals_any:
+          - "Streaming TV"
+          - "STV"
+    propagates:
+      product_name: "STV"
+      default_subproduct: "Streaming TV OTT"
+
+  - id: call_performance
+    title_matchers:
+      - equals: "Call Performance"
+    propagates:
+      product_name: "Call Performance"
+      default_subproduct: "Call Recording"
+
+table_families:
+  - id: monthly_performance
+    title_matchers:
+      - contains: "Monthly Performance"
+    table_name: "Monthly Performance"
+
+  - id: campaign_performance
+    title_matchers:
+      - contains: "Campaign Performance"
+    table_name: "Campaign Performance"
+
+  - id: tactic_performance
+    title_matchers:
+      - contains: "Tactic Performance"
+    table_name: "Tactic Performance"
+
+  - id: creative_performance
+    title_matchers:
+      - contains_any:
+          - "Creative Performance"
+          - "Creative By Name"
+          - "Creative By Size"
+    table_name: "Creative Performance"
+
+  - id: geo_performance
+    title_matchers:
+      - contains_any:
+          - "Geo Performance"
+          - "Performance by City"
+          - "Performance by Zip"
+    table_name: "Geo Performance"
+
+  - id: device_performance
+    title_matchers:
+      - contains: "Device Performance"
+    table_name: "Device Performance"
+
+  - id: demographic_performance
+    title_matchers:
+      - contains: "Demographic Performance"
+    table_name: "Demographic Performance"
+
+  - id: conversion_performance
+    title_matchers:
+      - contains: "Conversion Performance"
+    table_name: "Conversion Performance"
+
+  - id: ad_set_performance
+    title_matchers:
+      - contains: "Ad Set Performance"
+    table_name: "Ad Set Performance"
+
+  - id: ad_performance
+    title_matchers:
+      - contains: "Ad Performance"
+    table_name: "Ad Performance"
+
+  - id: age_performance
+    title_matchers:
+      - contains_any:
+          - "Age Breakdown"
+          - "Age Performance"
+          - "Performance by Age"
+    table_name: "Demographic Performance"
+
+  - id: gender_performance
+    title_matchers:
+      - contains_any:
+          - "Gender Breakdown"
+          - "Gender Performance"
+    table_name: "Demographic Performance"
+
+  - id: region_performance
+    title_matchers:
+      - contains_any:
+          - "Region Performance"
+          - "DMA Performance"
+          - "Performance by Metro"
+    table_name: "Geo Performance"
+
+  - id: platform_performance
+    title_matchers:
+      - contains: "Platform Performance"
+    table_name: "Platform Performance"
+
+  - id: weekly_performance
+    title_matchers:
+      - contains: "Weekly Performance"
+    table_name: "Monthly Performance"
+
+  - id: station_performance
+    title_matchers:
+      - contains: "Station Performance"
+    table_name: "Station Performance"
+
+  - id: post_interactions
+    title_matchers:
+      - contains_any:
+          - "Post Interactions"
+          - "Post Engagements"
+    table_name: "Ad Performance"
+
+  - id: video_performance
+    title_matchers:
+      - contains: "Video Performance"
+    table_name: "Video Performance"
+
+  - id: conversion_events
+    title_matchers:
+      - contains: "Conversion Events"
+    table_name: "Conversion Performance"
+
+  - id: placement_performance
+    title_matchers:
+      - contains_any:
+          - "Placements"
+          - "Placement Performance"
+    table_name: "Campaign Performance"
+
+  - id: product_overview_pivot
+    title_matchers:
+      - contains_any:
+          - "Product Performance"
+          - "Product Performance (Display)"
+          - "Product Performance (Video)"
+    use_first_column_lookup: true
+    first_column_header_in:
+      - "Product"
+      - "Tactic"
+    table_name: "Campaign Performance"
+
+skip_tables:
+  - when:
+      table_title_contains_any:
+        - "Reach & Frequency"
+        - "Reach &amp; Frequency"
+        - "Search Impression Share"
+        - "CTR Last 6 Months"
+        - "VCR Last 6 Months"
+        - "Top KPIs"
+        - "Key Performance Indicators"
+    reason: "summary or chart-only slides; not data tables"
+
+  - when:
+      slide_title_contains: "Calls by Day of Week"
+    reason: "chart aggregation, not a tactic table"
+
+duplicate_section_pairs:
+  - sections:
+      - search_intent_media
+    matches_section_titles:
+      - "SEM"
+    canonical: search_intent_media
+    note: |
+      Some Lumina decks contain both a Search & Intent Media block and
+      a separate SEM block with the same data. Keep the Search & Intent
+      Media occurrence as canonical.
+
+overrides: []
