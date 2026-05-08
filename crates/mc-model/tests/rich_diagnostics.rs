@@ -207,3 +207,62 @@ fn test_lint_diagnostic_renders_with_underline() {
         "should underline 'Time' (4 chars)"
     );
 }
+
+// -----------------------------------------------------------------------
+// 10. JSON envelope includes rendered field
+// -----------------------------------------------------------------------
+#[test]
+fn test_json_envelope_includes_rendered_field() {
+    let yaml = "name: Revenue\nbody: \"Spend / Clicks\"";
+    let map = LocationMap::build("model.yaml", yaml);
+
+    let diag = Diagnostic {
+        code: "MC2015",
+        severity: Severity::Error,
+        path: ModelPath::new("model.yaml", "/body", "measures.CPC.body"),
+        message: "measure not found".into(),
+        suggestion: None,
+    };
+
+    let json = mc_model::diagnostics_to_json_rich(&[diag], Some(&map));
+    assert!(
+        json.contains("\"rendered\":"),
+        "rendered field must be present"
+    );
+    assert!(
+        json.contains("\"schema_version\": \"1.0\""),
+        "schema_version must be present"
+    );
+    assert!(
+        json.contains("\"code\": \"MC2015\""),
+        "code must be present"
+    );
+    // rendered field contains the Rust-style output (escaped in JSON)
+    assert!(
+        json.contains("error[MC2015]"),
+        "rendered should contain the diagnostic header"
+    );
+}
+
+// -----------------------------------------------------------------------
+// 11. JSON envelope rendered field stability: structured fields present
+// -----------------------------------------------------------------------
+#[test]
+fn test_rendered_field_stability_contract_structured_fields_present() {
+    let diag = Diagnostic {
+        code: "MC2001",
+        severity: Severity::Error,
+        path: ModelPath::new("model.yaml", "/dimensions/0", "dimensions.Time"),
+        message: "duplicate name".into(),
+        suggestion: Some("rename one of them".into()),
+    };
+
+    let json = mc_model::diagnostics_to_json_rich(&[diag], None);
+    // Structured fields are the stable API
+    assert!(json.contains("\"code\": \"MC2001\""));
+    assert!(json.contains("\"severity\": \"Error\""));
+    assert!(json.contains("\"message\": \"duplicate name\""));
+    assert!(json.contains("\"suggestion\": \"rename one of them\""));
+    // rendered is present but non-stable
+    assert!(json.contains("\"rendered\":"));
+}

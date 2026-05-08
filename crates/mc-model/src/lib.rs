@@ -50,8 +50,8 @@ use std::path::Path;
 
 pub use compile::{compile, CompiledCube, ModelRefs};
 pub use diagnostic::{
-    diagnostics_to_json, diagnostics_to_text, sort_diagnostics, Diagnostic, DiagnosticCode,
-    ModelPath, Severity, SCHEMA_VERSION,
+    diagnostics_to_json, diagnostics_to_json_rich, diagnostics_to_text, sort_diagnostics,
+    Diagnostic, DiagnosticCode, ModelPath, Severity, SCHEMA_VERSION,
 };
 pub use error::{Error, ParseError, ParseErrorKind, Span, ValidationError};
 pub use formula::parse_expression;

@@ -17,9 +17,10 @@
 use mc_core::{CellValue, ScalarValue, TraceNode, TraceOp, WriteIntent, WritebackRequest};
 use mc_fixtures::{build_acme_cube, coord, write_canonical_inputs, AcmeRefs};
 use mc_model::{
-    apply_canonical_inputs, apply_fixture, diagnostics_to_json, diagnostics_to_text, inspect_json,
-    inspect_text_with_diagnostics, lint_with_file, resolve_inputs, sort_diagnostics, Diagnostic,
-    ModelPath, Severity, ValidatedModel, ValidationError, SCHEMA_VERSION,
+    apply_canonical_inputs, apply_fixture, diagnostics_to_json, diagnostics_to_json_rich,
+    diagnostics_to_text, inspect_json, inspect_text_with_diagnostics, lint_with_file,
+    resolve_inputs, sort_diagnostics, Diagnostic, ModelPath, Severity, ValidatedModel,
+    ValidationError, SCHEMA_VERSION,
 };
 
 mod build_benchmarks;
@@ -479,7 +480,16 @@ fn run_lint(path: &str, format: OutputFormat, deny_warnings: bool) {
                 }
             }
         }
-        OutputFormat::Json => print!("{}", diagnostics_to_json(&diags)),
+        OutputFormat::Json => {
+            // Phase 7A.6: JSON output with rendered field.
+            // TODO(saphyr): replace LocationMap with single-pass parser.
+            if let Ok(yaml) = std::fs::read_to_string(path) {
+                let loc_map = mc_model::LocationMap::build(path, &yaml);
+                print!("{}", diagnostics_to_json_rich(&diags, Some(&loc_map)));
+            } else {
+                print!("{}", diagnostics_to_json(&diags));
+            }
+        }
     }
     if deny_warnings && !diags.is_empty() {
         std::process::exit(1);
@@ -975,6 +985,12 @@ fn print_mixed_errors(
             );
             eprint!("{}", rendered);
         }
+        return;
+    }
+
+    // Phase 7A.6: JSON output with rendered field when loc_map is available.
+    if let (OutputFormat::Json, Some(map)) = (format, loc_map) {
+        print!("{}", diagnostics_to_json_rich(&diags, Some(map)));
         return;
     }
 

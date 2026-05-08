@@ -276,6 +276,87 @@ pub fn diagnostics_to_json(diagnostics: &[Diagnostic]) -> String {
     out
 }
 
+/// Render diagnostics as JSON with a `rendered` field per ADR-0024 Decision 6.
+///
+/// Like [`diagnostics_to_json`] but each diagnostic gains a `rendered` field
+/// containing the Rust-style human-readable output. The `rendered` field is
+/// **non-stable** — agents must consume structured fields, not rendered text.
+///
+/// Per ADR-0024 Decision 6: structured fields are the stable API; `rendered`
+/// is best-effort, may change format between versions.
+pub fn diagnostics_to_json_rich(
+    diagnostics: &[Diagnostic],
+    loc_map: Option<&crate::location::LocationMap>,
+) -> String {
+    let mut out = String::new();
+    out.push_str("{\n  \"schema_version\": \"");
+    out.push_str(SCHEMA_VERSION);
+    out.push_str("\",\n  \"diagnostics\": [");
+    if diagnostics.is_empty() {
+        out.push_str("]\n}\n");
+        return out;
+    }
+    out.push('\n');
+    for (i, d) in diagnostics.iter().enumerate() {
+        let rich = d.to_rich(loc_map);
+        let rendered = mc_diagnostics::render_diagnostic(
+            &rich,
+            |file_path| {
+                if let Some(map) = loc_map {
+                    if file_path == map.file_path() {
+                        return Some(map.source_text().to_string());
+                    }
+                }
+                std::fs::read_to_string(file_path).ok()
+            },
+            mc_diagnostics::ColorMode::Never,
+        );
+        write_diagnostic_json_rich(&mut out, d, &rendered, 4);
+        if i + 1 < diagnostics.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push_str("  ]\n}\n");
+    out
+}
+
+fn write_diagnostic_json_rich(out: &mut String, d: &Diagnostic, rendered: &str, indent: usize) {
+    let pad = " ".repeat(indent);
+    let pad2 = " ".repeat(indent + 2);
+    out.push_str(&pad);
+    out.push_str("{\n");
+    out.push_str(&pad2);
+    out.push_str("\"code\": ");
+    write_json_string(out, d.code);
+    out.push_str(",\n");
+    out.push_str(&pad2);
+    out.push_str("\"severity\": ");
+    write_json_string(out, d.severity.label());
+    out.push_str(",\n");
+    out.push_str(&pad2);
+    out.push_str("\"path\": ");
+    write_path_json(out, &d.path, indent + 2);
+    out.push_str(",\n");
+    out.push_str(&pad2);
+    out.push_str("\"message\": ");
+    write_json_string(out, &d.message);
+    out.push_str(",\n");
+    out.push_str(&pad2);
+    out.push_str("\"suggestion\": ");
+    match &d.suggestion {
+        Some(s) => write_json_string(out, s),
+        None => out.push_str("null"),
+    }
+    out.push_str(",\n");
+    out.push_str(&pad2);
+    out.push_str("\"rendered\": ");
+    write_json_string(out, rendered);
+    out.push('\n');
+    out.push_str(&pad);
+    out.push('}');
+}
+
 fn write_diagnostic_json(out: &mut String, d: &Diagnostic, indent: usize) {
     let pad = " ".repeat(indent);
     let pad2 = " ".repeat(indent + 2);
