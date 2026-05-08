@@ -479,6 +479,9 @@ mod tests {
                 text: "test narrative".to_string(),
                 template_id: "test".to_string(),
                 notability_score: None,
+                finding_id: None,
+                skipped_explanations: Vec::new(),
+                rejected_explanations: Vec::new(),
             },
             evidence: evidence
                 .iter()

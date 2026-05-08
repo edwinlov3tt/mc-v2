@@ -1390,6 +1390,9 @@ fn test_ledger_query_performance_1000_entries() {
                 text: "perf test".to_string(),
                 template_id: template_id.to_string(),
                 notability_score: None,
+                finding_id: None,
+                skipped_explanations: Vec::new(),
+                rejected_explanations: Vec::new(),
             },
             evidence: {
                 let mut m = BTreeMap::new();
@@ -1865,6 +1868,9 @@ fn test_mc7042_stale_library_warning() {
             text: "test".to_string(),
             template_id: "test".to_string(),
             notability_score: None,
+            finding_id: None,
+            skipped_explanations: Vec::new(),
+            rejected_explanations: Vec::new(),
         },
         evidence: BTreeMap::new(),
         benchmarks_referenced: vec![],
@@ -1899,6 +1905,9 @@ fn test_mc7042_stale_library_warning() {
             text: "test".to_string(),
             template_id: "test".to_string(),
             notability_score: None,
+            finding_id: None,
+            skipped_explanations: Vec::new(),
+            rejected_explanations: Vec::new(),
         },
         evidence: BTreeMap::new(),
         benchmarks_referenced: vec![],
@@ -2872,5 +2881,147 @@ fn test_explanation_fallback_fires_without_context_event() {
             .iter()
             .map(|n| &n.template_id)
             .collect::<Vec<_>>()
+    );
+}
+
+// ─── Phase 7A.5 Session 5: Ledger integration + performance tests ────
+
+#[test]
+fn test_ledger_records_finding_id_and_explanations() {
+    use mc_narrative::ledger::narratives_to_ledger_entries;
+
+    // Create explanation chain with one rejected, one winner, one skipped.
+    let templates = vec![
+        make_template(
+            "explain_rejected",
+            "current.Impressions < 0",
+            "rejected",
+            Some("finding_ledger"),
+            100,
+        ),
+        make_template(
+            "explain_winner",
+            "current.Impressions > 0",
+            "winner",
+            Some("finding_ledger"),
+            200,
+        ),
+        make_template(
+            "explain_skipped",
+            "current.Impressions > 0",
+            "skipped",
+            Some("finding_ledger"),
+            999,
+        ),
+    ];
+
+    let cube = monthly_performance();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, None);
+    assert_eq!(narratives.len(), 1);
+
+    let scope = BTreeMap::new();
+    let entries = narratives_to_ledger_entries(
+        &narratives,
+        "test-model.yaml",
+        "abc123",
+        "2026-05-08T00:00:00Z",
+        Some("Aug_2025"),
+        &scope,
+    );
+
+    assert_eq!(entries.len(), 1);
+    let entry = &entries[0];
+    assert_eq!(
+        entry.narrative.finding_id.as_deref(),
+        Some("finding_ledger")
+    );
+    assert_eq!(
+        entry.narrative.skipped_explanations,
+        vec!["explain_skipped"]
+    );
+    assert_eq!(
+        entry.narrative.rejected_explanations,
+        vec!["explain_rejected"]
+    );
+}
+
+#[test]
+fn test_ledger_backwards_compat_without_finding_id() {
+    use mc_narrative::ledger::narratives_to_ledger_entries;
+
+    // Standalone template — no finding_id.
+    let templates = vec![make_template(
+        "standalone",
+        "current.Impressions > 0",
+        "standalone text",
+        None,
+        500,
+    )];
+
+    let cube = monthly_performance();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, None);
+    assert_eq!(narratives.len(), 1);
+
+    let scope = BTreeMap::new();
+    let entries = narratives_to_ledger_entries(
+        &narratives,
+        "test-model.yaml",
+        "abc123",
+        "2026-05-08T00:00:00Z",
+        None,
+        &scope,
+    );
+
+    assert_eq!(entries.len(), 1);
+    let entry = &entries[0];
+    assert!(entry.narrative.finding_id.is_none());
+    assert!(entry.narrative.skipped_explanations.is_empty());
+    assert!(entry.narrative.rejected_explanations.is_empty());
+}
+
+#[test]
+fn test_explanation_chain_performance_under_5ms() {
+    use std::time::Instant;
+
+    // Build 50 templates across 10 explanation groups (5 per group).
+    let mut templates = Vec::new();
+    for group in 0..10 {
+        let fid = format!("finding_{group}");
+        for prio_idx in 0..5 {
+            let priority = (prio_idx + 1) * 100;
+            let id = format!("tmpl_{group}_{prio_idx}");
+            let when = if prio_idx < 4 {
+                "current.Impressions < 0" // won't fire
+            } else {
+                "current.Impressions > 0" // fires
+            };
+            templates.push(make_template(
+                &id,
+                when,
+                &format!("output {group} {prio_idx}"),
+                Some(&fid),
+                priority as u32,
+            ));
+        }
+    }
+
+    let cube = monthly_performance();
+
+    // Warm up.
+    let _ = mc_narrative::evaluate_all(&templates, &[cube.clone()], None, None, None);
+
+    // Measure.
+    let iterations = 100;
+    let start = Instant::now();
+    for _ in 0..iterations {
+        let _ = mc_narrative::evaluate_all(&templates, &[cube.clone()], None, None, None);
+    }
+    let elapsed = start.elapsed();
+    let per_call_us = elapsed.as_micros() / iterations;
+
+    eprintln!("[perf] explanation chain eval (50 templates, 10 groups): {per_call_us}µs per call");
+    assert!(
+        per_call_us < 5000,
+        "explanation chain evaluation should be < 5ms; got {per_call_us}µs"
     );
 }
