@@ -138,11 +138,20 @@ fn split_csv_line(line: &str) -> Vec<String> {
 }
 
 /// Run the detection pipeline: match each CSV against the registry.
+///
+/// Tries filename-based matching first, then falls back to header-based
+/// matching (useful for PPTX tables where filenames are derived from slide
+/// titles rather than registry naming conventions).
 pub fn detect_tactics(registry: &Registry, csvs: &[ParsedCsv]) -> Vec<DetectionResult> {
     let mut results = Vec::with_capacity(csvs.len());
 
     for csv in csvs {
-        match registry.detect(&csv.filename) {
+        // Try filename match first.
+        let spec = registry.detect(&csv.filename)
+            // Fallback: match by headers (≥60% overlap).
+            .or_else(|| registry.detect_by_headers(&csv.headers, 60.0));
+
+        match spec {
             Some(spec) => {
                 let (pct, missing, extra) = Registry::match_headers(spec, &csv.headers);
                 results.push(DetectionResult {
