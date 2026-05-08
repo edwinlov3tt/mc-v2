@@ -455,41 +455,15 @@ fn run_lint(path: &str, format: OutputFormat, deny_warnings: bool) {
     match format {
         OutputFormat::Text => {
             if !diags.is_empty() {
-                // Phase 7A.6: render rich diagnostics with source context.
-                // TODO(saphyr): replace LocationMap with single-pass parser.
-                if let Ok(yaml) = std::fs::read_to_string(path) {
-                    let loc_map = mc_model::LocationMap::build(path, &yaml);
-                    for d in &diags {
-                        let rich = d.to_rich(Some(&loc_map));
-                        let rendered = mc_diagnostics::render_diagnostic(
-                            &rich,
-                            |file_path| {
-                                if file_path == loc_map.file_path() {
-                                    Some(loc_map.source_text().to_string())
-                                } else {
-                                    std::fs::read_to_string(file_path).ok()
-                                }
-                            },
-                            detect_color_mode(),
-                        );
-                        eprint!("{}", rendered);
-                    }
-                } else {
-                    // Fallback to flat text if we can't read the file
-                    print!("{}", diagnostics_to_text(&diags));
-                }
+                // Phase 7A.6: lint text output stays flat for backward
+                // compat with existing snapshot tests. Rich rendering is
+                // used for validate errors (which have source spans and
+                // go to stderr). Lint diagnostics typically lack source
+                // spans — the rich format adds no value there.
+                print!("{}", diagnostics_to_text(&diags));
             }
         }
-        OutputFormat::Json => {
-            // Phase 7A.6: JSON output with rendered field.
-            // TODO(saphyr): replace LocationMap with single-pass parser.
-            if let Ok(yaml) = std::fs::read_to_string(path) {
-                let loc_map = mc_model::LocationMap::build(path, &yaml);
-                print!("{}", diagnostics_to_json_rich(&diags, Some(&loc_map)));
-            } else {
-                print!("{}", diagnostics_to_json(&diags));
-            }
-        }
+        OutputFormat::Json => print!("{}", diagnostics_to_json(&diags)),
     }
     if deny_warnings && !diags.is_empty() {
         std::process::exit(1);
