@@ -691,10 +691,13 @@ fn test_load_all_templates() {
     let templates = load_templates();
     // 14 from display-like.yaml + 5 from trend-templates.yaml (Phase 7A.3)
     // + 5 from benchmark-templates.yaml (Phase 7A.4).
+    // 14 from display-like.yaml + 5 from trend-templates.yaml (Phase 7A.3)
+    // + 5 from benchmark-templates.yaml (Phase 7A.4)
+    // + 9 from explanation-templates.yaml (Phase 7A.5).
     assert_eq!(
         templates.len(),
-        24,
-        "display-like.yaml (14) + trend-templates.yaml (5) + benchmark-templates.yaml (5) = 24 templates"
+        33,
+        "display-like (14) + trend (5) + benchmark (5) + explanation (9) = 33 templates"
     );
     // Verify sort order: data_sufficiency (sort_order: -10) should be first.
     assert_eq!(templates[0].id, "data_sufficiency");
@@ -732,6 +735,16 @@ fn test_template_ids_match_yaml() {
         "impressions_unusually_high",
         "ctr_benchmark_context",
         "spend_efficiency_trending",
+        // explanation-templates.yaml (9, Phase 7A.5)
+        "impressions_declined_context_event",
+        "impressions_declined_auto_budget",
+        "impressions_declined_unexplained",
+        "ctr_declined_context_event",
+        "ctr_declined_unexplained",
+        "clicks_declined_budget_proportional",
+        "clicks_declined_unexplained",
+        "conversions_zero_single_period",
+        "conversions_zero_unexplained",
     ];
     let mut actual_ids: Vec<&str> = templates.iter().map(|t| t.id.as_str()).collect();
     actual_ids.sort();
@@ -2685,4 +2698,179 @@ fn test_auto_events_coexist_with_manual_events() {
         "auto-detected event should fire"
     );
     assert!(ids.contains(&"manual_check"), "manual event should fire");
+}
+
+// ─── Phase 7A.5 Session 4: Explanation template tests ────────────────
+
+#[test]
+fn test_explanation_templates_load() {
+    let templates = {
+        let t = mc_narrative::load_templates("demo/narratives");
+        if t.is_empty() {
+            mc_narrative::load_templates("../../demo/narratives")
+        } else {
+            t
+        }
+    };
+
+    // Verify explanation templates loaded.
+    let explanation_templates: Vec<_> = templates
+        .iter()
+        .filter(|t| t.finding_id.is_some())
+        .collect();
+    assert!(
+        explanation_templates.len() >= 8,
+        "expected >= 8 explanation templates, got {}",
+        explanation_templates.len()
+    );
+
+    // Verify each finding_id group has a fallback (priority >= 900).
+    let mut groups: std::collections::HashMap<&str, Vec<u32>> = std::collections::HashMap::new();
+    for t in &explanation_templates {
+        if let Some(ref fid) = t.finding_id {
+            groups
+                .entry(fid.as_str())
+                .or_default()
+                .push(t.explanation_priority);
+        }
+    }
+    for (fid, priorities) in &groups {
+        assert!(
+            priorities.iter().any(|&p| p >= 900),
+            "finding_id '{fid}' has no fallback template (priority >= 900)"
+        );
+    }
+}
+
+#[test]
+fn test_explanation_templates_fire_with_context_event() {
+    use mc_narrative::context_events::ContextEvent;
+
+    let templates = {
+        let t = mc_narrative::load_templates("demo/narratives");
+        if t.is_empty() {
+            mc_narrative::load_templates("../../demo/narratives")
+        } else {
+            t
+        }
+    };
+
+    // Build a cube where impressions declined >15%.
+    let cube = CubeData {
+        table_name: "Monthly Performance".into(),
+        subproduct: "Targeted Display".into(),
+        source_file: "report.csv".into(),
+        dimension_name: None,
+        values: BTreeMap::from([
+            (
+                "Impressions".into(),
+                vec![
+                    CellEntry {
+                        category: "Jul 2025".into(),
+                        value: 30000.0,
+                    },
+                    CellEntry {
+                        category: "Aug 2025".into(),
+                        value: 20000.0, // ~33% decline
+                    },
+                ],
+            ),
+            (
+                "Clicks".into(),
+                vec![
+                    CellEntry {
+                        category: "Jul 2025".into(),
+                        value: 100.0,
+                    },
+                    CellEntry {
+                        category: "Aug 2025".into(),
+                        value: 80.0,
+                    },
+                ],
+            ),
+        ]),
+    };
+
+    // Manual context event for budget_change.
+    let events = vec![ContextEvent {
+        id: "ce-Aug_2025-001".to_string(),
+        period: "Aug 2025".to_string(),
+        scope: BTreeMap::new(),
+        event_type: "budget_change".to_string(),
+        description: "Budget reduced 35% for summer close-out".to_string(),
+        source: None,
+        expires_at: None,
+    }];
+
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, Some(&events));
+
+    // The impressions_declined_context_event template (priority 100) should fire.
+    let ctx_match = narratives
+        .iter()
+        .find(|n| n.template_id == "impressions_declined_context_event");
+    assert!(
+        ctx_match.is_some(),
+        "impressions_declined_context_event should fire with budget_change event; got {:?}",
+        narratives
+            .iter()
+            .map(|n| &n.template_id)
+            .collect::<Vec<_>>()
+    );
+
+    // The unexplained fallback should NOT fire.
+    let fallback = narratives
+        .iter()
+        .find(|n| n.template_id == "impressions_declined_unexplained");
+    assert!(
+        fallback.is_none(),
+        "fallback should be suppressed when context event explanation fires"
+    );
+}
+
+#[test]
+fn test_explanation_fallback_fires_without_context_event() {
+    let templates = {
+        let t = mc_narrative::load_templates("demo/narratives");
+        if t.is_empty() {
+            mc_narrative::load_templates("../../demo/narratives")
+        } else {
+            t
+        }
+    };
+
+    // Cube where impressions declined >15% but NO context events.
+    let cube = CubeData {
+        table_name: "Monthly Performance".into(),
+        subproduct: "Targeted Display".into(),
+        source_file: "report.csv".into(),
+        dimension_name: None,
+        values: BTreeMap::from([(
+            "Impressions".into(),
+            vec![
+                CellEntry {
+                    category: "Jul 2025".into(),
+                    value: 30000.0,
+                },
+                CellEntry {
+                    category: "Aug 2025".into(),
+                    value: 20000.0,
+                },
+            ],
+        )]),
+    };
+
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None, None);
+
+    // The unexplained fallback should fire.
+    let fallback = narratives
+        .iter()
+        .find(|n| n.template_id == "impressions_declined_unexplained");
+    assert!(
+        fallback.is_some(),
+        "fallback should fire when no context event matches; got {:?}",
+        narratives
+            .iter()
+            .map(|n| &n.template_id)
+            .collect::<Vec<_>>()
+    );
 }
