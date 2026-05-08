@@ -689,11 +689,12 @@ fn creative_by_name() -> CubeData {
 #[test]
 fn test_load_all_templates() {
     let templates = load_templates();
-    // 14 from display-like.yaml + 5 from trend-templates.yaml (Phase 7A.3).
+    // 14 from display-like.yaml + 5 from trend-templates.yaml (Phase 7A.3)
+    // + 5 from benchmark-templates.yaml (Phase 7A.4).
     assert_eq!(
         templates.len(),
-        19,
-        "display-like.yaml (14) + trend-templates.yaml (5) = 19 templates"
+        24,
+        "display-like.yaml (14) + trend-templates.yaml (5) + benchmark-templates.yaml (5) = 24 templates"
     );
     // Verify sort order: data_sufficiency (sort_order: -10) should be first.
     assert_eq!(templates[0].id, "data_sufficiency");
@@ -725,6 +726,12 @@ fn test_template_ids_match_yaml() {
         "conversion_alarm_persistent",
         "improvement_trend",
         "new_issue_first_occurrence",
+        // benchmark-templates.yaml (5, Phase 7A.4)
+        "ctr_above_own_median",
+        "ctr_below_own_p25",
+        "impressions_unusually_high",
+        "ctr_benchmark_context",
+        "spend_efficiency_trending",
     ];
     let mut actual_ids: Vec<&str> = templates.iter().map(|t| t.id.as_str()).collect();
     actual_ids.sort();
@@ -1714,4 +1721,85 @@ fn test_benchmark_functions_return_zero_when_no_library() {
         narratives.iter().all(|n| n.template_id != "no_lib_test"),
         "benchmark template should NOT fire when no library is present"
     );
+}
+
+// ─── Phase 7A.4 Session 3: Benchmark template integration tests ──────
+
+#[test]
+fn test_benchmark_templates_fire_with_loaded_library() {
+    use mc_narrative::benchmark::{BenchmarkLibrary, MetricBenchmark, PeriodRange};
+    use std::collections::BTreeMap;
+
+    // Build a benchmark library where the cube's CTR (typically ~0.08-0.12)
+    // is above the p50 of 0.05 and has >= 3 samples.
+    let mut benchmarks = BTreeMap::new();
+    let scope = {
+        let mut s = BTreeMap::new();
+        s.insert("channel".to_string(), "Targeted Display".to_string());
+        s
+    };
+    benchmarks.insert(
+        "CTR::channel=Targeted Display".to_string(),
+        MetricBenchmark {
+            metric: "CTR".to_string(),
+            scope: scope.clone(),
+            p10: 0.01,
+            p25: 0.02,
+            p50: 0.05,
+            p75: 0.08,
+            p90: 0.10,
+            mean: 0.05,
+            stddev: 0.03,
+            sample_count: 6,
+        },
+    );
+    let lib = BenchmarkLibrary {
+        schema_version: "1.0".to_string(),
+        generated_at: "2026-05-07T10:00:00Z".to_string(),
+        workspace: "test".to_string(),
+        period_range: PeriodRange {
+            from: "2025-11".to_string(),
+            to: "2026-04".to_string(),
+        },
+        period_count: 6,
+        benchmarks,
+    };
+
+    let templates = load_templates();
+    let cube = monthly_performance();
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, Some(&lib));
+
+    // ctr_above_own_median should fire: CTR ~0.08-0.12 > p50 of 0.05, sample_count >= 3.
+    let fired_ids: Vec<&str> = narratives.iter().map(|n| n.template_id.as_str()).collect();
+    assert!(
+        fired_ids.contains(&"ctr_above_own_median"),
+        "ctr_above_own_median should fire when CTR > p50; fired: {fired_ids:?}"
+    );
+
+    // ctr_benchmark_context should fire: sample_count >= 2.
+    assert!(
+        fired_ids.contains(&"ctr_benchmark_context"),
+        "ctr_benchmark_context should fire with sample_count >= 2; fired: {fired_ids:?}"
+    );
+}
+
+#[test]
+fn test_benchmark_templates_skip_without_library() {
+    let templates = load_templates();
+    let cube = monthly_performance();
+    // No benchmark library → all benchmark templates should silently skip.
+    let narratives = mc_narrative::evaluate_all(&templates, &[cube], None, None);
+    let benchmark_template_ids = [
+        "ctr_above_own_median",
+        "ctr_below_own_p25",
+        "impressions_unusually_high",
+        "ctr_benchmark_context",
+        "spend_efficiency_trending",
+    ];
+    for id in &benchmark_template_ids {
+        assert!(
+            !narratives.iter().any(|n| n.template_id == *id),
+            "benchmark template {id} should NOT fire without a library"
+        );
+    }
 }

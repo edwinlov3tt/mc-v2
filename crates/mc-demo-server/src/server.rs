@@ -51,9 +51,30 @@ pub async fn start(port: u16, static_dir: Option<&str>) {
         templates.len()
     );
 
+    // Phase 7A.4: load benchmark library if present.
+    let benchmark_library = {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        match mc_narrative::benchmark::read_benchmark_library(&cwd) {
+            Ok(lib) => {
+                println!(
+                    "  {GREEN}Benchmarks loaded:{RESET} {BOLD}{}{RESET} metrics, periods {} → {}",
+                    lib.benchmarks.len(),
+                    lib.period_range.from,
+                    lib.period_range.to,
+                );
+                Some(lib)
+            }
+            Err(_) => {
+                println!("  {DIM}No benchmark library found (run `mc model build-benchmarks` to create one){RESET}");
+                None
+            }
+        }
+    };
+
     let state = Arc::new(AppState {
         registry,
         templates,
+        benchmark_library,
     });
 
     let cors = CorsLayer::new()
@@ -65,6 +86,13 @@ pub async fn start(port: u16, static_dir: Option<&str>) {
         .route("/api/registry", get(handle_registry))
         .route("/api/upload", post(handle_upload))
         .route("/api/health", get(handle_health))
+        .route("/api/benchmarks", get(handle_benchmarks))
+        .route(
+            "/template-editor",
+            get(|| async {
+                axum::response::Html(include_str!("../../../demo/template-editor-prototype.html"))
+            }),
+        )
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // 50MB
         .layer(cors)
         .with_state(state);
@@ -108,6 +136,18 @@ async fn handle_registry(State(state): State<Arc<AppState>>) -> Json<serde_json:
     }))
 }
 
+/// GET /api/benchmarks — returns the benchmark library JSON if present, 404 if not.
+async fn handle_benchmarks(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    match &state.benchmark_library {
+        Some(lib) => Ok(Json(
+            serde_json::to_value(lib).unwrap_or(serde_json::Value::Null),
+        )),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
 async fn handle_upload(
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
@@ -144,8 +184,13 @@ async fn handle_upload(
 
     let bytes = file_bytes.ok_or((StatusCode::BAD_REQUEST, "no file uploaded".to_string()))?;
 
-    let response = upload::process_upload(&state.registry, &state.templates, &bytes)
-        .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
+    let response = upload::process_upload(
+        &state.registry,
+        &state.templates,
+        &bytes,
+        state.benchmark_library.as_ref(),
+    )
+    .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
 
     Ok(Json(response))
 }

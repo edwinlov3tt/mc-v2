@@ -1,0 +1,87 @@
+narrative_format_version: 1
+
+templates:
+  - id: ctr_above_own_median
+    family: [display-like]
+    severity: success
+    table_types: ["Monthly Performance"]
+    sort_order: 80
+    when: "benchmark_above_median('CTR') == 1 AND benchmark_sample_count('CTR') >= 3"
+    template: >
+      {tactic_name} CTR of {current_ctr:.2f}% is above this
+      campaign's historical median ({median_ctr:.2f}%) across
+      {sample_count:.0f} reporting periods. Performance is in
+      the upper half of this workspace's own track record.
+    bindings:
+      current_ctr: "current.CTR"
+      median_ctr: "benchmark_p50('CTR')"
+      sample_count: "benchmark_sample_count('CTR')"
+
+  - id: ctr_below_own_p25
+    family: [display-like]
+    severity: warning
+    table_types: ["Monthly Performance"]
+    sort_order: 81
+    when: >
+      benchmark_percentile('CTR', current.CTR) < 25
+      AND benchmark_sample_count('CTR') >= 3
+    template: >
+      {tactic_name} CTR of {current_ctr:.2f}% is in the bottom
+      quartile of this campaign's historical performance (your
+      typical range: {p25_ctr:.2f}%–{p75_ctr:.2f}%). This is
+      below the normal range for this channel.
+    bindings:
+      current_ctr: "current.CTR"
+      p25_ctr: "benchmark_p25('CTR')"
+      p75_ctr: "benchmark_p75('CTR')"
+
+  - id: impressions_unusually_high
+    family: [display-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    sort_order: 82
+    when: >
+      benchmark_percentile('Impressions', current.Impressions) >= 90
+      AND benchmark_sample_count('Impressions') >= 3
+    template: >
+      {tactic_name} impressions of {current_value:,.0f} are in the
+      top 10% of this campaign's historical delivery
+      (p90={p90_value:,.0f}). This is an unusually high-reach period.
+    bindings:
+      current_value: "current.Impressions"
+      p90_value: "benchmark_p90('Impressions')"
+
+  - id: ctr_benchmark_context
+    family: [display-like]
+    severity: info
+    table_types: ["Monthly Performance", "Campaign Performance"]
+    sort_order: 83
+    deduplicate: true
+    when: "benchmark_sample_count('CTR') >= 2"
+    template: >
+      Historical context: across {sample_count:.0f} prior periods,
+      this campaign's CTR has ranged from {p10_ctr:.2f}%
+      (p10) to {p90_ctr:.2f}% (p90), with a median of
+      {median_ctr:.2f}%.
+    bindings:
+      sample_count: "benchmark_sample_count('CTR')"
+      p10_ctr: "benchmark_p10('CTR')"
+      p90_ctr: "benchmark_p90('CTR')"
+      median_ctr: "benchmark_p50('CTR')"
+
+  - id: spend_efficiency_trending
+    family: [display-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    sort_order: 84
+    when: >
+      benchmark_sample_count('CTR') >= 3
+      AND benchmark_z_score('CTR', current.CTR) > 1.5
+    template: >
+      CTR is {z_score:.1f} standard deviations above this
+      campaign's historical mean — a statistically notable
+      outperformance. The current period may represent a
+      best-in-class creative or targeting combination worth
+      preserving.
+    bindings:
+      z_score: "benchmark_z_score('CTR', current.CTR)"

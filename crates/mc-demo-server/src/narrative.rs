@@ -38,6 +38,17 @@ pub fn evaluate_all_with_ledger(
     mc_narrative::evaluate_all(templates, &cube_data, ledger, None)
 }
 
+/// Evaluate templates with ledger + benchmark context (Phase 7A.4).
+pub fn evaluate_all_with_benchmark(
+    templates: &[TemplateDefinition],
+    cubes: &[IngestedCube],
+    ledger: Option<&[mc_narrative::LedgerEntry]>,
+    benchmark: Option<&mc_narrative::BenchmarkLibrary>,
+) -> Vec<NarrativeOutput> {
+    let cube_data: Vec<mc_narrative::CubeData> = cubes.iter().map(convert_cube).collect();
+    mc_narrative::evaluate_all(templates, &cube_data, ledger, benchmark)
+}
+
 /// Convert an `IngestedCube` (demo server type) to `CubeData` (narrative engine type).
 fn convert_cube(cube: &IngestedCube) -> mc_narrative::CubeData {
     let values = cube

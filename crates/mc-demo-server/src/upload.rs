@@ -16,6 +16,8 @@ use std::io::Cursor;
 pub struct AppState {
     pub registry: Registry,
     pub templates: Vec<TemplateDefinition>,
+    /// Phase 7A.4: workspace-local benchmark library (loaded at startup if present).
+    pub benchmark_library: Option<mc_narrative::BenchmarkLibrary>,
 }
 
 /// Response from POST /api/upload.
@@ -208,6 +210,7 @@ pub fn process_upload(
     registry: &Registry,
     templates: &[TemplateDefinition],
     bytes: &[u8],
+    benchmark: Option<&mc_narrative::BenchmarkLibrary>,
 ) -> Result<UploadResponse, String> {
     let mut timer = PipelineTimer::start();
 
@@ -221,7 +224,8 @@ pub fn process_upload(
     // Build tactic groups: route CSVs by product/subproduct, ingest
     // cubes, evaluate per-tactic narratives (Session 4).
     let mut ids = IdGen::new();
-    let tactics = workspace::build_tactic_groups(&csvs, &detections, &mut ids, templates);
+    let tactics =
+        workspace::build_tactic_groups(&csvs, &detections, &mut ids, templates, benchmark);
     timer.mark_compile_done();
 
     // Populate is part of ingest (same step for the demo).
