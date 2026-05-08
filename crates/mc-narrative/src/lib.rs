@@ -4,6 +4,7 @@
 //! hints, `deduplicate: true` YAML field migration, MC7001-MC7010
 //! validation at load time.
 
+pub mod benchmark;
 pub mod context;
 pub mod error;
 pub mod evaluator;
@@ -11,6 +12,7 @@ pub mod ledger;
 pub mod renderer;
 pub mod schema;
 
+pub use benchmark::{BenchmarkError, BenchmarkLibrary, MetricBenchmark};
 pub use context::{CellEntry, CubeData};
 pub use error::NarrativeError;
 pub use evaluator::{Ctx, LedgerIndex, Val};
