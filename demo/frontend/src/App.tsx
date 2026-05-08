@@ -198,12 +198,12 @@ function UploadView({
         onClick={() => document.getElementById('file-input')?.click()}
       >
         <div className="text-4xl mb-3">&#128193;</div>
-        <p className="text-lg mb-1">Drop a zip file here</p>
+        <p className="text-lg mb-1">Drop a zip or pptx file here</p>
         <p className="text-sm text-neutral-400">or click to browse</p>
         <input
           id="file-input"
           type="file"
-          accept=".zip"
+          accept=".zip,.pptx"
           className="hidden"
           onChange={onFileSelect}
         />
