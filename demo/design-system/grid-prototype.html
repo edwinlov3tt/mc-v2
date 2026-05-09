@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mosaic — Acme Marketing Finance</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════════════════════════════════════════
+   MOSAIC GRID VIEW — Full App Prototype
+   Layout: topbar / formula-bar / [sidebar | grid | inspector]
+   ═══════════════════════════════════════════════════════════ */
+:root {
+  --surface-0: #ffffff;
+  --surface-1: #fdfcfa;
+  --surface-2: #f7f6f3;
+  --surface-3: #f0eeeb;
+  --surface-hover: #f5f3f0;
+  --border: #e8e5df;
+  --border-strong: #d5d1ca;
+  --border-soft: rgba(30,26,20,0.06);
+  --text-primary: #1a1816;
+  --text-secondary: #6b6560;
+  --text-tertiary: #9c9691;
+  --accent: #6366f1;
+  --accent-hover: #5457e5;
+  --accent-soft: #eef0ff;
+  --accent-muted: rgba(99,102,241,0.12);
+  --success: #1a9a4a;
+  --warning: #c47a15;
+  --danger: #d63a2f;
+  --info: #3578d8;
+  --cell-derived: #f0f4ff;
+  --cell-consolidated: #f4f0ff;
+  --cell-edited: #fefce8;
+  --cell-locked: #f5f4f2;
+  --cell-error: #fef2f1;
+  --dim-scenario: #6366f1;
+  --dim-version: #0d9488;
+  --dim-time: #d97706;
+  --dim-market: #e15a8a;
+  --dim-channel: #7c3aed;
+  --font-display: 'Source Serif 4', Georgia, serif;
+  --font-ui: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --row-h: 36px;
+  --row-head-w: 240px;
+  --col-w: 108px;
+  --topbar-h: 52px;
+  --formula-h: 38px;
+  --status-h: 30px;
+  --sidebar-w: 220px;
+  --inspector-w: 300px;
+}
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{font-family:var(--font-ui);color:var(--text-primary);background:var(--surface-2);font-size:13px;-webkit-font-smoothing:antialiased;line-height:1.4}
+
+/* ═══════ APP SHELL ═══════ */
+.app{
+  display:grid;
+  grid-template-rows:var(--topbar-h) var(--formula-h) 1fr var(--status-h);
+  height:100vh;width:100vw;overflow:hidden;
+}
+
+/* ═══════ TOP BAR ═══════ */
+.topbar{
+  display:flex;align-items:center;gap:10px;
+  padding:0 16px;
+  background:var(--surface-0);
+  border-bottom:1px solid var(--border);
+  height:var(--topbar-h);
+}
+.topbar-brand{
+  font-family:var(--font-display);
+  font-size:clamp(1rem,2vw,1.15rem);font-weight:600;
+  color:var(--text-primary);letter-spacing:-0.01em;
+  white-space:nowrap;flex-shrink:0;
+}
+.topbar-brand span{color:var(--accent)}
+.topbar-sep{width:1px;height:22px;background:var(--border);flex-shrink:0}
+.topbar-model{
+  display:flex;align-items:center;gap:6px;
+  font-size:0.88rem;font-weight:500;color:var(--text-primary);
+  white-space:nowrap;flex-shrink:0;
+}
+.topbar-model .chev{color:var(--text-tertiary);font-size:0.7rem}
+.topbar-pills{
+  display:flex;gap:6px;
+  margin-left:8px;padding-left:12px;
+  border-left:1px solid var(--border);
+  flex-shrink:0;
+}
+.pill{
+  display:inline-flex;align-items:center;gap:5px;
+  font-size:0.75rem;font-weight:500;
+  padding:2px 10px 2px 7px;
+  border-radius:9999px;border:1px solid;white-space:nowrap;
+}
+.pill-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.pill-scenario{background:rgba(99,102,241,.07);border-color:rgba(99,102,241,.18);color:#4f46e5}
+.pill-scenario .pill-dot{background:var(--dim-scenario)}
+.pill-version{background:rgba(13,148,136,.07);border-color:rgba(13,148,136,.18);color:#0d7a6e}
+.pill-version .pill-dot{background:var(--dim-version)}
+.pill-time{background:rgba(217,119,6,.07);border-color:rgba(217,119,6,.18);color:#a65c0a}
+.pill-time .pill-dot{background:var(--dim-time)}
+.pill-market{background:rgba(225,90,138,.07);border-color:rgba(225,90,138,.18);color:#c2416e}
+.pill-market .pill-dot{background:var(--dim-market)}
+.topbar-spacer{flex:1}
+.topbar-actions{display:flex;gap:8px;flex-shrink:0}
+.btn{
+  display:inline-flex;align-items:center;gap:6px;
+  font-family:var(--font-ui);font-size:0.8rem;font-weight:500;
+  padding:5px 14px;border-radius:6px;border:1px solid transparent;
+  cursor:pointer;white-space:nowrap;
+}
+.btn:hover{transform:translateY(-1px)}
+.btn-primary{background:var(--accent);color:white;border-color:var(--accent)}
+.btn-secondary{background:var(--surface-0);color:var(--text-primary);border-color:var(--border-strong)}
+
+/* ═══════ FORMULA BAR ═══════ */
+.formula-bar{
+  display:flex;align-items:center;gap:12px;
+  height:var(--formula-h);padding:0 16px;
+  background:var(--surface-1);
+  border-bottom:1px solid var(--border);
+  font-size:0.8rem;
+}
+.formula-coord{
+  font-family:var(--font-mono);font-size:0.76rem;font-weight:500;
+  color:var(--accent);background:var(--accent-soft);
+  padding:2px 8px;border-radius:4px;white-space:nowrap;flex-shrink:0;
+}
+.formula-sep{width:1px;height:16px;background:var(--border)}
+.formula-expr{
+  font-family:var(--font-mono);font-size:0.78rem;color:var(--text-secondary);
+  flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.formula-expr em{font-style:italic;color:var(--text-tertiary)}
+
+/* ═══════ BODY (sidebar | grid | inspector) ═══════ */
+.body{
+  display:grid;
+  grid-template-columns:var(--sidebar-w) 1fr var(--inspector-w);
+  min-height:0;overflow:hidden;
+}
+
+/* ═══════ SIDEBAR ═══════ */
+.sidebar{
+  background:var(--surface-1);
+  border-right:1px solid var(--border);
+  display:flex;flex-direction:column;
+  min-height:0;overflow-y:auto;
+  scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent;
+}
+.sb-heading{
+  font-size:0.66rem;font-weight:600;text-transform:uppercase;
+  letter-spacing:0.08em;color:var(--text-tertiary);
+  padding:14px 14px 6px;
+}
+.sb-item{
+  display:flex;align-items:center;gap:10px;
+  height:34px;padding:0 14px;
+  font-size:0.82rem;color:var(--text-secondary);
+  cursor:pointer;margin:1px 6px;border-radius:6px;
+}
+.sb-item:hover{background:var(--surface-hover);transform:translateX(1px)}
+.sb-item.active{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.sb-icon{
+  width:20px;height:20px;border-radius:5px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:0.68rem;font-weight:700;flex-shrink:0;
+}
+.sb-icon-cube{background:var(--accent-soft);color:var(--accent)}
+.sb-icon-view{background:#ecfdf3;color:var(--success)}
+.sb-badge{
+  margin-left:auto;font-size:0.66rem;color:var(--text-tertiary);
+  background:var(--surface-3);padding:1px 6px;border-radius:9999px;
+  font-variant-numeric:tabular-nums;
+}
+.sb-tree{padding:4px 14px 12px}
+.sb-tree-row{
+  display:flex;align-items:center;gap:8px;
+  height:22px;font-size:0.76rem;color:var(--text-secondary);
+}
+.sb-tree-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.sb-tree-count{margin-left:auto;font-size:0.66rem;color:var(--text-tertiary);font-variant-numeric:tabular-nums}
+
+/* ═══════ GRID AREA ═══════ */
+.grid-area{
+  min-width:0;min-height:0;overflow:auto;
+  background:var(--surface-0);
+  scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent;
+}
+.grid-area::-webkit-scrollbar{width:8px;height:8px}
+.grid-area::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:8px;border:2px solid transparent;background-clip:padding-box}
+.grid-area::-webkit-scrollbar-track{background:transparent}
+
+table{border-collapse:separate;border-spacing:0;min-width:max-content}
+
+/* ── Header cells ── */
+th{
+  position:sticky;top:0;z-index:5;
+  height:var(--row-h);
+  padding:0 14px;
+  text-align:right;
+  font-size:0.72rem;font-weight:600;
+  color:var(--text-secondary);
+  letter-spacing:0.015em;
+  background:var(--surface-2);
+  border-bottom:1px solid var(--border-strong);
+  border-right:1px solid var(--border-soft);
+  white-space:nowrap;
+  min-width:var(--col-w);width:var(--col-w);
+  font-variant-numeric:tabular-nums;
+}
+th.row-head{
+  position:sticky;left:0;top:0;z-index:10;
+  text-align:left;
+  min-width:var(--row-head-w);width:var(--row-head-w);
+  border-right:1px solid var(--border-strong);
+  box-shadow:2px 0 8px rgba(26,24,22,.04);
+}
+th .head-sub{font-weight:400;color:var(--text-tertiary);font-size:0.66rem;text-transform:uppercase;letter-spacing:0.06em}
+
+/* ── Data cells ── */
+td{
+  height:var(--row-h);
+  padding:0 14px;
+  text-align:right;
+  font-family:var(--font-mono);font-size:0.82rem;
+  font-variant-numeric:tabular-nums;
+  color:var(--text-primary);
+  border-bottom:1px solid var(--border-soft);
+  border-right:1px solid var(--border-soft);
+  white-space:nowrap;position:relative;
+  min-width:var(--col-w);width:var(--col-w);
+}
+
+/* ── Label column (sticky) ── */
+td.lbl{
+  position:sticky;left:0;z-index:3;
+  text-align:left;
+  font-family:var(--font-ui);font-size:0.82rem;
+  min-width:var(--row-head-w);width:var(--row-head-w);
+  background:var(--surface-0);
+  border-right:1px solid var(--border-strong);
+  box-shadow:2px 0 8px rgba(26,24,22,.04);
+  padding:0 12px;
+}
+.lbl-inner{display:flex;align-items:center;gap:6px;height:100%}
+.lbl-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chevron{
+  width:14px;height:14px;flex-shrink:0;
+  color:var(--text-tertiary);display:flex;align-items:center;justify-content:center;
+}
+.chevron svg{width:12px;height:12px}
+.chevron-spacer{width:14px;flex-shrink:0}
+.formula-hint{
+  font-family:var(--font-mono);font-size:0.68rem;
+  color:var(--text-tertiary);font-style:italic;
+  margin-left:4px;
+}
+
+/* ═══════ ROW TYPES ═══════ */
+tr.row-group td{background:var(--surface-2)}
+tr.row-group td.lbl{background:var(--surface-2);font-weight:600}
+tr.row-group td{font-family:var(--font-mono);font-weight:600;color:var(--text-primary)}
+
+tr.row-consolidated td{background:var(--cell-consolidated)}
+tr.row-consolidated td.lbl{background:var(--cell-consolidated);font-weight:600;color:#7c3aed}
+tr.row-consolidated td{color:#7c3aed;font-weight:600}
+
+tr.row-derived td{background:var(--cell-derived)}
+tr.row-derived td.lbl{background:var(--cell-derived);color:var(--info)}
+tr.row-derived td{color:var(--info)}
+
+tr.row-input td.lbl{background:var(--surface-0)}
+
+/* ═══════ CELL STATES ═══════ */
+.cell-selected{
+  box-shadow:inset 0 0 0 2px var(--accent);
+  background:var(--accent-soft) !important;
+  color:#4338ca !important;
+  z-index:2;
+}
+.cell-edited{
+  background:var(--cell-edited) !important;
+  color:var(--text-primary) !important;
+}
+.cell-edited::after{
+  content:'';position:absolute;top:5px;right:5px;
+  width:6px;height:6px;border-radius:50%;background:var(--warning);
+}
+.cell-locked{
+  background:var(--cell-locked) !important;
+  color:var(--text-tertiary) !important;
+}
+.lock-icon{
+  display:inline-flex;vertical-align:middle;margin-left:4px;
+  color:var(--text-tertiary);
+}
+.lock-icon svg{width:10px;height:10px}
+.cell-error{
+  background:var(--cell-error) !important;
+  color:var(--danger) !important;
+}
+
+/* ── Row hover ── */
+tr.row-input:hover td{background:var(--surface-hover)}
+tr.row-input:hover td.lbl{background:var(--surface-hover)}
+tr.row-derived:hover td{background:#e8eeff}
+tr.row-derived:hover td.lbl{background:#e8eeff}
+tr.row-consolidated:hover td{background:#ece6ff}
+tr.row-consolidated:hover td.lbl{background:#ece6ff}
+tr.row-group:hover td{background:var(--surface-3)}
+tr.row-group:hover td.lbl{background:var(--surface-3)}
+/* Don't override explicit cell states on hover */
+tr:hover .cell-selected{background:var(--accent-soft) !important}
+tr:hover .cell-edited{background:var(--cell-edited) !important}
+tr:hover .cell-locked{background:var(--cell-locked) !important}
+
+/* ═══════ INSPECTOR ═══════ */
+.inspector{
+  background:var(--surface-0);
+  border-left:1px solid var(--border);
+  display:flex;flex-direction:column;
+  min-height:0;overflow:hidden;
+}
+.insp-tabs{
+  display:flex;border-bottom:1px solid var(--border);
+  background:var(--surface-1);flex-shrink:0;
+}
+.insp-tab{
+  flex:1;height:38px;
+  font-family:var(--font-ui);font-size:0.76rem;font-weight:500;
+  text-align:center;color:var(--text-tertiary);
+  background:none;border:none;border-bottom:2px solid transparent;
+  cursor:pointer;
+}
+.insp-tab.active{color:var(--accent);border-bottom-color:var(--accent);background:var(--surface-0)}
+.insp-body{
+  flex:1;overflow-y:auto;padding:20px 18px;
+  scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent;
+}
+.insp-field{margin-bottom:16px}
+.insp-label{
+  font-size:0.66rem;font-weight:600;text-transform:uppercase;
+  letter-spacing:0.06em;color:var(--text-tertiary);margin-bottom:3px;
+}
+.insp-value{font-size:0.88rem;color:var(--text-primary)}
+.insp-value.mono{font-family:var(--font-mono);font-size:0.82rem}
+.insp-value.large{font-size:clamp(1.2rem,3vw,1.6rem);font-weight:600;font-variant-numeric:tabular-nums}
+.insp-trace{
+  padding:12px;background:var(--surface-2);border-radius:8px;
+  font-family:var(--font-mono);font-size:0.74rem;
+  color:var(--text-secondary);line-height:1.8;
+}
+.trace-node{color:var(--text-primary);font-weight:500}
+.trace-op{color:var(--accent)}
+.trace-val{color:var(--success)}
+.insp-provenance{
+  font-size:0.78rem;color:var(--text-tertiary);
+  padding-top:8px;border-top:1px solid var(--border-soft);
+  margin-top:12px;
+}
+
+/* ═══════ STATUS BAR ═══════ */
+.statusbar{
+  display:flex;align-items:center;
+  height:var(--status-h);padding:0 16px;
+  background:var(--surface-2);
+  border-top:1px solid var(--border);
+  font-size:0.72rem;color:var(--text-tertiary);
+  gap:8px;
+}
+.statusbar-spacer{flex:1}
+.statusbar-edited{color:var(--warning);font-weight:500}
+.statusbar-clean{color:var(--success)}
+
+/* ═══════ MOTION ═══════ */
+@media(prefers-reduced-motion:reduce){
+  *{transition:none !important;animation:none !important}
+}
+.btn,.sb-item{transition:transform 80ms ease}
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ═══════ TOP BAR ═══════ -->
+  <header class="topbar">
+    <div class="topbar-brand">Mosaic<span>.</span></div>
+    <div class="topbar-sep"></div>
+    <div class="topbar-model">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="12" height="12" rx="2"/><line x1="2" y1="6" x2="14" y2="6"/><line x1="6" y1="6" x2="6" y2="14"/></svg>
+      Acme Marketing Finance
+      <span class="chev">&#9662;</span>
+    </div>
+    <div class="topbar-pills">
+      <span class="pill pill-scenario"><span class="pill-dot"></span>Baseline</span>
+      <span class="pill pill-version"><span class="pill-dot"></span>Working</span>
+      <span class="pill pill-time"><span class="pill-dot"></span>Q1'20 &ndash; Q4'22</span>
+      <span class="pill pill-market"><span class="pill-dot"></span>USA</span>
+    </div>
+    <div class="topbar-spacer"></div>
+    <div class="topbar-actions">
+      <button class="btn btn-secondary">Compare</button>
+      <button class="btn btn-primary">Calculate</button>
+    </div>
+  </header>
+
+  <!-- ═══════ FORMULA BAR ═══════ -->
+  <div class="formula-bar">
+    <span class="formula-coord">Revenue @ Q3'21</span>
+    <span class="formula-sep"></span>
+    <span class="formula-expr">Customers * AOV <em>&mdash; derived from rule_revenue</em></span>
+  </div>
+
+  <!-- ═══════ BODY ═══════ -->
+  <div class="body">
+
+    <!-- ═══ SIDEBAR ═══ -->
+    <aside class="sidebar">
+      <div class="sb-heading">Models</div>
+      <div class="sb-item active">
+        <div class="sb-icon sb-icon-cube">A</div>
+        Acme Marketing Finance
+        <span class="sb-badge">6D</span>
+      </div>
+      <div class="sb-item">
+        <div class="sb-icon sb-icon-cube">S</div>
+        Scotts RV Demo
+        <span class="sb-badge">4D</span>
+      </div>
+
+      <div class="sb-heading" style="margin-top:8px">Saved Views</div>
+      <div class="sb-item">
+        <div class="sb-icon sb-icon-view">V</div>
+        Q4 Budget Review
+      </div>
+      <div class="sb-item">
+        <div class="sb-icon sb-icon-view">V</div>
+        YoY Comparison
+      </div>
+
+      <div class="sb-heading" style="margin-top:8px">Dimensions</div>
+      <div class="sb-tree">
+        <div class="sb-tree-row"><span class="sb-tree-dot" style="background:var(--dim-scenario)"></span>Scenario<span class="sb-tree-count">3</span></div>
+        <div class="sb-tree-row"><span class="sb-tree-dot" style="background:var(--dim-version)"></span>Version<span class="sb-tree-count">3</span></div>
+        <div class="sb-tree-row"><span class="sb-tree-dot" style="background:var(--dim-time)"></span>Time<span class="sb-tree-count">17</span></div>
+        <div class="sb-tree-row"><span class="sb-tree-dot" style="background:var(--dim-market)"></span>Market<span class="sb-tree-count">715</span></div>
+        <div class="sb-tree-row"><span class="sb-tree-dot" style="background:var(--dim-channel)"></span>Channel<span class="sb-tree-count">8</span></div>
+        <div class="sb-tree-row"><span class="sb-tree-dot" style="background:#2563eb"></span>Measure<span class="sb-tree-count">11</span></div>
+      </div>
+    </aside>
+
+    <!-- ═══ GRID ═══ -->
+    <main class="grid-area">
+      <table>
+        <thead>
+          <tr>
+            <th class="row-head">
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <span>Measure</span>
+                <span class="head-sub">16 rows &middot; 12 cols</span>
+              </div>
+            </th>
+            <th>Q1'20</th><th>Q2'20</th><th>Q3'20</th><th>Q4'20</th>
+            <th>Q1'21</th><th>Q2'21</th><th>Q3'21</th><th>Q4'21</th>
+            <th>Q1'22</th><th>Q2'22</th><th>Q3'22</th><th>Q4'22</th>
+          </tr>
+        </thead>
+        <tbody>
+          <!-- Total Revenue (consolidated) -->
+          <tr class="row-consolidated">
+            <td class="lbl"><div class="lbl-inner"><span class="chevron"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 2l4 4-4 4"/></svg></span><span class="lbl-text">Total Revenue</span></div></td>
+            <td>$191,880</td><td>$215,890</td><td>$238,700</td><td>$280,800</td>
+            <td>$313,740</td><td>$352,704</td><td class="cell-selected">$383,040</td><td>$459,900</td>
+            <td>$492,660</td><td>$538,860</td><td>$583,440</td><td>$705,000</td>
+          </tr>
+          <!-- Customer Funnel (group, expanded) -->
+          <tr class="row-group">
+            <td class="lbl"><div class="lbl-inner" style="padding-left:16px"><span class="chevron"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 4l4 4 4-4"/></svg></span><span class="lbl-text">Customer Funnel</span></div></td>
+            <td></td><td></td><td></td><td></td>
+            <td></td><td></td><td></td><td></td>
+            <td></td><td></td><td></td><td></td>
+          </tr>
+          <!-- Clicks (derived) -->
+          <tr class="row-derived">
+            <td class="lbl"><div class="lbl-inner" style="padding-left:32px"><span class="chevron-spacer"></span><span class="lbl-text">Clicks</span><span class="formula-hint">Spend/CPC</span></div></td>
+            <td>48,760</td><td>52,542</td><td>59,524</td><td>62,903</td>
+            <td>70,000</td><td>75,427</td><td>84,211</td><td>87,755</td>
+            <td>94,958</td><td>102,586</td><td>111,504</td><td>116,183</td>
+          </tr>
+          <!-- Leads (derived) -->
+          <tr class="row-derived">
+            <td class="lbl"><div class="lbl-inner" style="padding-left:32px"><span class="chevron-spacer"></span><span class="lbl-text">Leads</span><span class="formula-hint">Clicks*CVR</span></div></td>
+            <td>1,999</td><td>2,259</td><td>2,619</td><td>2,894</td>
+            <td>3,290</td><td>3,621</td><td>4,211</td><td>4,563</td>
+            <td>5,033</td><td>5,540</td><td>6,244</td><td>6,739</td>
+          </tr>
+          <!-- Customers (derived) -->
+          <tr class="row-derived">
+            <td class="lbl"><div class="lbl-inner" style="padding-left:32px"><span class="chevron-spacer"></span><span class="lbl-text">Customers</span><span class="formula-hint">Leads*Close</span></div></td>
+            <td>380</td><td>452</td><td>524</td><td>608</td>
+            <td>691</td><td>797</td><td>926</td><td>1,049</td>
+            <td>1,158</td><td>1,330</td><td>1,499</td><td>1,685</td>
+          </tr>
+          <!-- Cost of Goods (consolidated) -->
+          <tr class="row-consolidated">
+            <td class="lbl"><div class="lbl-inner"><span class="chevron"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 4l4 4 4-4"/></svg></span><span class="lbl-text">Cost of Goods</span></div></td>
+            <td>$65,239</td><td>$72,323</td><td>$79,248</td><td>$92,664</td>
+            <td>$102,279</td><td>$113,923</td><td>$122,029</td><td>$144,869</td>
+            <td>$153,710</td><td>$165,969</td><td>$177,949</td><td>$212,910</td>
+          </tr>
+          <!-- COGS Rate (input) -->
+          <tr class="row-input">
+            <td class="lbl"><div class="lbl-inner" style="padding-left:16px"><span class="chevron-spacer"></span><span class="lbl-text">COGS Rate</span></div></td>
+            <td class="cell-locked">34.0%<span class="lock-icon"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2.5" y="6" width="7" height="4.5" rx="1"/><path d="M4.5 6V4.5a1.5 1.5 0 013 0V6"/></svg></span></td>
+            <td>33.5%</td><td>33.2%</td><td>33.0%</td>
+            <td>32.6%</td><td>32.3%</td><td>31.8%</td><td>31.5%</td>
+            <td>31.2%</td><td>30.8%</td><td>30.5%</td><td>30.2%</td>
+          </tr>
+          <!-- Gross Profit (derived) -->
+          <tr class="row-derived">
+            <td class="lbl"><div class="lbl-inner"><span class="chevron-spacer"></span><span class="lbl-text">Gross Profit</span><span class="formula-hint">Rev&minus;COGS</span></div></td>
+            <td>$126,641</td><td>$143,567</td><td>$159,452</td><td>$188,136</td>
+            <td>$211,461</td><td>$238,781</td><td>$261,011</td><td>$315,031</td>
+            <td>$338,950</td><td>$372,891</td><td>$405,491</td><td>$492,090</td>
+          </tr>
+          <!-- Operating Expense (derived) -->
+          <tr class="row-derived">
+            <td class="lbl"><div class="lbl-inner"><span class="chevron-spacer"></span><span class="lbl-text">Operating Expense</span><span class="formula-hint">Rev*28%</span></div></td>
+            <td>$53,726</td><td>$60,449</td><td>$66,836</td><td>$78,624</td>
+            <td>$87,847</td><td>$98,757</td><td>$107,251</td><td>$128,772</td>
+            <td>$137,945</td><td>$150,881</td><td>$163,363</td><td>$197,400</td>
+          </tr>
+          <!-- EBITDA (derived) -->
+          <tr class="row-derived">
+            <td class="lbl"><div class="lbl-inner"><span class="chevron-spacer"></span><span class="lbl-text">EBITDA</span><span class="formula-hint">GP&minus;Opex</span></div></td>
+            <td>$72,915</td><td>$83,118</td><td>$92,616</td><td>$109,512</td>
+            <td>$123,614</td><td>$140,024</td><td>$153,760</td><td>$186,259</td>
+            <td>$201,005</td><td>$222,010</td><td>$242,128</td><td>$294,690</td>
+          </tr>
+          <!-- Assumptions (group, collapsed) -->
+          <tr class="row-group">
+            <td class="lbl"><div class="lbl-inner"><span class="chevron"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 2l4 4-4 4"/></svg></span><span class="lbl-text">Assumptions</span></div></td>
+            <td></td><td></td><td></td><td></td>
+            <td></td><td></td><td></td><td></td>
+            <td></td><td></td><td></td><td></td>
+          </tr>
+          <!-- Media Spend (input) -->
+          <tr class="row-input">
+            <td class="lbl"><div class="lbl-inner" style="padding-left:16px"><span class="chevron-spacer"></span><span class="lbl-text">Media Spend</span></div></td>
+            <td>$118,000</td><td>$124,000</td><td>$137,500</td><td>$156,000</td>
+            <td>$168,000</td><td>$176,500</td><td>$192,000</td><td>$215,000</td>
+            <td>$226,000</td><td>$238,000</td><td>$252,000</td><td class="cell-edited">$280,000</td>
+          </tr>
+          <!-- Avg CPC (input) -->
+          <tr class="row-input">
+            <td class="lbl"><div class="lbl-inner" style="padding-left:16px"><span class="chevron-spacer"></span><span class="lbl-text">Avg CPC</span></div></td>
+            <td>$2.42</td><td>$2.36</td><td>$2.31</td><td>$2.48</td>
+            <td>$2.40</td><td>$2.34</td><td>$2.28</td><td>$2.45</td>
+            <td>$2.38</td><td>$2.32</td><td>$2.26</td><td>$2.41</td>
+          </tr>
+          <!-- Visit-to-Lead CVR (input) -->
+          <tr class="row-input">
+            <td class="lbl"><div class="lbl-inner" style="padding-left:16px"><span class="chevron-spacer"></span><span class="lbl-text">Visit-to-Lead CVR</span></div></td>
+            <td>4.10%</td><td>4.30%</td><td>4.40%</td><td>4.60%</td>
+            <td>4.70%</td><td>4.80%</td><td>5.00%</td><td>5.20%</td>
+            <td>5.30%</td><td>5.40%</td><td>5.60%</td><td>5.80%</td>
+          </tr>
+          <!-- Lead Close Rate (input) -->
+          <tr class="row-input">
+            <td class="lbl"><div class="lbl-inner" style="padding-left:16px"><span class="chevron-spacer"></span><span class="lbl-text">Lead Close Rate</span></div></td>
+            <td>19.0%</td><td>20.0%</td><td>20.0%</td><td>21.0%</td>
+            <td>21.0%</td><td>22.0%</td><td>22.0%</td><td>23.0%</td>
+            <td>23.0%</td><td>24.0%</td><td>24.0%</td><td>25.0%</td>
+          </tr>
+          <!-- Average Order Value (input) -->
+          <tr class="row-input">
+            <td class="lbl"><div class="lbl-inner" style="padding-left:16px"><span class="chevron-spacer"></span><span class="lbl-text">Average Order Value</span></div></td>
+            <td>$505</td><td>$478</td><td>$455</td><td>$462</td>
+            <td>$454</td><td>$443</td><td>$414</td><td>$438</td>
+            <td>$425</td><td>$405</td><td>$389</td><td>$418</td>
+          </tr>
+        </tbody>
+      </table>
+    </main>
+
+    <!-- ═══ INSPECTOR ═══ -->
+    <aside class="inspector">
+      <div class="insp-tabs">
+        <button class="insp-tab active">Cell</button>
+        <button class="insp-tab">Trace</button>
+        <button class="insp-tab">Versions</button>
+      </div>
+      <div class="insp-body">
+        <div class="insp-field">
+          <div class="insp-label">Value</div>
+          <div class="insp-value large" style="color:#7c3aed">$383,040</div>
+        </div>
+        <div class="insp-field">
+          <div class="insp-label">Cell</div>
+          <div class="insp-value mono">Total Revenue @ Q3'21</div>
+        </div>
+        <div class="insp-field">
+          <div class="insp-label">Type</div>
+          <div class="insp-value">Consolidated <span style="color:var(--text-tertiary)">&mdash; rule_revenue</span></div>
+        </div>
+        <div class="insp-field">
+          <div class="insp-label">Formula</div>
+          <div class="insp-value mono" style="color:var(--info)">Customers * AOV</div>
+        </div>
+        <div class="insp-field">
+          <div class="insp-label">Trace</div>
+          <div class="insp-trace">
+            <div><span class="trace-node">Total Revenue</span> <span class="trace-op">=</span></div>
+            <div style="padding-left:16px"><span class="trace-node">Customers</span> <span class="trace-val">926</span></div>
+            <div style="padding-left:16px"><span class="trace-op">&times;</span> <span class="trace-node">AOV</span> <span class="trace-val">$414</span></div>
+            <div style="padding-top:4px"><span class="trace-op">=</span> <span class="trace-val" style="font-weight:600">$383,364</span></div>
+          </div>
+        </div>
+        <div class="insp-provenance">Computed &middot; rule engine &middot; revision 4</div>
+      </div>
+    </aside>
+
+  </div>
+
+  <!-- ═══════ STATUS BAR ═══════ -->
+  <footer class="statusbar">
+    <span>Acme Marketing Finance &middot; Income Statement</span>
+    <span class="statusbar-spacer"></span>
+    <span>16 rows &middot; 12 periods &middot; 192 cells</span>
+    <span class="statusbar-spacer"></span>
+    <span class="statusbar-edited">1 unsaved change</span>
+    <span>&middot;</span>
+    <span class="statusbar-clean">Model clean</span>
+  </footer>
+
+</div>
+
+</body>
+</html>
