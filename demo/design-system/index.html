@@ -1,0 +1,1210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mosaic Design System</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,300;0,8..60,400;0,8..60,600;1,8..60,400&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════════════════════════════════════════
+   MOSAIC DESIGN SYSTEM — Warm Editorial Planning Grid
+   "Airtable warmth meets Notion calm"
+   ═══════════════════════════════════════════════════════════ */
+
+:root {
+  /* ── Surfaces ── */
+  --surface-0: #ffffff;
+  --surface-1: #fdfcfa;
+  --surface-2: #f7f6f3;
+  --surface-3: #f0eeeb;
+  --surface-hover: #f5f3f0;
+
+  /* ── Borders ── */
+  --border: #e8e5df;
+  --border-strong: #d5d1ca;
+  --border-soft: rgba(30, 26, 20, 0.06);
+
+  /* ── Text ── */
+  --text-primary: #1a1816;
+  --text-secondary: #6b6560;
+  --text-tertiary: #9c9691;
+  --text-inverse: #fdfcfa;
+
+  /* ── Accent (Indigo) ── */
+  --accent: #6366f1;
+  --accent-hover: #5457e5;
+  --accent-soft: #eef0ff;
+  --accent-muted: rgba(99, 102, 241, 0.12);
+
+  /* ── Semantic ── */
+  --success: #1a9a4a;
+  --success-soft: #ecfdf3;
+  --success-border: #a7e8c1;
+  --warning: #c47a15;
+  --warning-soft: #fef9ec;
+  --warning-border: #f5d88a;
+  --danger: #d63a2f;
+  --danger-soft: #fef2f1;
+  --danger-border: #f5aca7;
+  --info: #3578d8;
+  --info-soft: #eff6ff;
+  --info-border: #a3c9f5;
+
+  /* ── Cell State Tints ── */
+  --cell-input: transparent;
+  --cell-derived: #f0f4ff;
+  --cell-consolidated: #f4f0ff;
+  --cell-edited: #fefce8;
+  --cell-locked: #f5f4f2;
+  --cell-error: #fef2f1;
+  --cell-selected-ring: rgba(99, 102, 241, 0.5);
+
+  /* ── Dimension Colors ── */
+  --dim-scenario: #6366f1;
+  --dim-version: #0d9488;
+  --dim-time: #d97706;
+  --dim-market: #e15a8a;
+  --dim-channel: #7c3aed;
+  --dim-measure: #2563eb;
+
+  /* ── Spacing ── */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 20px; --sp-6: 24px; --sp-8: 32px; --sp-10: 40px;
+  --sp-12: 48px; --sp-16: 64px;
+
+  /* ── Radius ── */
+  --r-sm: 6px; --r-md: 10px; --r-lg: 16px; --r-xl: 24px; --r-full: 9999px;
+
+  /* ── Shadows ── */
+  --shadow-sm: 0 1px 2px rgba(26, 24, 22, 0.04);
+  --shadow-md: 0 2px 8px rgba(26, 24, 22, 0.06), 0 1px 2px rgba(26, 24, 22, 0.04);
+  --shadow-lg: 0 4px 24px rgba(26, 24, 22, 0.08), 0 2px 6px rgba(26, 24, 22, 0.04);
+  --shadow-focus: 0 0 0 3px var(--cell-selected-ring);
+
+  /* ── Typography ── */
+  --font-display: 'Source Serif 4', Georgia, serif;
+  --font-ui: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+/* ── Dark Mode Tokens ── */
+.dark {
+  --surface-0: #1c1a17;
+  --surface-1: #242220;
+  --surface-2: #2e2b28;
+  --surface-3: #3a3734;
+  --surface-hover: #33302d;
+  --border: #3e3a36;
+  --border-strong: #524e49;
+  --border-soft: rgba(255, 250, 240, 0.06);
+  --text-primary: #f0eeeb;
+  --text-secondary: #a09a93;
+  --text-tertiary: #726c66;
+  --text-inverse: #1a1816;
+  --accent-soft: rgba(99, 102, 241, 0.15);
+  --accent-muted: rgba(99, 102, 241, 0.2);
+  --success-soft: rgba(26, 154, 74, 0.12);
+  --warning-soft: rgba(196, 122, 21, 0.12);
+  --danger-soft: rgba(214, 58, 47, 0.12);
+  --info-soft: rgba(53, 120, 216, 0.12);
+  --cell-derived: rgba(96, 130, 255, 0.08);
+  --cell-consolidated: rgba(140, 100, 255, 0.08);
+  --cell-edited: rgba(250, 204, 21, 0.1);
+  --cell-locked: rgba(255, 255, 255, 0.03);
+  --cell-error: rgba(214, 58, 47, 0.1);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 4px 24px rgba(0, 0, 0, 0.3);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   BASE RESET
+   ═══════════════════════════════════════════════════════════ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 15px; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+body {
+  font-family: var(--font-ui);
+  color: var(--text-primary);
+  background: var(--surface-2);
+  line-height: 1.55;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   CATALOG LAYOUT
+   ═══════════════════════════════════════════════════════════ */
+.catalog { max-width: 1320px; margin: 0 auto; padding: var(--sp-10) var(--sp-6); }
+.catalog-hero {
+  text-align: center;
+  padding: var(--sp-16) var(--sp-8) var(--sp-12);
+}
+.catalog-hero .brand {
+  font-family: var(--font-display);
+  font-size: 2.4rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+.catalog-hero .brand span { color: var(--accent); }
+.catalog-hero .subtitle {
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  font-weight: 300;
+  color: var(--text-secondary);
+  margin-top: var(--sp-3);
+  font-style: italic;
+}
+.catalog-hero .tagline {
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
+  margin-top: var(--sp-6);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+
+.section {
+  margin-top: var(--sp-12);
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: var(--sp-8);
+  box-shadow: var(--shadow-sm);
+}
+.section-label {
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+.section-desc {
+  font-size: 0.85rem;
+  color: var(--text-tertiary);
+  margin-top: var(--sp-1);
+  margin-bottom: var(--sp-6);
+}
+.subsection {
+  margin-top: var(--sp-6);
+  padding-top: var(--sp-6);
+  border-top: 1px solid var(--border-soft);
+}
+.subsection-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary);
+  margin-bottom: var(--sp-4);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   1. COLOR PALETTE
+   ═══════════════════════════════════════════════════════════ */
+.swatch-grid { display: flex; flex-wrap: wrap; gap: var(--sp-3); }
+.swatch {
+  width: 100px; border-radius: var(--r-md); overflow: hidden;
+  border: 1px solid var(--border);
+}
+.swatch-color { height: 56px; }
+.swatch-info { padding: var(--sp-2) var(--sp-3); background: var(--surface-0); }
+.swatch-name { font-size: 0.7rem; font-weight: 600; color: var(--text-primary); }
+.swatch-hex { font-family: var(--font-mono); font-size: 0.65rem; color: var(--text-tertiary); }
+
+/* ═══════════════════════════════════════════════════════════
+   2. TYPOGRAPHY
+   ═══════════════════════════════════════════════════════════ */
+.type-sample { margin-bottom: var(--sp-4); }
+.type-label { font-size: 0.7rem; color: var(--text-tertiary); font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: var(--sp-1); }
+
+/* ═══════════════════════════════════════════════════════════
+   3. BUTTONS
+   ═══════════════════════════════════════════════════════════ */
+.btn-row { display: flex; flex-wrap: wrap; gap: var(--sp-3); align-items: center; }
+.btn {
+  display: inline-flex; align-items: center; gap: var(--sp-2);
+  font-family: var(--font-ui); font-size: 0.85rem; font-weight: 500;
+  padding: var(--sp-2) var(--sp-4); border-radius: var(--r-sm);
+  border: 1px solid transparent; cursor: pointer;
+  transition: all 0.15s ease;
+  line-height: 1.4;
+}
+.btn-primary { background: var(--accent); color: white; border-color: var(--accent); }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-secondary { background: var(--surface-0); color: var(--text-primary); border-color: var(--border-strong); }
+.btn-secondary:hover { background: var(--surface-hover); border-color: var(--text-tertiary); }
+.btn-ghost { background: transparent; color: var(--text-secondary); }
+.btn-ghost:hover { background: var(--surface-hover); color: var(--text-primary); }
+.btn-danger { background: var(--danger-soft); color: var(--danger); border-color: var(--danger-border); }
+.btn-danger:hover { background: var(--danger); color: white; }
+.btn-sm { font-size: 0.78rem; padding: var(--sp-1) var(--sp-3); }
+.btn-lg { font-size: 0.9rem; padding: var(--sp-3) var(--sp-6); border-radius: var(--r-md); }
+.btn-icon { padding: var(--sp-2); }
+
+/* ═══════════════════════════════════════════════════════════
+   4. PILLS & TAGS
+   ═══════════════════════════════════════════════════════════ */
+.pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 0.78rem; font-weight: 500;
+  padding: 3px 10px 3px 8px;
+  border-radius: var(--r-full);
+  border: 1px solid;
+  white-space: nowrap;
+}
+.pill .pill-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.pill-scenario { background: rgba(99, 102, 241, 0.07); border-color: rgba(99, 102, 241, 0.2); color: #4f46e5; }
+.pill-scenario .pill-dot { background: var(--dim-scenario); }
+.pill-version { background: rgba(13, 148, 136, 0.07); border-color: rgba(13, 148, 136, 0.2); color: #0d7a6e; }
+.pill-version .pill-dot { background: var(--dim-version); }
+.pill-time { background: rgba(217, 119, 6, 0.07); border-color: rgba(217, 119, 6, 0.2); color: #a65c0a; }
+.pill-time .pill-dot { background: var(--dim-time); }
+.pill-market { background: rgba(225, 90, 138, 0.07); border-color: rgba(225, 90, 138, 0.2); color: #c2416e; }
+.pill-market .pill-dot { background: var(--dim-market); }
+.pill-channel { background: rgba(124, 58, 237, 0.07); border-color: rgba(124, 58, 237, 0.2); color: #6d28d9; }
+.pill-channel .pill-dot { background: var(--dim-channel); }
+.pill-label { font-size: 0.68rem; color: var(--text-tertiary); font-weight: 400; }
+
+/* ═══════════════════════════════════════════════════════════
+   5. TOP BAR
+   ═══════════════════════════════════════════════════════════ */
+.topbar {
+  display: flex; align-items: center; gap: var(--sp-3);
+  height: 56px; padding: 0 var(--sp-5);
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+.topbar-brand {
+  font-family: var(--font-display);
+  font-size: 1.05rem; font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+.topbar-brand span { color: var(--accent); }
+.topbar-sep { width: 1px; height: 24px; background: var(--border); margin: 0 var(--sp-1); }
+.topbar-model {
+  font-size: 0.88rem; font-weight: 500; color: var(--text-primary);
+  display: flex; align-items: center; gap: var(--sp-2);
+}
+.topbar-model svg { color: var(--text-tertiary); }
+.topbar-pills { display: flex; gap: var(--sp-2); margin-left: var(--sp-2); padding-left: var(--sp-3); border-left: 1px solid var(--border); }
+.topbar-spacer { flex: 1; }
+.topbar-actions { display: flex; gap: var(--sp-2); }
+
+/* ═══════════════════════════════════════════════════════════
+   6. FORMULA BAR
+   ═══════════════════════════════════════════════════════════ */
+.formula-bar {
+  display: flex; align-items: center; gap: var(--sp-3);
+  height: 40px; padding: 0 var(--sp-4);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  font-size: 0.82rem;
+}
+.formula-coord {
+  font-family: var(--font-mono); font-size: 0.78rem; font-weight: 500;
+  color: var(--accent); background: var(--accent-soft);
+  padding: 2px 8px; border-radius: var(--r-sm);
+}
+.formula-sep { width: 1px; height: 18px; background: var(--border); }
+.formula-expr {
+  font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-secondary);
+  flex: 1;
+}
+.formula-expr em { font-style: italic; color: var(--text-tertiary); }
+
+/* ═══════════════════════════════════════════════════════════
+   7. THE GRID (the centerpiece)
+   ═══════════════════════════════════════════════════════════ */
+.grid-wrap {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  background: var(--surface-0);
+}
+.grid-table {
+  width: 100%; border-collapse: collapse;
+  font-size: 0.82rem;
+}
+.grid-table th {
+  text-align: right; font-weight: 500; font-size: 0.75rem;
+  color: var(--text-tertiary); letter-spacing: 0.02em;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 2;
+}
+.grid-table th:first-child {
+  text-align: left; position: sticky; left: 0; z-index: 3;
+  min-width: 200px;
+  background: var(--surface-2);
+  border-right: 1px solid var(--border);
+}
+.grid-table td {
+  text-align: right; padding: 0;
+  border-bottom: 1px solid var(--border-soft);
+  font-family: var(--font-mono); font-size: 0.82rem; font-weight: 400;
+  color: var(--text-primary);
+  height: 40px;
+}
+.grid-table td:first-child {
+  text-align: left; font-family: var(--font-ui);
+  position: sticky; left: 0; z-index: 1;
+  background: var(--surface-0);
+  border-right: 1px solid var(--border-soft);
+}
+
+/* Cell interior — padding + state bg */
+.cell {
+  display: flex; align-items: center; justify-content: flex-end;
+  padding: 0 var(--sp-4); height: 100%;
+  transition: background 0.1s ease;
+}
+.cell:hover { background: var(--surface-hover); }
+td:first-child .cell { justify-content: flex-start; }
+
+/* ── Row types ── */
+.row-group { background: var(--surface-2); }
+.row-group td:first-child .cell {
+  font-weight: 600; font-size: 0.84rem; color: var(--text-primary);
+  gap: var(--sp-2);
+}
+.row-group td:first-child .cell .chevron {
+  color: var(--text-tertiary); width: 14px; height: 14px; flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+.row-group .cell { font-family: var(--font-mono); font-weight: 600; }
+
+.row-input td:first-child .cell { padding-left: var(--sp-8); color: var(--text-primary); }
+.row-input .cell { color: var(--text-primary); }
+
+.row-derived { background: var(--cell-derived); }
+.row-derived td:first-child .cell {
+  padding-left: var(--sp-8); color: var(--info);
+}
+.row-derived td:first-child .formula-hint {
+  font-family: var(--font-mono); font-size: 0.68rem;
+  color: var(--text-tertiary); font-style: italic; margin-left: var(--sp-2);
+}
+.row-derived .cell { color: var(--info); }
+
+.row-consolidated { background: var(--cell-consolidated); }
+.row-consolidated td:first-child .cell {
+  padding-left: var(--sp-5); font-weight: 600; color: #7c3aed;
+}
+.row-consolidated .cell { font-weight: 600; color: #7c3aed; }
+
+/* ── Cell states ── */
+.cell-selected { box-shadow: inset 0 0 0 2px var(--accent); border-radius: 2px; background: var(--accent-soft) !important; }
+.cell-edited { background: var(--cell-edited) !important; position: relative; }
+.cell-edited::after {
+  content: ''; position: absolute; top: 6px; right: 6px;
+  width: 6px; height: 6px; border-radius: 50%; background: var(--warning);
+}
+.cell-locked { background: var(--cell-locked) !important; color: var(--text-tertiary) !important; }
+.cell-locked .lock-icon { width: 11px; height: 11px; color: var(--text-tertiary); margin-left: var(--sp-1); }
+.cell-error { background: var(--cell-error) !important; color: var(--danger) !important; }
+
+/* ═══════════════════════════════════════════════════════════
+   8. SIDEBAR
+   ═══════════════════════════════════════════════════════════ */
+.sidebar {
+  width: 240px; background: var(--surface-1);
+  border: 1px solid var(--border); border-radius: var(--r-lg);
+  padding: var(--sp-4) 0;
+  font-size: 0.82rem;
+}
+.sidebar-section { padding: var(--sp-2) var(--sp-4); }
+.sidebar-heading {
+  font-size: 0.68rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--text-tertiary);
+  padding: var(--sp-3) var(--sp-4) var(--sp-2);
+}
+.sidebar-item {
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4); border-radius: var(--r-sm);
+  color: var(--text-secondary); cursor: pointer;
+  transition: all 0.1s ease; margin: 1px var(--sp-2);
+}
+.sidebar-item:hover { background: var(--surface-hover); color: var(--text-primary); }
+.sidebar-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+.sidebar-item .icon {
+  width: 18px; height: 18px; border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.7rem; font-weight: 700; flex-shrink: 0;
+}
+.sidebar-item .icon-cube { background: var(--accent-soft); color: var(--accent); }
+.sidebar-item .icon-view { background: var(--success-soft); color: var(--success); }
+.sidebar-item .badge {
+  margin-left: auto; font-size: 0.68rem; color: var(--text-tertiary);
+  background: var(--surface-3); padding: 1px 6px; border-radius: var(--r-full);
+}
+.sidebar-tree { padding-left: var(--sp-4); }
+.sidebar-tree-item {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: 3px 0; font-size: 0.78rem; color: var(--text-secondary);
+}
+.sidebar-tree-item .tree-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+
+/* ═══════════════════════════════════════════════════════════
+   9. INSPECTOR
+   ═══════════════════════════════════════════════════════════ */
+.inspector {
+  width: 320px; background: var(--surface-0);
+  border: 1px solid var(--border); border-radius: var(--r-lg);
+  overflow: hidden;
+}
+.inspector-tabs {
+  display: flex; border-bottom: 1px solid var(--border); background: var(--surface-1);
+}
+.inspector-tab {
+  flex: 1; padding: var(--sp-3) var(--sp-4);
+  font-size: 0.78rem; font-weight: 500;
+  text-align: center; color: var(--text-tertiary);
+  border-bottom: 2px solid transparent;
+  cursor: pointer; transition: all 0.15s ease;
+  background: none; border-top: none; border-left: none; border-right: none;
+}
+.inspector-tab.active { color: var(--accent); border-bottom-color: var(--accent); background: var(--surface-0); }
+.inspector-body { padding: var(--sp-5); }
+.inspector-field { margin-bottom: var(--sp-4); }
+.inspector-field-label {
+  font-size: 0.7rem; font-weight: 500; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--text-tertiary); margin-bottom: var(--sp-1);
+}
+.inspector-field-value { font-size: 0.88rem; color: var(--text-primary); }
+.inspector-field-value.mono { font-family: var(--font-mono); font-size: 0.84rem; }
+.inspector-field-value.large { font-size: 1.4rem; font-weight: 600; }
+.inspector-trace {
+  padding: var(--sp-3); background: var(--surface-2);
+  border-radius: var(--r-md); font-family: var(--font-mono);
+  font-size: 0.76rem; color: var(--text-secondary); line-height: 1.7;
+}
+.inspector-trace .trace-node { color: var(--text-primary); font-weight: 500; }
+.inspector-trace .trace-op { color: var(--accent); }
+.inspector-trace .trace-val { color: var(--success); }
+
+/* ═══════════════════════════════════════════════════════════
+   10. NARRATIVE CARDS
+   ═══════════════════════════════════════════════════════════ */
+.narrative-card {
+  padding: var(--sp-4) var(--sp-5);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  border-left: 4px solid;
+  background: var(--surface-0);
+  margin-bottom: var(--sp-3);
+}
+.narrative-card.severity-info { border-left-color: var(--info); }
+.narrative-card.severity-success { border-left-color: var(--success); }
+.narrative-card.severity-warning { border-left-color: var(--warning); }
+.narrative-card.severity-critical { border-left-color: var(--danger); }
+.narrative-header {
+  display: flex; align-items: center; gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+.narrative-severity {
+  font-size: 0.68rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.06em; padding: 2px 7px; border-radius: var(--r-full);
+}
+.severity-info .narrative-severity { background: var(--info-soft); color: var(--info); }
+.severity-success .narrative-severity { background: var(--success-soft); color: var(--success); }
+.severity-warning .narrative-severity { background: var(--warning-soft); color: var(--warning); }
+.severity-critical .narrative-severity { background: var(--danger-soft); color: var(--danger); }
+.narrative-id { font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-tertiary); }
+.narrative-text { font-size: 0.88rem; color: var(--text-primary); line-height: 1.6; }
+.narrative-evidence {
+  display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-3);
+}
+.evidence-pill {
+  font-family: var(--font-mono); font-size: 0.7rem;
+  padding: 2px 8px; border-radius: var(--r-full);
+  background: var(--surface-2); color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   11. TOAST
+   ═══════════════════════════════════════════════════════════ */
+.toast {
+  display: inline-flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5);
+  border-radius: var(--r-md);
+  font-size: 0.82rem; font-weight: 500;
+  box-shadow: var(--shadow-lg);
+}
+.toast-success { background: #166534; color: #dcfce7; }
+.toast-warning { background: #854d0e; color: #fef9c3; }
+.toast-error { background: #991b1b; color: #fee2e2; }
+.toast-row { display: flex; gap: var(--sp-4); align-items: center; }
+
+/* ═══════════════════════════════════════════════════════════
+   12. EMPTY STATE
+   ═══════════════════════════════════════════════════════════ */
+.empty-state {
+  text-align: center; padding: var(--sp-16) var(--sp-8);
+  border: 2px dashed var(--border);
+  border-radius: var(--r-xl);
+  background: var(--surface-1);
+}
+.empty-icon {
+  width: 72px; height: 72px; margin: 0 auto var(--sp-5);
+  background: var(--accent-soft); border-radius: var(--r-lg);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.8rem;
+}
+.empty-title {
+  font-family: var(--font-display); font-size: 1.2rem; font-weight: 600;
+  color: var(--text-primary); margin-bottom: var(--sp-2);
+}
+.empty-desc { font-size: 0.88rem; color: var(--text-secondary); max-width: 360px; margin: 0 auto var(--sp-6); line-height: 1.6; }
+
+/* ═══════════════════════════════════════════════════════════
+   13. DROPDOWN
+   ═══════════════════════════════════════════════════════════ */
+.dropdown {
+  background: var(--surface-0);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
+  padding: var(--sp-2);
+  min-width: 200px;
+}
+.dropdown-item {
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3); border-radius: var(--r-sm);
+  font-size: 0.82rem; color: var(--text-secondary); cursor: pointer;
+}
+.dropdown-item:hover { background: var(--surface-hover); color: var(--text-primary); }
+.dropdown-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+.dropdown-item .check { width: 16px; font-size: 0.75rem; color: var(--accent); }
+.dropdown-sep { height: 1px; background: var(--border-soft); margin: var(--sp-2) 0; }
+
+/* ═══════════════════════════════════════════════════════════
+   14. FULL MOCK LAYOUT
+   ═══════════════════════════════════════════════════════════ */
+.mock-layout {
+  display: grid;
+  grid-template-columns: 240px 1fr 320px;
+  gap: 0;
+  height: 560px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.mock-layout .sidebar { border-radius: 0; border: none; border-right: 1px solid var(--border); height: 100%; overflow-y: auto; }
+.mock-layout .mock-center { display: flex; flex-direction: column; min-width: 0; overflow: hidden; background: var(--surface-0); }
+.mock-layout .inspector { border-radius: 0; border: none; border-left: 1px solid var(--border); height: 100%; width: 100%; overflow-y: auto; }
+.mock-layout .mock-center .formula-bar { border-radius: 0; border: none; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.mock-layout .mock-center .grid-wrap { border-radius: 0; border: none; flex: 1; overflow: auto; }
+
+/* ═══════════════════════════════════════════════════════════
+   HELPERS
+   ═══════════════════════════════════════════════════════════ */
+.flex-row { display: flex; gap: var(--sp-4); align-items: flex-start; flex-wrap: wrap; }
+.flex-col { display: flex; flex-direction: column; gap: var(--sp-3); }
+.mt-4 { margin-top: var(--sp-4); }
+.mt-6 { margin-top: var(--sp-6); }
+.gap-2 { gap: var(--sp-2); }
+.gap-3 { gap: var(--sp-3); }
+
+/* Smooth transitions for dark mode */
+* { transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease; }
+.grid-table *, .cell { transition: none; }
+</style>
+</head>
+<body>
+
+<div class="catalog">
+
+  <!-- ═══════ HERO ═══════ -->
+  <div class="catalog-hero">
+    <div class="brand">Mosaic<span>.</span></div>
+    <div class="subtitle">Design System &mdash; Phase 6B Web UI</div>
+    <div class="tagline">Warm &bull; Inviting &bull; Approachable</div>
+  </div>
+
+  <!-- ═══════ 1. COLOR PALETTE ═══════ -->
+  <div class="section">
+    <div class="section-label">Color Palette</div>
+    <div class="section-desc">Warm neutrals with purposeful accents. Every color has a job.</div>
+
+    <div class="subsection">
+      <div class="subsection-label">Surfaces</div>
+      <div class="swatch-grid">
+        <div class="swatch"><div class="swatch-color" style="background:#ffffff"></div><div class="swatch-info"><div class="swatch-name">Surface 0</div><div class="swatch-hex">#ffffff</div></div></div>
+        <div class="swatch"><div class="swatch-color" style="background:#fdfcfa"></div><div class="swatch-info"><div class="swatch-name">Surface 1</div><div class="swatch-hex">#fdfcfa</div></div></div>
+        <div class="swatch"><div class="swatch-color" style="background:#f7f6f3"></div><div class="swatch-info"><div class="swatch-name">Surface 2</div><div class="swatch-hex">#f7f6f3</div></div></div>
+        <div class="swatch"><div class="swatch-color" style="background:#f0eeeb"></div><div class="swatch-info"><div class="swatch-name">Surface 3</div><div class="swatch-hex">#f0eeeb</div></div></div>
+        <div class="swatch"><div class="swatch-color" style="background:#e8e5df"></div><div class="swatch-info"><div class="swatch-name">Border</div><div class="swatch-hex">#e8e5df</div></div></div>
+        <div class="swatch"><div class="swatch-color" style="background:#d5d1ca"></div><div class="swatch-info"><div class="swatch-name">Border Strong</div><div class="swatch-hex">#d5d1ca</div></div></div>
+      </div>
+    </div>
+    <div class="subsection">
+      <div class="subsection-label">Text</div>
+      <div class="swatch-grid">
+        <div class="swatch"><div class="swatch-color" style="background:#1a1816"></div><div class="swatch-info"><div class="swatch-name">Primary</div><div class="swatch-hex">#1a1816</div></div></div>
+        <div class="swatch"><div class="swatch-color" style="background:#6b6560"></div><div class="swatch-info"><div class="swatch-name">Secondary</div><div class="swatch-hex">#6b6560</div></div></div>
+        <div class="swatch"><div class="swatch-color" style="background:#9c9691"></div><div class="swatch-info"><div class="swatch-name">Tertiary</div><div class="swatch-hex">#9c9691</div></div></div>
+      </div>
+    </div>
+    <div class="subsection">
+      <div class="subsection-label">Accents &amp; Semantic</div>
+      <div class="swatch-grid">
+        <div class="swatch"><div class="swatch-color" style="background:#6366f1"></div><div class="swatch-info"><div class="swatch-name">Accent</div><div class="swatch-hex">#6366f1</div></div></div>
+        <div class="swatch"><div class="swatch-color" style="background:#eef0ff"></div><div class="swatch-info"><div class="swatch-name">Accent Soft</div><div class="swatch-hex">#eef0ff</div></div></div>
+        <div class="swatch"><div class="swatch-color" style="background:#1a9a4a"></div><div class="swatch-info"><div class="swatch-name">Success</div><div class="swatch-hex">#1a9a4a</div></div></div>
+        <div class="swatch"><div class="swatch-color" style="background:#c47a15"></div><div class="swatch-info"><div class="swatch-name">Warning</div><div class="swatch-hex">#c47a15</div></div></div>
+        <div class="swatch"><div class="swatch-color" style="background:#d63a2f"></div><div class="swatch-info"><div class="swatch-name">Danger</div><div class="swatch-hex">#d63a2f</div></div></div>
+        <div class="swatch"><div class="swatch-color" style="background:#3578d8"></div><div class="swatch-info"><div class="swatch-name">Info</div><div class="swatch-hex">#3578d8</div></div></div>
+      </div>
+    </div>
+    <div class="subsection">
+      <div class="subsection-label">Cell State Tints</div>
+      <div class="swatch-grid">
+        <div class="swatch"><div class="swatch-color" style="background:#f0f4ff"></div><div class="swatch-info"><div class="swatch-name">Derived</div><div class="swatch-hex">#f0f4ff</div></div></div>
+        <div class="swatch"><div class="swatch-color" style="background:#f4f0ff"></div><div class="swatch-info"><div class="swatch-name">Consolidated</div><div class="swatch-hex">#f4f0ff</div></div></div>
+        <div class="swatch"><div class="swatch-color" style="background:#fefce8"></div><div class="swatch-info"><div class="swatch-name">Edited</div><div class="swatch-hex">#fefce8</div></div></div>
+        <div class="swatch"><div class="swatch-color" style="background:#f5f4f2"></div><div class="swatch-info"><div class="swatch-name">Locked</div><div class="swatch-hex">#f5f4f2</div></div></div>
+        <div class="swatch"><div class="swatch-color" style="background:#fef2f1"></div><div class="swatch-info"><div class="swatch-name">Error</div><div class="swatch-hex">#fef2f1</div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════ 2. TYPOGRAPHY ═══════ -->
+  <div class="section">
+    <div class="section-label">Typography</div>
+    <div class="section-desc">Source Serif 4 for warmth and personality. Inter for clarity. JetBrains Mono for precision.</div>
+    <div class="type-sample"><div class="type-label">Display &mdash; Source Serif 4, 600</div><div style="font-family:var(--font-display);font-size:1.8rem;font-weight:600;letter-spacing:-0.02em">Acme Marketing Finance</div></div>
+    <div class="type-sample"><div class="type-label">Section &mdash; Source Serif 4, 400 Italic</div><div style="font-family:var(--font-display);font-size:1.1rem;font-style:italic;color:var(--text-secondary)">A 6-dimension, 11-measure planning model</div></div>
+    <div class="type-sample"><div class="type-label">UI Body &mdash; Inter, 400</div><div style="font-family:var(--font-ui);font-size:0.88rem;color:var(--text-primary)">Revenue is calculated as Customers multiplied by Average Order Value across all time periods.</div></div>
+    <div class="type-sample"><div class="type-label">UI Label &mdash; Inter, 500, Uppercase</div><div style="font-family:var(--font-ui);font-size:0.72rem;font-weight:500;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-tertiary)">Scenario &bull; Version &bull; Measure</div></div>
+    <div class="type-sample"><div class="type-label">Mono Value &mdash; JetBrains Mono, 400</div><div style="font-family:var(--font-mono);font-size:0.88rem;color:var(--text-primary)">$1,247,500.00 &nbsp;&nbsp; 55,757 &nbsp;&nbsp; 0.44%</div></div>
+    <div class="type-sample"><div class="type-label">Mono Formula &mdash; JetBrains Mono, 400, Secondary</div><div style="font-family:var(--font-mono);font-size:0.82rem;color:var(--text-secondary)">Revenue = Customers * AOV</div></div>
+  </div>
+
+  <!-- ═══════ 3. BUTTONS ═══════ -->
+  <div class="section">
+    <div class="section-label">Buttons</div>
+    <div class="section-desc">Primary for main actions, secondary for supporting, ghost for subtle, danger for destructive.</div>
+    <div class="btn-row">
+      <button class="btn btn-primary btn-lg">Calculate</button>
+      <button class="btn btn-primary">Save View</button>
+      <button class="btn btn-primary btn-sm">Apply</button>
+    </div>
+    <div class="btn-row mt-4">
+      <button class="btn btn-secondary">Compare Versions</button>
+      <button class="btn btn-secondary btn-sm">Export</button>
+      <button class="btn btn-ghost">Cancel</button>
+      <button class="btn btn-ghost btn-sm">Reset</button>
+    </div>
+    <div class="btn-row mt-4">
+      <button class="btn btn-danger">Delete Snapshot</button>
+      <button class="btn btn-danger btn-sm">Discard Edits</button>
+    </div>
+  </div>
+
+  <!-- ═══════ 4. PILLS ═══════ -->
+  <div class="section">
+    <div class="section-label">Dimension Slice Pills</div>
+    <div class="section-desc">Each dimension gets a distinct hue. Color is functional, not decorative.</div>
+    <div class="btn-row">
+      <span class="pill pill-scenario"><span class="pill-dot"></span><span class="pill-label">Scenario</span> Forecast</span>
+      <span class="pill pill-version"><span class="pill-dot"></span><span class="pill-label">Version</span> Working</span>
+      <span class="pill pill-time"><span class="pill-dot"></span><span class="pill-label">Time</span> Q1 &ndash; Q4 2025</span>
+      <span class="pill pill-market"><span class="pill-dot"></span><span class="pill-label">Market</span> North America</span>
+      <span class="pill pill-channel"><span class="pill-dot"></span><span class="pill-label">Channel</span> All Channels</span>
+    </div>
+  </div>
+
+  <!-- ═══════ 5. TOP BAR ═══════ -->
+  <div class="section">
+    <div class="section-label">Top Bar</div>
+    <div class="section-desc">Model context at a glance. Everything you need to know about where you are.</div>
+    <div class="topbar">
+      <div class="topbar-brand">Mosaic<span>.</span></div>
+      <div class="topbar-sep"></div>
+      <div class="topbar-model">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="12" height="12" rx="2"/><line x1="2" y1="6" x2="14" y2="6"/><line x1="6" y1="6" x2="6" y2="14"/></svg>
+        Acme Marketing Finance
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5l3 3 3-3"/></svg>
+      </div>
+      <div class="topbar-pills">
+        <span class="pill pill-scenario"><span class="pill-dot"></span> Forecast</span>
+        <span class="pill pill-version"><span class="pill-dot"></span> Working</span>
+        <span class="pill pill-time"><span class="pill-dot"></span> Q1&ndash;Q4</span>
+        <span class="pill pill-market"><span class="pill-dot"></span> All</span>
+      </div>
+      <div class="topbar-spacer"></div>
+      <div class="topbar-actions">
+        <button class="btn btn-secondary btn-sm">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 7h10M7 2v5m0 0v5"/></svg>
+          Compare
+        </button>
+        <button class="btn btn-primary btn-sm">Calculate</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════ 6. FORMULA BAR ═══════ -->
+  <div class="section">
+    <div class="section-label">Formula Bar</div>
+    <div class="section-desc">Shows the selected cell's coordinates and formula. Monospace for precision.</div>
+    <div class="formula-bar">
+      <span class="formula-coord">Revenue @ Q2</span>
+      <span class="formula-sep"></span>
+      <span class="formula-expr">Customers * AOV <em>&mdash; derived from rule_revenue</em></span>
+    </div>
+    <div class="formula-bar mt-4">
+      <span class="formula-coord">Impressions @ Q1</span>
+      <span class="formula-sep"></span>
+      <span class="formula-expr">55,757 <em>&mdash; input cell, editable</em></span>
+    </div>
+  </div>
+
+  <!-- ═══════ 7. THE GRID ═══════ -->
+  <div class="section">
+    <div class="section-label">Planning Grid</div>
+    <div class="section-desc">The centerpiece. Row types, cell states, and hierarchy are all visually distinct without being noisy.</div>
+
+    <div class="grid-wrap">
+      <table class="grid-table">
+        <thead>
+          <tr>
+            <th>Measure</th>
+            <th>Q1 2025</th>
+            <th>Q2 2025</th>
+            <th>Q3 2025</th>
+            <th>Q4 2025</th>
+            <th>Q1 2026</th>
+            <th>Q2 2026</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="row-consolidated">
+            <td><div class="cell"><svg class="chevron" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3l4 4-4 4"/></svg>Revenue</div></td>
+            <td><div class="cell">$312,400</div></td>
+            <td><div class="cell">$347,200</div></td>
+            <td><div class="cell">$298,600</div></td>
+            <td><div class="cell">$425,100</div></td>
+            <td><div class="cell">$380,900</div></td>
+            <td><div class="cell">$401,500</div></td>
+          </tr>
+          <tr class="row-group">
+            <td><div class="cell"><svg class="chevron" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" style="transform:rotate(90deg)"><path d="M5 3l4 4-4 4"/></svg>Inputs</div></td>
+            <td><div class="cell"></div></td>
+            <td><div class="cell"></div></td>
+            <td><div class="cell"></div></td>
+            <td><div class="cell"></div></td>
+            <td><div class="cell"></div></td>
+            <td><div class="cell"></div></td>
+          </tr>
+          <tr class="row-input">
+            <td><div class="cell">Impressions</div></td>
+            <td><div class="cell">55,757</div></td>
+            <td><div class="cell">62,340</div></td>
+            <td><div class="cell">48,910</div></td>
+            <td><div class="cell">71,220</div></td>
+            <td><div class="cell cell-selected">67,450</div></td>
+            <td><div class="cell cell-edited">73,100</div></td>
+          </tr>
+          <tr class="row-input">
+            <td><div class="cell">Clicks</div></td>
+            <td><div class="cell">2,431</div></td>
+            <td><div class="cell">3,117</div></td>
+            <td><div class="cell">1,956</div></td>
+            <td><div class="cell">3,845</div></td>
+            <td><div class="cell">3,102</div></td>
+            <td><div class="cell">3,580</div></td>
+          </tr>
+          <tr class="row-input">
+            <td><div class="cell">Spend</div></td>
+            <td><div class="cell">$24,500</div></td>
+            <td><div class="cell">$28,100</div></td>
+            <td><div class="cell cell-locked">$22,000<svg class="lock-icon" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="7" width="8" height="5" rx="1"/><path d="M5 7V5a2 2 0 014 0v2"/></svg></div></td>
+            <td><div class="cell">$35,800</div></td>
+            <td><div class="cell">$31,200</div></td>
+            <td><div class="cell">$33,400</div></td>
+          </tr>
+          <tr class="row-input">
+            <td><div class="cell">Conversions</div></td>
+            <td><div class="cell">142</div></td>
+            <td><div class="cell">189</div></td>
+            <td><div class="cell cell-error">0</div></td>
+            <td><div class="cell">267</div></td>
+            <td><div class="cell">231</div></td>
+            <td><div class="cell">254</div></td>
+          </tr>
+          <tr class="row-derived">
+            <td><div class="cell">CTR <span class="formula-hint">Clicks / Impressions</span></div></td>
+            <td><div class="cell">4.36%</div></td>
+            <td><div class="cell">5.00%</div></td>
+            <td><div class="cell">4.00%</div></td>
+            <td><div class="cell">5.40%</div></td>
+            <td><div class="cell">4.60%</div></td>
+            <td><div class="cell">4.90%</div></td>
+          </tr>
+          <tr class="row-derived">
+            <td><div class="cell">CPC <span class="formula-hint">Spend / Clicks</span></div></td>
+            <td><div class="cell">$10.08</div></td>
+            <td><div class="cell">$9.02</div></td>
+            <td><div class="cell">$11.25</div></td>
+            <td><div class="cell">$9.31</div></td>
+            <td><div class="cell">$10.06</div></td>
+            <td><div class="cell">$9.33</div></td>
+          </tr>
+          <tr class="row-derived">
+            <td><div class="cell">AOV <span class="formula-hint">Revenue / Conversions</span></div></td>
+            <td><div class="cell">$2,200</div></td>
+            <td><div class="cell">$1,837</div></td>
+            <td><div class="cell">$2,986</div></td>
+            <td><div class="cell">$1,592</div></td>
+            <td><div class="cell">$1,649</div></td>
+            <td><div class="cell">$1,581</div></td>
+          </tr>
+          <tr class="row-consolidated">
+            <td><div class="cell">Total Spend</div></td>
+            <td><div class="cell">$24,500</div></td>
+            <td><div class="cell">$28,100</div></td>
+            <td><div class="cell">$22,000</div></td>
+            <td><div class="cell">$35,800</div></td>
+            <td><div class="cell">$31,200</div></td>
+            <td><div class="cell">$33,400</div></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="subsection">
+      <div class="subsection-label">Cell States Reference</div>
+      <div class="flex-row gap-3" style="font-size:0.82rem">
+        <div style="display:flex;align-items:center;gap:6px"><div style="width:32px;height:24px;border:1px solid var(--border);border-radius:4px;background:var(--surface-0)"></div> Clean</div>
+        <div style="display:flex;align-items:center;gap:6px"><div style="width:32px;height:24px;border-radius:4px;box-shadow:inset 0 0 0 2px var(--accent);background:var(--accent-soft)"></div> Selected</div>
+        <div style="display:flex;align-items:center;gap:6px"><div style="width:32px;height:24px;border:1px solid var(--border);border-radius:4px;background:var(--cell-edited);position:relative"><div style="position:absolute;top:3px;right:3px;width:5px;height:5px;border-radius:50%;background:var(--warning)"></div></div> Edited</div>
+        <div style="display:flex;align-items:center;gap:6px"><div style="width:32px;height:24px;border:1px solid var(--border);border-radius:4px;background:var(--cell-derived)"></div> Derived</div>
+        <div style="display:flex;align-items:center;gap:6px"><div style="width:32px;height:24px;border:1px solid var(--border);border-radius:4px;background:var(--cell-consolidated)"></div> Consolidated</div>
+        <div style="display:flex;align-items:center;gap:6px"><div style="width:32px;height:24px;border:1px solid var(--border);border-radius:4px;background:var(--cell-locked)"></div> Locked</div>
+        <div style="display:flex;align-items:center;gap:6px"><div style="width:32px;height:24px;border:1px solid var(--border);border-radius:4px;background:var(--cell-error)"></div> Error</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════ 8. SIDEBAR + INSPECTOR ═══════ -->
+  <div class="section">
+    <div class="section-label">Sidebar &amp; Inspector</div>
+    <div class="section-desc">Navigation on the left, detail on the right. Both collapse for more grid space.</div>
+
+    <div class="flex-row" style="align-items:stretch">
+      <!-- Sidebar -->
+      <div class="sidebar">
+        <div class="sidebar-heading">Models</div>
+        <div class="sidebar-item active">
+          <div class="icon icon-cube">A</div>
+          Acme Marketing
+          <span class="badge">6D</span>
+        </div>
+        <div class="sidebar-item">
+          <div class="icon icon-cube">S</div>
+          Scotts RV Demo
+          <span class="badge">4D</span>
+        </div>
+        <div class="sidebar-heading" style="margin-top:var(--sp-4)">Saved Views</div>
+        <div class="sidebar-item">
+          <div class="icon icon-view">V</div>
+          Q4 Budget Review
+        </div>
+        <div class="sidebar-item">
+          <div class="icon icon-view">V</div>
+          YoY Comparison
+        </div>
+        <div class="sidebar-heading" style="margin-top:var(--sp-4)">Dimensions</div>
+        <div class="sidebar-section">
+          <div class="sidebar-tree">
+            <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-scenario)"></span> Scenario <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary)">3</span></div>
+            <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-version)"></span> Version <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary)">2</span></div>
+            <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-time)"></span> Time <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary)">12</span></div>
+            <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-market)"></span> Market <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary)">5</span></div>
+            <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-channel)"></span> Channel <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary)">4</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Inspector -->
+      <div class="inspector">
+        <div class="inspector-tabs">
+          <button class="inspector-tab active">Cell</button>
+          <button class="inspector-tab">Trace</button>
+          <button class="inspector-tab">Versions</button>
+        </div>
+        <div class="inspector-body">
+          <div class="inspector-field">
+            <div class="inspector-field-label">Value</div>
+            <div class="inspector-field-value large">67,450</div>
+          </div>
+          <div class="inspector-field">
+            <div class="inspector-field-label">Cell</div>
+            <div class="inspector-field-value mono">Impressions @ Q1 2026</div>
+          </div>
+          <div class="inspector-field">
+            <div class="inspector-field-label">Type</div>
+            <div class="inspector-field-value">Input <span style="color:var(--text-tertiary)">&mdash; editable</span></div>
+          </div>
+          <div class="inspector-field">
+            <div class="inspector-field-label">Provenance</div>
+            <div class="inspector-field-value" style="font-size:0.82rem;color:var(--text-secondary)">Imported via CSV &bull; 2026-01-15 14:22</div>
+          </div>
+          <div class="inspector-field">
+            <div class="inspector-field-label">Trace</div>
+            <div class="inspector-trace">
+              <div><span class="trace-node">Revenue</span> <span class="trace-op">=</span></div>
+              <div style="padding-left:16px"><span class="trace-node">Customers</span> <span class="trace-val">231</span></div>
+              <div style="padding-left:16px"><span class="trace-op">*</span> <span class="trace-node">AOV</span> <span class="trace-val">$1,649</span></div>
+              <div><span class="trace-op">=</span> <span class="trace-val">$380,919</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════ 9. NARRATIVE CARDS ═══════ -->
+  <div class="section">
+    <div class="section-label">Narrative Cards</div>
+    <div class="section-desc">Deterministic insights from the narrative engine. Each severity level has a distinct color and weight.</div>
+
+    <div class="narrative-card severity-info">
+      <div class="narrative-header">
+        <span class="narrative-severity">Info</span>
+        <span class="narrative-id">ctr_benchmark_context</span>
+      </div>
+      <div class="narrative-text">Historical context: across 6 prior periods, this campaign's CTR has ranged from 4.00% (p10) to 5.40% (p90), with a median of 4.68%.</div>
+      <div class="narrative-evidence">
+        <span class="evidence-pill">p10: 4.00%</span>
+        <span class="evidence-pill">p50: 4.68%</span>
+        <span class="evidence-pill">p90: 5.40%</span>
+        <span class="evidence-pill">samples: 6</span>
+      </div>
+    </div>
+
+    <div class="narrative-card severity-success">
+      <div class="narrative-header">
+        <span class="narrative-severity">Success</span>
+        <span class="narrative-id">ctr_above_own_median</span>
+      </div>
+      <div class="narrative-text">CTR of 4.90% is above this campaign's historical median (4.68%). Performance is in the upper half of this workspace's own track record.</div>
+      <div class="narrative-evidence">
+        <span class="evidence-pill">current_ctr: 4.90%</span>
+        <span class="evidence-pill">median_ctr: 4.68%</span>
+      </div>
+    </div>
+
+    <div class="narrative-card severity-warning">
+      <div class="narrative-header">
+        <span class="narrative-severity">Warning</span>
+        <span class="narrative-id">impressions_declined_unexplained</span>
+      </div>
+      <div class="narrative-text">Impressions declined 22% from Q4 2025 to Q1 2026. No clear explanation detected from available data &mdash; manual review recommended.</div>
+      <div class="narrative-evidence">
+        <span class="evidence-pill">change: -22%</span>
+        <span class="evidence-pill">finding: impressions_declined_significant</span>
+        <span class="evidence-pill">explanation: none matched</span>
+      </div>
+    </div>
+
+    <div class="narrative-card severity-critical">
+      <div class="narrative-header">
+        <span class="narrative-severity">Critical</span>
+        <span class="narrative-id">conversion_zero_alarm</span>
+      </div>
+      <div class="narrative-text">Zero conversions recorded in Q3 2025 despite 48,910 impressions and $22,000 in spend. This warrants immediate investigation.</div>
+      <div class="narrative-evidence">
+        <span class="evidence-pill">conversions: 0</span>
+        <span class="evidence-pill">impressions: 48,910</span>
+        <span class="evidence-pill">spend: $22,000</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════ 10. TOASTS ═══════ -->
+  <div class="section">
+    <div class="section-label">Toast Notifications</div>
+    <div class="section-desc">Brief, non-blocking feedback. Appear bottom-center and auto-dismiss.</div>
+    <div class="toast-row">
+      <div class="toast toast-success">Recalculated &mdash; 3 cells written back.</div>
+      <div class="toast toast-warning">Benchmark library may be stale.</div>
+      <div class="toast toast-error">Write failed: cell is locked.</div>
+    </div>
+  </div>
+
+  <!-- ═══════ 11. EMPTY STATE ═══════ -->
+  <div class="section">
+    <div class="section-label">Empty State</div>
+    <div class="section-desc">The first thing a new user sees. Friendly, not intimidating.</div>
+    <div class="empty-state">
+      <div class="empty-icon">
+        <svg width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="var(--accent)" stroke-width="1.5"><rect x="4" y="4" width="24" height="24" rx="4"/><line x1="4" y1="12" x2="28" y2="12"/><line x1="12" y1="12" x2="12" y2="28"/></svg>
+      </div>
+      <div class="empty-title">No model loaded</div>
+      <div class="empty-desc">Open a model from the sidebar or drag a <code style="font-family:var(--font-mono);font-size:0.82rem;background:var(--surface-3);padding:1px 6px;border-radius:4px">.yaml</code> file here to get started.</div>
+      <button class="btn btn-primary btn-lg">Open Model</button>
+    </div>
+  </div>
+
+  <!-- ═══════ 12. DROPDOWNS ═══════ -->
+  <div class="section">
+    <div class="section-label">Dropdowns</div>
+    <div class="section-desc">Clean popovers for model selection, scenario switching, and dimension filtering.</div>
+    <div class="flex-row" style="align-items:flex-start">
+      <div class="dropdown">
+        <div class="dropdown-item active"><span class="check">&#10003;</span> Forecast</div>
+        <div class="dropdown-item"><span class="check"></span> Budget</div>
+        <div class="dropdown-item"><span class="check"></span> Actual</div>
+        <div class="dropdown-sep"></div>
+        <div class="dropdown-item"><span class="check"></span> + New Scenario</div>
+      </div>
+      <div class="dropdown">
+        <div class="dropdown-item active"><span class="check">&#10003;</span> Acme Marketing Finance</div>
+        <div class="dropdown-item"><span class="check"></span> Scotts RV Demo</div>
+        <div class="dropdown-item"><span class="check"></span> Tide MMM Model</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════ 13. FULL MOCK LAYOUT ═══════ -->
+  <div class="section">
+    <div class="section-label">Full Layout Mock</div>
+    <div class="section-desc">The complete three-panel layout: sidebar + grid + inspector. This is what the app feels like.</div>
+
+    <div class="mock-layout">
+      <!-- Left: Sidebar -->
+      <div class="sidebar">
+        <div class="sidebar-heading">Models</div>
+        <div class="sidebar-item active"><div class="icon icon-cube">A</div> Acme Marketing <span class="badge">6D</span></div>
+        <div class="sidebar-item"><div class="icon icon-cube">S</div> Scotts RV <span class="badge">4D</span></div>
+        <div class="sidebar-heading" style="margin-top:var(--sp-4)">Views</div>
+        <div class="sidebar-item"><div class="icon icon-view">V</div> Q4 Budget</div>
+        <div class="sidebar-item"><div class="icon icon-view">V</div> YoY Compare</div>
+        <div class="sidebar-heading" style="margin-top:var(--sp-4)">Dimensions</div>
+        <div class="sidebar-section"><div class="sidebar-tree">
+          <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-scenario)"></span> Scenario <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary)">3</span></div>
+          <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-version)"></span> Version <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary)">2</span></div>
+          <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-time)"></span> Time <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary)">6</span></div>
+          <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-market)"></span> Market <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary)">5</span></div>
+          <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-channel)"></span> Channel <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary)">4</span></div>
+        </div></div>
+      </div>
+
+      <!-- Center: Formula bar + Grid -->
+      <div class="mock-center">
+        <div class="formula-bar">
+          <span class="formula-coord">Impressions @ Q1 2026</span>
+          <span class="formula-sep"></span>
+          <span class="formula-expr">67,450 <em>&mdash; input cell</em></span>
+        </div>
+        <div class="grid-wrap">
+          <table class="grid-table">
+            <thead><tr><th>Measure</th><th>Q1 '25</th><th>Q2 '25</th><th>Q3 '25</th><th>Q4 '25</th><th>Q1 '26</th><th>Q2 '26</th></tr></thead>
+            <tbody>
+              <tr class="row-consolidated"><td><div class="cell"><svg class="chevron" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3l4 4-4 4"/></svg>Revenue</div></td><td><div class="cell">$312.4K</div></td><td><div class="cell">$347.2K</div></td><td><div class="cell">$298.6K</div></td><td><div class="cell">$425.1K</div></td><td><div class="cell">$380.9K</div></td><td><div class="cell">$401.5K</div></td></tr>
+              <tr class="row-input"><td><div class="cell" style="padding-left:var(--sp-8)">Impressions</div></td><td><div class="cell">55,757</div></td><td><div class="cell">62,340</div></td><td><div class="cell">48,910</div></td><td><div class="cell">71,220</div></td><td><div class="cell cell-selected">67,450</div></td><td><div class="cell">73,100</div></td></tr>
+              <tr class="row-input"><td><div class="cell" style="padding-left:var(--sp-8)">Clicks</div></td><td><div class="cell">2,431</div></td><td><div class="cell">3,117</div></td><td><div class="cell">1,956</div></td><td><div class="cell">3,845</div></td><td><div class="cell">3,102</div></td><td><div class="cell">3,580</div></td></tr>
+              <tr class="row-input"><td><div class="cell" style="padding-left:var(--sp-8)">Spend</div></td><td><div class="cell">$24,500</div></td><td><div class="cell">$28,100</div></td><td><div class="cell">$22,000</div></td><td><div class="cell">$35,800</div></td><td><div class="cell">$31,200</div></td><td><div class="cell">$33,400</div></td></tr>
+              <tr class="row-input"><td><div class="cell" style="padding-left:var(--sp-8)">Conversions</div></td><td><div class="cell">142</div></td><td><div class="cell">189</div></td><td><div class="cell cell-error">0</div></td><td><div class="cell">267</div></td><td><div class="cell">231</div></td><td><div class="cell">254</div></td></tr>
+              <tr class="row-derived"><td><div class="cell" style="padding-left:var(--sp-8)">CTR <span class="formula-hint">= Clicks/Impr</span></div></td><td><div class="cell">4.36%</div></td><td><div class="cell">5.00%</div></td><td><div class="cell">4.00%</div></td><td><div class="cell">5.40%</div></td><td><div class="cell">4.60%</div></td><td><div class="cell">4.90%</div></td></tr>
+              <tr class="row-derived"><td><div class="cell" style="padding-left:var(--sp-8)">CPC <span class="formula-hint">= Spend/Clicks</span></div></td><td><div class="cell">$10.08</div></td><td><div class="cell">$9.02</div></td><td><div class="cell">$11.25</div></td><td><div class="cell">$9.31</div></td><td><div class="cell">$10.06</div></td><td><div class="cell">$9.33</div></td></tr>
+              <tr class="row-derived"><td><div class="cell" style="padding-left:var(--sp-8)">AOV <span class="formula-hint">= Rev/Conv</span></div></td><td><div class="cell">$2,200</div></td><td><div class="cell">$1,837</div></td><td><div class="cell">$2,986</div></td><td><div class="cell">$1,592</div></td><td><div class="cell">$1,649</div></td><td><div class="cell">$1,581</div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Right: Inspector -->
+      <div class="inspector">
+        <div class="inspector-tabs">
+          <button class="inspector-tab active">Cell</button>
+          <button class="inspector-tab">Trace</button>
+          <button class="inspector-tab">Versions</button>
+        </div>
+        <div class="inspector-body">
+          <div class="inspector-field"><div class="inspector-field-label">Value</div><div class="inspector-field-value large">67,450</div></div>
+          <div class="inspector-field"><div class="inspector-field-label">Cell</div><div class="inspector-field-value mono">Impressions @ Q1 2026</div></div>
+          <div class="inspector-field"><div class="inspector-field-label">Type</div><div class="inspector-field-value">Input &mdash; editable</div></div>
+          <div class="inspector-field"><div class="inspector-field-label">Provenance</div><div class="inspector-field-value" style="font-size:0.82rem;color:var(--text-secondary)">CSV import &bull; Jan 15 2026</div></div>
+          <div class="inspector-field"><div class="inspector-field-label">Trace</div><div class="inspector-trace"><div><span class="trace-node">Revenue</span> <span class="trace-op">=</span></div><div style="padding-left:16px"><span class="trace-node">Customers</span> <span class="trace-val">231</span></div><div style="padding-left:16px"><span class="trace-op">*</span> <span class="trace-node">AOV</span> <span class="trace-val">$1,649</span></div><div><span class="trace-op">=</span> <span class="trace-val">$380,919</span></div></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════ 14. DARK MODE ═══════ -->
+  <div class="section dark" style="background:var(--surface-0);border-color:var(--border)">
+    <div class="section-label">Dark Mode</div>
+    <div class="section-desc" style="color:var(--text-tertiary)">Warm dark &mdash; not pure black. The same components with inverted tokens.</div>
+
+    <div class="subsection" style="border-color:var(--border)">
+      <div class="subsection-label" style="color:var(--text-tertiary)">Top Bar</div>
+      <div class="topbar" style="background:var(--surface-1);border-color:var(--border)">
+        <div class="topbar-brand">Mosaic<span>.</span></div>
+        <div class="topbar-sep" style="background:var(--border)"></div>
+        <div class="topbar-model">Acme Marketing Finance</div>
+        <div class="topbar-pills">
+          <span class="pill pill-scenario"><span class="pill-dot"></span> Forecast</span>
+          <span class="pill pill-version"><span class="pill-dot"></span> Working</span>
+        </div>
+        <div class="topbar-spacer"></div>
+        <button class="btn btn-primary btn-sm">Calculate</button>
+      </div>
+    </div>
+
+    <div class="subsection" style="border-color:var(--border)">
+      <div class="subsection-label" style="color:var(--text-tertiary)">Grid</div>
+      <div class="grid-wrap" style="border-color:var(--border)">
+        <table class="grid-table">
+          <thead><tr><th style="background:var(--surface-2);border-color:var(--border);color:var(--text-tertiary)">Measure</th><th style="background:var(--surface-2);border-color:var(--border);color:var(--text-tertiary)">Q1</th><th style="background:var(--surface-2);border-color:var(--border);color:var(--text-tertiary)">Q2</th><th style="background:var(--surface-2);border-color:var(--border);color:var(--text-tertiary)">Q3</th><th style="background:var(--surface-2);border-color:var(--border);color:var(--text-tertiary)">Q4</th></tr></thead>
+          <tbody>
+            <tr class="row-consolidated" style="background:var(--cell-consolidated)"><td style="background:var(--surface-1);border-color:var(--border-soft)"><div class="cell" style="color:#a78bfa;font-weight:600">Revenue</div></td><td style="border-color:var(--border-soft)"><div class="cell" style="color:#a78bfa;font-weight:600">$312K</div></td><td style="border-color:var(--border-soft)"><div class="cell" style="color:#a78bfa;font-weight:600">$347K</div></td><td style="border-color:var(--border-soft)"><div class="cell" style="color:#a78bfa;font-weight:600">$299K</div></td><td style="border-color:var(--border-soft)"><div class="cell" style="color:#a78bfa;font-weight:600">$425K</div></td></tr>
+            <tr class="row-input"><td style="background:var(--surface-1);border-color:var(--border-soft)"><div class="cell" style="padding-left:var(--sp-8)">Impressions</div></td><td style="border-color:var(--border-soft)"><div class="cell">55,757</div></td><td style="border-color:var(--border-soft)"><div class="cell cell-selected">62,340</div></td><td style="border-color:var(--border-soft)"><div class="cell">48,910</div></td><td style="border-color:var(--border-soft)"><div class="cell">71,220</div></td></tr>
+            <tr class="row-derived" style="background:var(--cell-derived)"><td style="background:var(--surface-1);border-color:var(--border-soft)"><div class="cell" style="padding-left:var(--sp-8);color:#93c5fd">CTR</div></td><td style="border-color:var(--border-soft)"><div class="cell" style="color:#93c5fd">4.36%</div></td><td style="border-color:var(--border-soft)"><div class="cell" style="color:#93c5fd">5.00%</div></td><td style="border-color:var(--border-soft)"><div class="cell" style="color:#93c5fd">4.00%</div></td><td style="border-color:var(--border-soft)"><div class="cell" style="color:#93c5fd">5.40%</div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="subsection" style="border-color:var(--border)">
+      <div class="subsection-label" style="color:var(--text-tertiary)">Narrative Card</div>
+      <div class="narrative-card severity-warning" style="background:var(--surface-1);border-color:var(--border)">
+        <div class="narrative-header"><span class="narrative-severity">Warning</span><span class="narrative-id">impressions_declined</span></div>
+        <div class="narrative-text">Impressions declined 22% from Q4 to Q1. No clear explanation detected.</div>
+        <div class="narrative-evidence">
+          <span class="evidence-pill" style="background:var(--surface-3);border-color:var(--border)">change: -22%</span>
+          <span class="evidence-pill" style="background:var(--surface-3);border-color:var(--border)">finding: unexplained</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="subsection" style="border-color:var(--border)">
+      <div class="subsection-label" style="color:var(--text-tertiary)">Buttons &amp; Pills</div>
+      <div class="btn-row">
+        <button class="btn btn-primary">Calculate</button>
+        <button class="btn btn-secondary" style="border-color:var(--border-strong);color:var(--text-primary)">Compare</button>
+        <button class="btn btn-ghost" style="color:var(--text-secondary)">Cancel</button>
+        <span class="pill pill-scenario"><span class="pill-dot"></span> Forecast</span>
+        <span class="pill pill-time"><span class="pill-dot"></span> Q1&ndash;Q4</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════ FOOTER ═══════ -->
+  <div style="text-align:center;padding:var(--sp-12) 0 var(--sp-8);color:var(--text-tertiary);font-size:0.78rem">
+    <div style="font-family:var(--font-display);font-size:1rem;font-weight:600;color:var(--text-secondary);margin-bottom:var(--sp-2)">Mosaic<span style="color:var(--accent)">.</span> Design System</div>
+    Phase 6B &bull; 2026 &bull; Warm &bull; Inviting &bull; Deterministic
+  </div>
+
+</div>
+
+</body>
+</html>
