@@ -8,10 +8,33 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,300;0,8..60,400;0,8..60,600;1,8..60,400&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-/* ═══════════════════════════════════════════════════════════
-   MOSAIC DESIGN SYSTEM — Warm Editorial Planning Grid
-   "Airtable warmth meets Notion calm"
-   ═══════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════════
+   MOSAIC DESIGN SYSTEM — Layout Engineering Contract
+   ═══════════════════════════════════════════════════════════════════════════
+
+   FIVE BINDING PRACTICES (every component follows these):
+
+   01. LAYOUT INTEGRITY
+       Grid/flex with explicit row tracks and reserved heights.
+       Nothing reflows when copy changes — only transforms shift on hover.
+
+   02. CONTENT RESILIENCE
+       clamp() for big numbers, tabular-nums for stable widths,
+       line-clamps with reserved height, ellipsis for runaway labels.
+
+   03. STATE INVARIANCE
+       Empty deltas, missing tags, and 1-line vs 3-line descriptions
+       all hold the same card height. No bobbing grids.
+
+   04. LESS CHROME
+       Every element justifies its presence. No icons-for-icons-sake,
+       no shadows on cards that don't need elevation.
+
+   05. MOTION WITH INTENT
+       Two intentional animations: hero gradient drift and entity
+       lift+ring on hover. prefers-reduced-motion guards everything.
+
+   ═══════════════════════════════════════════════════════════════════════════ */
 
 :root {
   /* ── Surfaces ── */
@@ -77,7 +100,7 @@
   /* ── Radius ── */
   --r-sm: 6px; --r-md: 10px; --r-lg: 16px; --r-xl: 24px; --r-full: 9999px;
 
-  /* ── Shadows ── */
+  /* ── Shadows (used only where elevation is needed) ── */
   --shadow-sm: 0 1px 2px rgba(26, 24, 22, 0.04);
   --shadow-md: 0 2px 8px rgba(26, 24, 22, 0.06), 0 1px 2px rgba(26, 24, 22, 0.04);
   --shadow-lg: 0 4px 24px rgba(26, 24, 22, 0.08), 0 2px 6px rgba(26, 24, 22, 0.04);
@@ -119,9 +142,9 @@
   --shadow-lg: 0 4px 24px rgba(0, 0, 0, 0.3);
 }
 
-/* ═══════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════════════════
    BASE RESET
-   ═══════════════════════════════════════════════════════════ */
+   ═══════════════════════════════════════════════════════════════════════════ */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html { font-size: 15px; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
 body {
@@ -131,29 +154,48 @@ body {
   line-height: 1.55;
 }
 
-/* ═══════════════════════════════════════════════════════════
-   CATALOG LAYOUT
-   ═══════════════════════════════════════════════════════════ */
-.catalog { max-width: 1320px; margin: 0 auto; padding: var(--sp-10) var(--sp-6); }
+/* ═══════════════════════════════════════════════════════════════════════════
+   CATALOG LAYOUT — grid-based with consistent section heights
+   ═══════════════════════════════════════════════════════════════════════════ */
+.catalog {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--sp-12);
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: var(--sp-10) var(--sp-6);
+}
+
+/* ── Hero with gradient drift animation ── */
 .catalog-hero {
   text-align: center;
   padding: var(--sp-16) var(--sp-8) var(--sp-12);
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.04) 0%, rgba(225, 90, 138, 0.03) 50%, rgba(13, 148, 136, 0.04) 100%);
+  background-size: 200% 200%;
+  animation: hero-drift 12s ease-in-out infinite;
+  border-radius: var(--r-xl);
+}
+@keyframes hero-drift {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
 }
 .catalog-hero .brand {
   font-family: var(--font-display);
-  font-size: 2.4rem;
+  font-size: clamp(1.8rem, 4vw, 2.4rem);
   font-weight: 600;
   letter-spacing: -0.02em;
   color: var(--text-primary);
+  text-wrap: balance;
 }
 .catalog-hero .brand span { color: var(--accent); }
 .catalog-hero .subtitle {
   font-family: var(--font-display);
-  font-size: 1.15rem;
+  font-size: clamp(0.95rem, 2vw, 1.15rem);
   font-weight: 300;
   color: var(--text-secondary);
   margin-top: var(--sp-3);
   font-style: italic;
+  text-wrap: balance;
 }
 .catalog-hero .tagline {
   font-size: 0.8rem;
@@ -164,13 +206,14 @@ body {
   font-weight: 500;
 }
 
+/* ── Sections: explicit grid tracks for header/body pattern ── */
 .section {
-  margin-top: var(--sp-12);
+  display: grid;
+  grid-template-rows: auto auto 1fr;
   background: var(--surface-0);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   padding: var(--sp-8);
-  box-shadow: var(--shadow-sm);
 }
 .section-label {
   font-family: var(--font-display);
@@ -178,12 +221,14 @@ body {
   font-weight: 600;
   color: var(--text-primary);
   letter-spacing: -0.01em;
+  text-wrap: balance;
 }
 .section-desc {
   font-size: 0.85rem;
   color: var(--text-tertiary);
   margin-top: var(--sp-1);
   margin-bottom: var(--sp-6);
+  text-wrap: pretty;
 }
 .subsection {
   margin-top: var(--sp-6);
@@ -199,39 +244,47 @@ body {
   margin-bottom: var(--sp-4);
 }
 
-/* ═══════════════════════════════════════════════════════════
-   1. COLOR PALETTE
-   ═══════════════════════════════════════════════════════════ */
-.swatch-grid { display: flex; flex-wrap: wrap; gap: var(--sp-3); }
+/* ═══════════════════════════════════════════════════════════════════════════
+   1. COLOR PALETTE — auto-fit grid, no media queries needed
+   ═══════════════════════════════════════════════════════════════════════════ */
+.swatch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  gap: var(--sp-3);
+}
 .swatch {
-  width: 100px; border-radius: var(--r-md); overflow: hidden;
+  border-radius: var(--r-md);
+  overflow: hidden;
   border: 1px solid var(--border);
 }
 .swatch-color { height: 56px; }
 .swatch-info { padding: var(--sp-2) var(--sp-3); background: var(--surface-0); }
-.swatch-name { font-size: 0.7rem; font-weight: 600; color: var(--text-primary); }
-.swatch-hex { font-family: var(--font-mono); font-size: 0.65rem; color: var(--text-tertiary); }
+.swatch-name { font-size: 0.7rem; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.swatch-hex { font-family: var(--font-mono); font-size: 0.65rem; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 
-/* ═══════════════════════════════════════════════════════════
-   2. TYPOGRAPHY
-   ═══════════════════════════════════════════════════════════ */
-.type-sample { margin-bottom: var(--sp-4); }
+/* ═══════════════════════════════════════════════════════════════════════════
+   2. TYPOGRAPHY — reserved heights for samples
+   ═══════════════════════════════════════════════════════════════════════════ */
+.type-sample { margin-bottom: var(--sp-4); min-height: calc(1.55em * 2); }
 .type-label { font-size: 0.7rem; color: var(--text-tertiary); font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: var(--sp-1); }
 
-/* ═══════════════════════════════════════════════════════════
-   3. BUTTONS
-   ═══════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════════
+   3. BUTTONS — transform-only hover (lift or scale, never margin/padding)
+   ═══════════════════════════════════════════════════════════════════════════ */
 .btn-row { display: flex; flex-wrap: wrap; gap: var(--sp-3); align-items: center; }
 .btn {
   display: inline-flex; align-items: center; gap: var(--sp-2);
   font-family: var(--font-ui); font-size: 0.85rem; font-weight: 500;
   padding: var(--sp-2) var(--sp-4); border-radius: var(--r-sm);
   border: 1px solid transparent; cursor: pointer;
-  transition: all 0.15s ease;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
   line-height: 1.4;
+  will-change: transform;
 }
+.btn:hover { transform: translateY(-1px); }
+.btn:active { transform: translateY(0); }
 .btn-primary { background: var(--accent); color: white; border-color: var(--accent); }
-.btn-primary:hover { background: var(--accent-hover); }
+.btn-primary:hover { background: var(--accent-hover); box-shadow: 0 2px 8px rgba(99, 102, 241, 0.25); }
 .btn-secondary { background: var(--surface-0); color: var(--text-primary); border-color: var(--border-strong); }
 .btn-secondary:hover { background: var(--surface-hover); border-color: var(--text-tertiary); }
 .btn-ghost { background: transparent; color: var(--text-secondary); }
@@ -242,9 +295,9 @@ body {
 .btn-lg { font-size: 0.9rem; padding: var(--sp-3) var(--sp-6); border-radius: var(--r-md); }
 .btn-icon { padding: var(--sp-2); }
 
-/* ═══════════════════════════════════════════════════════════
-   4. PILLS & TAGS
-   ═══════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════════
+   4. PILLS & TAGS — tabular-nums on numeric content, ellipsis on labels
+   ═══════════════════════════════════════════════════════════════════════════ */
 .pill {
   display: inline-flex; align-items: center; gap: 5px;
   font-size: 0.78rem; font-weight: 500;
@@ -252,6 +305,10 @@ body {
   border-radius: var(--r-full);
   border: 1px solid;
   white-space: nowrap;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
 }
 .pill .pill-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .pill-scenario { background: rgba(99, 102, 241, 0.07); border-color: rgba(99, 102, 241, 0.2); color: #4f46e5; }
@@ -266,9 +323,9 @@ body {
 .pill-channel .pill-dot { background: var(--dim-channel); }
 .pill-label { font-size: 0.68rem; color: var(--text-tertiary); font-weight: 400; }
 
-/* ═══════════════════════════════════════════════════════════
-   5. TOP BAR
-   ═══════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════════
+   5. TOP BAR — fixed height, no reflow
+   ═══════════════════════════════════════════════════════════════════════════ */
 .topbar {
   display: flex; align-items: center; gap: var(--sp-3);
   height: 56px; padding: 0 var(--sp-5);
@@ -281,21 +338,23 @@ body {
   font-size: 1.05rem; font-weight: 600;
   color: var(--text-primary);
   letter-spacing: -0.01em;
+  flex-shrink: 0;
 }
 .topbar-brand span { color: var(--accent); }
-.topbar-sep { width: 1px; height: 24px; background: var(--border); margin: 0 var(--sp-1); }
+.topbar-sep { width: 1px; height: 24px; background: var(--border); margin: 0 var(--sp-1); flex-shrink: 0; }
 .topbar-model {
   font-size: 0.88rem; font-weight: 500; color: var(--text-primary);
   display: flex; align-items: center; gap: var(--sp-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.topbar-model svg { color: var(--text-tertiary); }
-.topbar-pills { display: flex; gap: var(--sp-2); margin-left: var(--sp-2); padding-left: var(--sp-3); border-left: 1px solid var(--border); }
-.topbar-spacer { flex: 1; }
-.topbar-actions { display: flex; gap: var(--sp-2); }
+.topbar-model svg { color: var(--text-tertiary); flex-shrink: 0; }
+.topbar-pills { display: flex; gap: var(--sp-2); margin-left: var(--sp-2); padding-left: var(--sp-3); border-left: 1px solid var(--border); flex-shrink: 0; }
+.topbar-spacer { flex: 1; min-width: 0; }
+.topbar-actions { display: flex; gap: var(--sp-2); flex-shrink: 0; }
 
-/* ═══════════════════════════════════════════════════════════
-   6. FORMULA BAR
-   ═══════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════════
+   6. FORMULA BAR — fixed height, monospace with tabular-nums
+   ═══════════════════════════════════════════════════════════════════════════ */
 .formula-bar {
   display: flex; align-items: center; gap: var(--sp-3);
   height: 40px; padding: 0 var(--sp-4);
@@ -308,17 +367,21 @@ body {
   font-family: var(--font-mono); font-size: 0.78rem; font-weight: 500;
   color: var(--accent); background: var(--accent-soft);
   padding: 2px 8px; border-radius: var(--r-sm);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 200px; flex-shrink: 0;
 }
-.formula-sep { width: 1px; height: 18px; background: var(--border); }
+.formula-sep { width: 1px; height: 18px; background: var(--border); flex-shrink: 0; }
 .formula-expr {
   font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-secondary);
-  flex: 1;
+  flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
 }
 .formula-expr em { font-style: italic; color: var(--text-tertiary); }
 
-/* ═══════════════════════════════════════════════════════════
-   7. THE GRID (the centerpiece)
-   ═══════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════════
+   7. THE GRID — tabular-nums on all numeric cells, clamp on values
+   ═══════════════════════════════════════════════════════════════════════════ */
 .grid-wrap {
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
@@ -336,6 +399,7 @@ body {
   background: var(--surface-2);
   border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 2;
+  white-space: nowrap;
 }
 .grid-table th:first-child {
   text-align: left; position: sticky; left: 0; z-index: 3;
@@ -346,24 +410,27 @@ body {
 .grid-table td {
   text-align: right; padding: 0;
   border-bottom: 1px solid var(--border-soft);
-  font-family: var(--font-mono); font-size: 0.82rem; font-weight: 400;
+  font-family: var(--font-mono);
+  font-size: clamp(0.72rem, 1.5vw, 0.82rem);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
   color: var(--text-primary);
   height: 40px;
 }
 .grid-table td:first-child {
   text-align: left; font-family: var(--font-ui);
+  font-variant-numeric: normal;
   position: sticky; left: 0; z-index: 1;
   background: var(--surface-0);
   border-right: 1px solid var(--border-soft);
 }
 
-/* Cell interior — padding + state bg */
+/* Cell interior — reserved height, transform-only hover */
 .cell {
   display: flex; align-items: center; justify-content: flex-end;
   padding: 0 var(--sp-4); height: 100%;
-  transition: background 0.1s ease;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.cell:hover { background: var(--surface-hover); }
 td:first-child .cell { justify-content: flex-start; }
 
 /* ── Row types ── */
@@ -376,10 +443,10 @@ td:first-child .cell { justify-content: flex-start; }
   color: var(--text-tertiary); width: 14px; height: 14px; flex-shrink: 0;
   transition: transform 0.15s ease;
 }
-.row-group .cell { font-family: var(--font-mono); font-weight: 600; }
+.row-group .cell { font-family: var(--font-mono); font-weight: 600; font-variant-numeric: tabular-nums; }
 
 .row-input td:first-child .cell { padding-left: var(--sp-8); color: var(--text-primary); }
-.row-input .cell { color: var(--text-primary); }
+.row-input .cell { color: var(--text-primary); font-variant-numeric: tabular-nums; }
 
 .row-derived { background: var(--cell-derived); }
 .row-derived td:first-child .cell {
@@ -389,13 +456,13 @@ td:first-child .cell { justify-content: flex-start; }
   font-family: var(--font-mono); font-size: 0.68rem;
   color: var(--text-tertiary); font-style: italic; margin-left: var(--sp-2);
 }
-.row-derived .cell { color: var(--info); }
+.row-derived .cell { color: var(--info); font-variant-numeric: tabular-nums; }
 
 .row-consolidated { background: var(--cell-consolidated); }
 .row-consolidated td:first-child .cell {
   padding-left: var(--sp-5); font-weight: 600; color: #7c3aed;
 }
-.row-consolidated .cell { font-weight: 600; color: #7c3aed; }
+.row-consolidated .cell { font-weight: 600; color: #7c3aed; font-variant-numeric: tabular-nums; }
 
 /* ── Cell states ── */
 .cell-selected { box-shadow: inset 0 0 0 2px var(--accent); border-radius: 2px; background: var(--accent-soft) !important; }
@@ -405,12 +472,12 @@ td:first-child .cell { justify-content: flex-start; }
   width: 6px; height: 6px; border-radius: 50%; background: var(--warning);
 }
 .cell-locked { background: var(--cell-locked) !important; color: var(--text-tertiary) !important; }
-.cell-locked .lock-icon { width: 11px; height: 11px; color: var(--text-tertiary); margin-left: var(--sp-1); }
+.cell-locked .lock-icon { width: 11px; height: 11px; color: var(--text-tertiary); margin-left: var(--sp-1); flex-shrink: 0; }
 .cell-error { background: var(--cell-error) !important; color: var(--danger) !important; }
 
-/* ═══════════════════════════════════════════════════════════
-   8. SIDEBAR
-   ═══════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════════
+   8. SIDEBAR — fixed item heights, transform-only hover
+   ═══════════════════════════════════════════════════════════════════════════ */
 .sidebar {
   width: 240px; background: var(--surface-1);
   border: 1px solid var(--border); border-radius: var(--r-lg);
@@ -425,11 +492,16 @@ td:first-child .cell { justify-content: flex-start; }
 }
 .sidebar-item {
   display: flex; align-items: center; gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-4); border-radius: var(--r-sm);
+  padding: var(--sp-2) var(--sp-4);
+  height: 36px;
+  border-radius: var(--r-sm);
   color: var(--text-secondary); cursor: pointer;
-  transition: all 0.1s ease; margin: 1px var(--sp-2);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background-color 0.12s ease;
+  margin: 1px var(--sp-2);
+  will-change: transform;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.sidebar-item:hover { background: var(--surface-hover); color: var(--text-primary); }
+.sidebar-item:hover { transform: translateX(2px); background: var(--surface-hover); color: var(--text-primary); }
 .sidebar-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
 .sidebar-item .icon {
   width: 18px; height: 18px; border-radius: 4px;
@@ -441,17 +513,19 @@ td:first-child .cell { justify-content: flex-start; }
 .sidebar-item .badge {
   margin-left: auto; font-size: 0.68rem; color: var(--text-tertiary);
   background: var(--surface-3); padding: 1px 6px; border-radius: var(--r-full);
+  font-variant-numeric: tabular-nums; flex-shrink: 0;
 }
 .sidebar-tree { padding-left: var(--sp-4); }
 .sidebar-tree-item {
   display: flex; align-items: center; gap: var(--sp-2);
   padding: 3px 0; font-size: 0.78rem; color: var(--text-secondary);
+  height: 24px;
 }
 .sidebar-tree-item .tree-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
 
-/* ═══════════════════════════════════════════════════════════
-   9. INSPECTOR
-   ═══════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════════
+   9. INSPECTOR — reserved heights for value/label pairs
+   ═══════════════════════════════════════════════════════════════════════════ */
 .inspector {
   width: 320px; background: var(--surface-0);
   border: 1px solid var(--border); border-radius: var(--r-lg);
@@ -465,38 +539,68 @@ td:first-child .cell { justify-content: flex-start; }
   font-size: 0.78rem; font-weight: 500;
   text-align: center; color: var(--text-tertiary);
   border-bottom: 2px solid transparent;
-  cursor: pointer; transition: all 0.15s ease;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
   background: none; border-top: none; border-left: none; border-right: none;
+  height: 40px;
 }
 .inspector-tab.active { color: var(--accent); border-bottom-color: var(--accent); background: var(--surface-0); }
 .inspector-body { padding: var(--sp-5); }
-.inspector-field { margin-bottom: var(--sp-4); }
+.inspector-field {
+  margin-bottom: var(--sp-4);
+  min-height: 44px;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  align-content: start;
+}
 .inspector-field-label {
   font-size: 0.7rem; font-weight: 500; text-transform: uppercase;
   letter-spacing: 0.06em; color: var(--text-tertiary); margin-bottom: var(--sp-1);
 }
-.inspector-field-value { font-size: 0.88rem; color: var(--text-primary); }
-.inspector-field-value.mono { font-family: var(--font-mono); font-size: 0.84rem; }
-.inspector-field-value.large { font-size: 1.4rem; font-weight: 600; }
+.inspector-field-value {
+  font-size: 0.88rem; color: var(--text-primary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.inspector-field-value.mono { font-family: var(--font-mono); font-size: 0.84rem; font-variant-numeric: tabular-nums; }
+.inspector-field-value.large {
+  font-size: clamp(1.1rem, 3vw, 1.4rem);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
 .inspector-trace {
   padding: var(--sp-3); background: var(--surface-2);
   border-radius: var(--r-md); font-family: var(--font-mono);
   font-size: 0.76rem; color: var(--text-secondary); line-height: 1.7;
+  font-variant-numeric: tabular-nums;
 }
 .inspector-trace .trace-node { color: var(--text-primary); font-weight: 500; }
 .inspector-trace .trace-op { color: var(--accent); }
 .inspector-trace .trace-val { color: var(--success); }
 
-/* ═══════════════════════════════════════════════════════════
-   10. NARRATIVE CARDS
-   ═══════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════════
+   10. NARRATIVE CARDS — grid-template-rows for consistent heights,
+       evidence pills keep footprint even when empty (visibility:hidden)
+   ═══════════════════════════════════════════════════════════════════════════ */
+.narrative-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--sp-3);
+}
 .narrative-card {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
   padding: var(--sp-4) var(--sp-5);
   border-radius: var(--r-md);
   border: 1px solid var(--border);
   border-left: 4px solid;
   background: var(--surface-0);
-  margin-bottom: var(--sp-3);
+  min-height: 120px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  will-change: transform;
+}
+.narrative-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 0 0 2px var(--accent-muted);
 }
 .narrative-card.severity-info { border-left-color: var(--info); }
 .narrative-card.severity-success { border-left-color: var(--success); }
@@ -515,35 +619,49 @@ td:first-child .cell { justify-content: flex-start; }
 .severity-warning .narrative-severity { background: var(--warning-soft); color: var(--warning); }
 .severity-critical .narrative-severity { background: var(--danger-soft); color: var(--danger); }
 .narrative-id { font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-tertiary); }
-.narrative-text { font-size: 0.88rem; color: var(--text-primary); line-height: 1.6; }
+.narrative-text {
+  font-size: 0.88rem; color: var(--text-primary); line-height: 1.6;
+  text-wrap: pretty;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: calc(1.6em * 2);
+}
 .narrative-evidence {
   display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-3);
+  min-height: 24px; /* reserved height — keeps card aligned even if empty */
+}
+.narrative-evidence:empty {
+  visibility: hidden; /* footprint preserved for state invariance */
 }
 .evidence-pill {
   font-family: var(--font-mono); font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
   padding: 2px 8px; border-radius: var(--r-full);
   background: var(--surface-2); color: var(--text-secondary);
   border: 1px solid var(--border);
+  white-space: nowrap;
 }
 
-/* ═══════════════════════════════════════════════════════════
-   11. TOAST
-   ═══════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════════
+   11. TOAST — no shadow needed on inline demo, reserved height
+   ═══════════════════════════════════════════════════════════════════════════ */
 .toast {
   display: inline-flex; align-items: center; gap: var(--sp-2);
   padding: var(--sp-3) var(--sp-5);
   border-radius: var(--r-md);
   font-size: 0.82rem; font-weight: 500;
-  box-shadow: var(--shadow-lg);
+  height: 40px;
 }
 .toast-success { background: #166534; color: #dcfce7; }
 .toast-warning { background: #854d0e; color: #fef9c3; }
 .toast-error { background: #991b1b; color: #fee2e2; }
-.toast-row { display: flex; gap: var(--sp-4); align-items: center; }
+.toast-row { display: flex; gap: var(--sp-4); align-items: center; flex-wrap: wrap; }
 
-/* ═══════════════════════════════════════════════════════════
-   12. EMPTY STATE
-   ═══════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════════
+   12. EMPTY STATE — clamp on title, reserved desc height
+   ═══════════════════════════════════════════════════════════════════════════ */
 .empty-state {
   text-align: center; padding: var(--sp-16) var(--sp-8);
   border: 2px dashed var(--border);
@@ -557,14 +675,23 @@ td:first-child .cell { justify-content: flex-start; }
   font-size: 1.8rem;
 }
 .empty-title {
-  font-family: var(--font-display); font-size: 1.2rem; font-weight: 600;
+  font-family: var(--font-display);
+  font-size: clamp(1rem, 2.5vw, 1.2rem);
+  font-weight: 600;
   color: var(--text-primary); margin-bottom: var(--sp-2);
+  text-wrap: balance;
 }
-.empty-desc { font-size: 0.88rem; color: var(--text-secondary); max-width: 360px; margin: 0 auto var(--sp-6); line-height: 1.6; }
+.empty-desc {
+  font-size: 0.88rem; color: var(--text-secondary);
+  max-width: 360px; margin: 0 auto var(--sp-6);
+  line-height: 1.6;
+  min-height: calc(1.6em * 2);
+  text-wrap: pretty;
+}
 
-/* ═══════════════════════════════════════════════════════════
-   13. DROPDOWN
-   ═══════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════════
+   13. DROPDOWN — fixed item heights, transform-only hover
+   ═══════════════════════════════════════════════════════════════════════════ */
 .dropdown {
   background: var(--surface-0);
   border: 1px solid var(--border-strong);
@@ -577,34 +704,40 @@ td:first-child .cell { justify-content: flex-start; }
   display: flex; align-items: center; gap: var(--sp-3);
   padding: var(--sp-2) var(--sp-3); border-radius: var(--r-sm);
   font-size: 0.82rem; color: var(--text-secondary); cursor: pointer;
+  height: 32px;
+  transition: transform 0.1s ease, background-color 0.1s ease;
 }
-.dropdown-item:hover { background: var(--surface-hover); color: var(--text-primary); }
+.dropdown-item:hover { background: var(--surface-hover); color: var(--text-primary); transform: translateX(2px); }
 .dropdown-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
-.dropdown-item .check { width: 16px; font-size: 0.75rem; color: var(--accent); }
+.dropdown-item .check { width: 16px; font-size: 0.75rem; color: var(--accent); flex-shrink: 0; }
 .dropdown-sep { height: 1px; background: var(--border-soft); margin: var(--sp-2) 0; }
 
-/* ═══════════════════════════════════════════════════════════
-   14. FULL MOCK LAYOUT
-   ═══════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════════
+   14. FULL MOCK LAYOUT — explicit grid tracks
+   ═══════════════════════════════════════════════════════════════════════════ */
 .mock-layout {
   display: grid;
   grid-template-columns: 240px 1fr 320px;
+  grid-template-rows: 560px;
   gap: 0;
-  height: 560px;
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   overflow: hidden;
   background: var(--surface-2);
 }
 .mock-layout .sidebar { border-radius: 0; border: none; border-right: 1px solid var(--border); height: 100%; overflow-y: auto; }
-.mock-layout .mock-center { display: flex; flex-direction: column; min-width: 0; overflow: hidden; background: var(--surface-0); }
+.mock-layout .mock-center {
+  display: grid;
+  grid-template-rows: 40px 1fr;
+  min-width: 0; overflow: hidden; background: var(--surface-0);
+}
 .mock-layout .inspector { border-radius: 0; border: none; border-left: 1px solid var(--border); height: 100%; width: 100%; overflow-y: auto; }
-.mock-layout .mock-center .formula-bar { border-radius: 0; border: none; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-.mock-layout .mock-center .grid-wrap { border-radius: 0; border: none; flex: 1; overflow: auto; }
+.mock-layout .mock-center .formula-bar { border-radius: 0; border: none; border-bottom: 1px solid var(--border); }
+.mock-layout .mock-center .grid-wrap { border-radius: 0; border: none; overflow: auto; }
 
-/* ═══════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════════════════
    HELPERS
-   ═══════════════════════════════════════════════════════════ */
+   ═══════════════════════════════════════════════════════════════════════════ */
 .flex-row { display: flex; gap: var(--sp-4); align-items: flex-start; flex-wrap: wrap; }
 .flex-col { display: flex; flex-direction: column; gap: var(--sp-3); }
 .mt-4 { margin-top: var(--sp-4); }
@@ -612,23 +745,36 @@ td:first-child .cell { justify-content: flex-start; }
 .gap-2 { gap: var(--sp-2); }
 .gap-3 { gap: var(--sp-3); }
 
-/* Smooth transitions for dark mode */
-* { transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease; }
-.grid-table *, .cell { transition: none; }
+/* ═══════════════════════════════════════════════════════════════════════════
+   MOTION GUARDS — prefers-reduced-motion disables ALL animation/transition
+   ═══════════════════════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .catalog-hero { animation: none; }
+  .narrative-card:hover { transform: none; box-shadow: none; }
+  .btn:hover { transform: none; }
+  .sidebar-item:hover { transform: none; }
+  .dropdown-item:hover { transform: none; }
+}
 </style>
 </head>
 <body>
 
 <div class="catalog">
 
-  <!-- ═══════ HERO ═══════ -->
+  <!-- Hero -->
   <div class="catalog-hero">
     <div class="brand">Mosaic<span>.</span></div>
     <div class="subtitle">Design System &mdash; Phase 6B Web UI</div>
     <div class="tagline">Warm &bull; Inviting &bull; Approachable</div>
   </div>
 
-  <!-- ═══════ 1. COLOR PALETTE ═══════ -->
+  <!-- 1. COLOR PALETTE -->
   <div class="section">
     <div class="section-label">Color Palette</div>
     <div class="section-desc">Warm neutrals with purposeful accents. Every color has a job.</div>
@@ -675,19 +821,19 @@ td:first-child .cell { justify-content: flex-start; }
     </div>
   </div>
 
-  <!-- ═══════ 2. TYPOGRAPHY ═══════ -->
+  <!-- 2. TYPOGRAPHY -->
   <div class="section">
     <div class="section-label">Typography</div>
     <div class="section-desc">Source Serif 4 for warmth and personality. Inter for clarity. JetBrains Mono for precision.</div>
-    <div class="type-sample"><div class="type-label">Display &mdash; Source Serif 4, 600</div><div style="font-family:var(--font-display);font-size:1.8rem;font-weight:600;letter-spacing:-0.02em">Acme Marketing Finance</div></div>
-    <div class="type-sample"><div class="type-label">Section &mdash; Source Serif 4, 400 Italic</div><div style="font-family:var(--font-display);font-size:1.1rem;font-style:italic;color:var(--text-secondary)">A 6-dimension, 11-measure planning model</div></div>
-    <div class="type-sample"><div class="type-label">UI Body &mdash; Inter, 400</div><div style="font-family:var(--font-ui);font-size:0.88rem;color:var(--text-primary)">Revenue is calculated as Customers multiplied by Average Order Value across all time periods.</div></div>
+    <div class="type-sample"><div class="type-label">Display &mdash; Source Serif 4, 600</div><div style="font-family:var(--font-display);font-size:clamp(1.4rem, 3.5vw, 1.8rem);font-weight:600;letter-spacing:-0.02em;text-wrap:balance">Acme Marketing Finance</div></div>
+    <div class="type-sample"><div class="type-label">Section &mdash; Source Serif 4, 400 Italic</div><div style="font-family:var(--font-display);font-size:1.1rem;font-style:italic;color:var(--text-secondary);text-wrap:pretty">A 6-dimension, 11-measure planning model</div></div>
+    <div class="type-sample"><div class="type-label">UI Body &mdash; Inter, 400</div><div style="font-family:var(--font-ui);font-size:0.88rem;color:var(--text-primary);text-wrap:pretty">Revenue is calculated as Customers multiplied by Average Order Value across all time periods.</div></div>
     <div class="type-sample"><div class="type-label">UI Label &mdash; Inter, 500, Uppercase</div><div style="font-family:var(--font-ui);font-size:0.72rem;font-weight:500;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-tertiary)">Scenario &bull; Version &bull; Measure</div></div>
-    <div class="type-sample"><div class="type-label">Mono Value &mdash; JetBrains Mono, 400</div><div style="font-family:var(--font-mono);font-size:0.88rem;color:var(--text-primary)">$1,247,500.00 &nbsp;&nbsp; 55,757 &nbsp;&nbsp; 0.44%</div></div>
-    <div class="type-sample"><div class="type-label">Mono Formula &mdash; JetBrains Mono, 400, Secondary</div><div style="font-family:var(--font-mono);font-size:0.82rem;color:var(--text-secondary)">Revenue = Customers * AOV</div></div>
+    <div class="type-sample"><div class="type-label">Mono Value &mdash; JetBrains Mono, 400</div><div style="font-family:var(--font-mono);font-size:0.88rem;color:var(--text-primary);font-variant-numeric:tabular-nums">$1,247,500.00 &nbsp;&nbsp; 55,757 &nbsp;&nbsp; 0.44%</div></div>
+    <div class="type-sample"><div class="type-label">Mono Formula &mdash; JetBrains Mono, 400, Secondary</div><div style="font-family:var(--font-mono);font-size:0.82rem;color:var(--text-secondary);font-variant-numeric:tabular-nums">Revenue = Customers * AOV</div></div>
   </div>
 
-  <!-- ═══════ 3. BUTTONS ═══════ -->
+  <!-- 3. BUTTONS -->
   <div class="section">
     <div class="section-label">Buttons</div>
     <div class="section-desc">Primary for main actions, secondary for supporting, ghost for subtle, danger for destructive.</div>
@@ -708,7 +854,7 @@ td:first-child .cell { justify-content: flex-start; }
     </div>
   </div>
 
-  <!-- ═══════ 4. PILLS ═══════ -->
+  <!-- 4. PILLS -->
   <div class="section">
     <div class="section-label">Dimension Slice Pills</div>
     <div class="section-desc">Each dimension gets a distinct hue. Color is functional, not decorative.</div>
@@ -721,7 +867,7 @@ td:first-child .cell { justify-content: flex-start; }
     </div>
   </div>
 
-  <!-- ═══════ 5. TOP BAR ═══════ -->
+  <!-- 5. TOP BAR -->
   <div class="section">
     <div class="section-label">Top Bar</div>
     <div class="section-desc">Model context at a glance. Everything you need to know about where you are.</div>
@@ -750,7 +896,7 @@ td:first-child .cell { justify-content: flex-start; }
     </div>
   </div>
 
-  <!-- ═══════ 6. FORMULA BAR ═══════ -->
+  <!-- 6. FORMULA BAR -->
   <div class="section">
     <div class="section-label">Formula Bar</div>
     <div class="section-desc">Shows the selected cell's coordinates and formula. Monospace for precision.</div>
@@ -766,7 +912,7 @@ td:first-child .cell { justify-content: flex-start; }
     </div>
   </div>
 
-  <!-- ═══════ 7. THE GRID ═══════ -->
+  <!-- 7. THE GRID -->
   <div class="section">
     <div class="section-label">Planning Grid</div>
     <div class="section-desc">The centerpiece. Row types, cell states, and hierarchy are all visually distinct without being noisy.</div>
@@ -893,7 +1039,7 @@ td:first-child .cell { justify-content: flex-start; }
     </div>
   </div>
 
-  <!-- ═══════ 8. SIDEBAR + INSPECTOR ═══════ -->
+  <!-- 8. SIDEBAR + INSPECTOR -->
   <div class="section">
     <div class="section-label">Sidebar &amp; Inspector</div>
     <div class="section-desc">Navigation on the left, detail on the right. Both collapse for more grid space.</div>
@@ -924,11 +1070,11 @@ td:first-child .cell { justify-content: flex-start; }
         <div class="sidebar-heading" style="margin-top:var(--sp-4)">Dimensions</div>
         <div class="sidebar-section">
           <div class="sidebar-tree">
-            <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-scenario)"></span> Scenario <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary)">3</span></div>
-            <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-version)"></span> Version <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary)">2</span></div>
-            <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-time)"></span> Time <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary)">12</span></div>
-            <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-market)"></span> Market <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary)">5</span></div>
-            <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-channel)"></span> Channel <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary)">4</span></div>
+            <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-scenario)"></span> Scenario <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary);font-variant-numeric:tabular-nums">3</span></div>
+            <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-version)"></span> Version <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary);font-variant-numeric:tabular-nums">2</span></div>
+            <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-time)"></span> Time <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary);font-variant-numeric:tabular-nums">12</span></div>
+            <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-market)"></span> Market <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary);font-variant-numeric:tabular-nums">5</span></div>
+            <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-channel)"></span> Channel <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary);font-variant-numeric:tabular-nums">4</span></div>
           </div>
         </div>
       </div>
@@ -971,65 +1117,67 @@ td:first-child .cell { justify-content: flex-start; }
     </div>
   </div>
 
-  <!-- ═══════ 9. NARRATIVE CARDS ═══════ -->
+  <!-- 9. NARRATIVE CARDS -->
   <div class="section">
     <div class="section-label">Narrative Cards</div>
     <div class="section-desc">Deterministic insights from the narrative engine. Each severity level has a distinct color and weight.</div>
 
-    <div class="narrative-card severity-info">
-      <div class="narrative-header">
-        <span class="narrative-severity">Info</span>
-        <span class="narrative-id">ctr_benchmark_context</span>
+    <div class="narrative-grid">
+      <div class="narrative-card severity-info">
+        <div class="narrative-header">
+          <span class="narrative-severity">Info</span>
+          <span class="narrative-id">ctr_benchmark_context</span>
+        </div>
+        <div class="narrative-text">Historical context: across 6 prior periods, this campaign's CTR has ranged from 4.00% (p10) to 5.40% (p90), with a median of 4.68%.</div>
+        <div class="narrative-evidence">
+          <span class="evidence-pill">p10: 4.00%</span>
+          <span class="evidence-pill">p50: 4.68%</span>
+          <span class="evidence-pill">p90: 5.40%</span>
+          <span class="evidence-pill">samples: 6</span>
+        </div>
       </div>
-      <div class="narrative-text">Historical context: across 6 prior periods, this campaign's CTR has ranged from 4.00% (p10) to 5.40% (p90), with a median of 4.68%.</div>
-      <div class="narrative-evidence">
-        <span class="evidence-pill">p10: 4.00%</span>
-        <span class="evidence-pill">p50: 4.68%</span>
-        <span class="evidence-pill">p90: 5.40%</span>
-        <span class="evidence-pill">samples: 6</span>
-      </div>
-    </div>
 
-    <div class="narrative-card severity-success">
-      <div class="narrative-header">
-        <span class="narrative-severity">Success</span>
-        <span class="narrative-id">ctr_above_own_median</span>
+      <div class="narrative-card severity-success">
+        <div class="narrative-header">
+          <span class="narrative-severity">Success</span>
+          <span class="narrative-id">ctr_above_own_median</span>
+        </div>
+        <div class="narrative-text">CTR of 4.90% is above this campaign's historical median (4.68%). Performance is in the upper half of this workspace's own track record.</div>
+        <div class="narrative-evidence">
+          <span class="evidence-pill">current_ctr: 4.90%</span>
+          <span class="evidence-pill">median_ctr: 4.68%</span>
+        </div>
       </div>
-      <div class="narrative-text">CTR of 4.90% is above this campaign's historical median (4.68%). Performance is in the upper half of this workspace's own track record.</div>
-      <div class="narrative-evidence">
-        <span class="evidence-pill">current_ctr: 4.90%</span>
-        <span class="evidence-pill">median_ctr: 4.68%</span>
-      </div>
-    </div>
 
-    <div class="narrative-card severity-warning">
-      <div class="narrative-header">
-        <span class="narrative-severity">Warning</span>
-        <span class="narrative-id">impressions_declined_unexplained</span>
+      <div class="narrative-card severity-warning">
+        <div class="narrative-header">
+          <span class="narrative-severity">Warning</span>
+          <span class="narrative-id">impressions_declined_unexplained</span>
+        </div>
+        <div class="narrative-text">Impressions declined 22% from Q4 2025 to Q1 2026. No clear explanation detected from available data &mdash; manual review recommended.</div>
+        <div class="narrative-evidence">
+          <span class="evidence-pill">change: -22%</span>
+          <span class="evidence-pill">finding: impressions_declined_significant</span>
+          <span class="evidence-pill">explanation: none matched</span>
+        </div>
       </div>
-      <div class="narrative-text">Impressions declined 22% from Q4 2025 to Q1 2026. No clear explanation detected from available data &mdash; manual review recommended.</div>
-      <div class="narrative-evidence">
-        <span class="evidence-pill">change: -22%</span>
-        <span class="evidence-pill">finding: impressions_declined_significant</span>
-        <span class="evidence-pill">explanation: none matched</span>
-      </div>
-    </div>
 
-    <div class="narrative-card severity-critical">
-      <div class="narrative-header">
-        <span class="narrative-severity">Critical</span>
-        <span class="narrative-id">conversion_zero_alarm</span>
-      </div>
-      <div class="narrative-text">Zero conversions recorded in Q3 2025 despite 48,910 impressions and $22,000 in spend. This warrants immediate investigation.</div>
-      <div class="narrative-evidence">
-        <span class="evidence-pill">conversions: 0</span>
-        <span class="evidence-pill">impressions: 48,910</span>
-        <span class="evidence-pill">spend: $22,000</span>
+      <div class="narrative-card severity-critical">
+        <div class="narrative-header">
+          <span class="narrative-severity">Critical</span>
+          <span class="narrative-id">conversion_zero_alarm</span>
+        </div>
+        <div class="narrative-text">Zero conversions recorded in Q3 2025 despite 48,910 impressions and $22,000 in spend. This warrants immediate investigation.</div>
+        <div class="narrative-evidence">
+          <span class="evidence-pill">conversions: 0</span>
+          <span class="evidence-pill">impressions: 48,910</span>
+          <span class="evidence-pill">spend: $22,000</span>
+        </div>
       </div>
     </div>
   </div>
 
-  <!-- ═══════ 10. TOASTS ═══════ -->
+  <!-- 10. TOASTS -->
   <div class="section">
     <div class="section-label">Toast Notifications</div>
     <div class="section-desc">Brief, non-blocking feedback. Appear bottom-center and auto-dismiss.</div>
@@ -1040,7 +1188,7 @@ td:first-child .cell { justify-content: flex-start; }
     </div>
   </div>
 
-  <!-- ═══════ 11. EMPTY STATE ═══════ -->
+  <!-- 11. EMPTY STATE -->
   <div class="section">
     <div class="section-label">Empty State</div>
     <div class="section-desc">The first thing a new user sees. Friendly, not intimidating.</div>
@@ -1054,7 +1202,7 @@ td:first-child .cell { justify-content: flex-start; }
     </div>
   </div>
 
-  <!-- ═══════ 12. DROPDOWNS ═══════ -->
+  <!-- 12. DROPDOWNS -->
   <div class="section">
     <div class="section-label">Dropdowns</div>
     <div class="section-desc">Clean popovers for model selection, scenario switching, and dimension filtering.</div>
@@ -1074,7 +1222,7 @@ td:first-child .cell { justify-content: flex-start; }
     </div>
   </div>
 
-  <!-- ═══════ 13. FULL MOCK LAYOUT ═══════ -->
+  <!-- 13. FULL MOCK LAYOUT -->
   <div class="section">
     <div class="section-label">Full Layout Mock</div>
     <div class="section-desc">The complete three-panel layout: sidebar + grid + inspector. This is what the app feels like.</div>
@@ -1090,11 +1238,11 @@ td:first-child .cell { justify-content: flex-start; }
         <div class="sidebar-item"><div class="icon icon-view">V</div> YoY Compare</div>
         <div class="sidebar-heading" style="margin-top:var(--sp-4)">Dimensions</div>
         <div class="sidebar-section"><div class="sidebar-tree">
-          <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-scenario)"></span> Scenario <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary)">3</span></div>
-          <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-version)"></span> Version <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary)">2</span></div>
-          <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-time)"></span> Time <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary)">6</span></div>
-          <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-market)"></span> Market <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary)">5</span></div>
-          <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-channel)"></span> Channel <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary)">4</span></div>
+          <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-scenario)"></span> Scenario <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary);font-variant-numeric:tabular-nums">3</span></div>
+          <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-version)"></span> Version <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary);font-variant-numeric:tabular-nums">2</span></div>
+          <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-time)"></span> Time <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary);font-variant-numeric:tabular-nums">6</span></div>
+          <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-market)"></span> Market <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary);font-variant-numeric:tabular-nums">5</span></div>
+          <div class="sidebar-tree-item"><span class="tree-dot" style="background:var(--dim-channel)"></span> Channel <span style="margin-left:auto;font-size:0.68rem;color:var(--text-tertiary);font-variant-numeric:tabular-nums">4</span></div>
         </div></div>
       </div>
 
@@ -1140,7 +1288,7 @@ td:first-child .cell { justify-content: flex-start; }
     </div>
   </div>
 
-  <!-- ═══════ 14. DARK MODE ═══════ -->
+  <!-- 14. DARK MODE -->
   <div class="section dark" style="background:var(--surface-0);border-color:var(--border)">
     <div class="section-label">Dark Mode</div>
     <div class="section-desc" style="color:var(--text-tertiary)">Warm dark &mdash; not pure black. The same components with inverted tokens.</div>
@@ -1198,7 +1346,7 @@ td:first-child .cell { justify-content: flex-start; }
     </div>
   </div>
 
-  <!-- ═══════ FOOTER ═══════ -->
+  <!-- FOOTER -->
   <div style="text-align:center;padding:var(--sp-12) 0 var(--sp-8);color:var(--text-tertiary);font-size:0.78rem">
     <div style="font-family:var(--font-display);font-size:1rem;font-weight:600;color:var(--text-secondary);margin-bottom:var(--sp-2)">Mosaic<span style="color:var(--accent)">.</span> Design System</div>
     Phase 6B &bull; 2026 &bull; Warm &bull; Inviting &bull; Deterministic
