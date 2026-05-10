@@ -44,6 +44,9 @@ pub struct QueryCommand {
     /// Time`) and cross-product semantics — one row per (Market, Time)
     /// tuple. Mutually exclusive with `--show`. Requires `--aggregate`.
     pub group_by: Vec<String>,
+    /// Phase 4D: when true and format is Text, enrich output with measure
+    /// descriptions from the model's `measures[].description` field.
+    pub verbose: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,6 +72,7 @@ pub fn parse(args: &[String]) -> Result<QueryCommand, String> {
 
     let mut offset: Option<usize> = None;
     let mut group_by: Vec<String> = Vec::new();
+    let mut verbose = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -125,6 +129,7 @@ pub fn parse(args: &[String]) -> Result<QueryCommand, String> {
                 Some(v) => group_by.push(v.clone()),
                 None => return Err("--group-by requires a dimension name".into()),
             },
+            "--verbose" | "-v" => verbose = true,
             other if !other.starts_with("--") && path.is_none() => {
                 path = Some(other.to_string());
             }
@@ -144,6 +149,7 @@ pub fn parse(args: &[String]) -> Result<QueryCommand, String> {
         offset,
         time_anchor,
         group_by,
+        verbose,
     })
 }
 
@@ -169,6 +175,7 @@ pub fn run_captured(cmd: QueryCommand) -> (i32, String) {
     let principal = compiled.root_principal;
     let refs = &compiled.refs;
     let as_of_write_id = compiled.as_of_write_id;
+    let measure_descs = &compiled.measure_descriptions;
 
     // Apply time-anchor override if provided.
     if let Some(anchor_name) = &cmd.time_anchor {
@@ -200,6 +207,8 @@ pub fn run_captured(cmd: QueryCommand) -> (i32, String) {
             cmd.format,
             &cmd.output,
             as_of_write_id,
+            cmd.verbose,
+            measure_descs,
         );
     }
 
@@ -337,6 +346,8 @@ pub fn run_captured(cmd: QueryCommand) -> (i32, String) {
         cmd.format,
         &pagination,
         as_of_write_id,
+        cmd.verbose,
+        measure_descs,
     );
     let captured = capture_output(&output_str, &cmd.output);
     (0, captured)
@@ -1523,6 +1534,8 @@ fn run_single_coord(
     format: OutputFormat,
     output: &Option<String>,
     as_of_write_id: Option<u64>,
+    verbose: bool,
+    measure_descs: &std::collections::HashMap<String, String>,
 ) -> (i32, String) {
     let names = parse_coord_string(coord_str);
     let coord = match refs.coord_from_names(&names) {
@@ -1547,7 +1560,22 @@ fn run_single_coord(
                     out
                 }
                 OutputFormat::Text => {
-                    format!("{}\n", format_scalar(&cell.value))
+                    let val_str = format_scalar(&cell.value);
+                    let mut out = format!("{val_str}\n");
+                    // Phase 4D: append measure description in verbose mode.
+                    if verbose {
+                        if let Some(measure_name) = names.get("Measure") {
+                            if let Some(desc) =
+                                crate::verbose::measure_description(measure_descs, measure_name)
+                            {
+                                out.push_str(&crate::verbose::format_description_line(
+                                    desc,
+                                    Some(&val_str),
+                                ));
+                            }
+                        }
+                    }
+                    out
                 }
                 OutputFormat::Csv => {
                     let mut out = String::new();
@@ -2099,10 +2127,12 @@ fn format_results(
     format: OutputFormat,
     pagination: &Pagination,
     as_of_write_id: Option<u64>,
+    verbose: bool,
+    measure_descs: &std::collections::HashMap<String, String>,
 ) -> String {
     match format {
         OutputFormat::Json => format_json(results, where_expr, pagination, as_of_write_id),
-        OutputFormat::Text => format_text(results, pagination),
+        OutputFormat::Text => format_text(results, pagination, verbose, measure_descs),
         OutputFormat::Csv => format_csv(results),
     }
 }
@@ -2162,7 +2192,12 @@ fn format_json(
     out
 }
 
-fn format_text(results: &[QueryRow], pagination: &Pagination) -> String {
+fn format_text(
+    results: &[QueryRow],
+    pagination: &Pagination,
+    verbose: bool,
+    measure_descs: &std::collections::HashMap<String, String>,
+) -> String {
     let count = pagination.count;
     if results.is_empty() {
         return format!("No results ({count} rows matched)\n");
@@ -2205,6 +2240,19 @@ fn format_text(results: &[QueryRow], pagination: &Pagination) -> String {
                 "...truncated at limit {}; pass --offset {next} to continue.",
                 pagination.limit
             );
+        }
+    }
+    // Phase 4D: verbose measure descriptions footer.
+    if verbose {
+        let mut descs_shown = false;
+        for col in &value_cols {
+            if let Some(desc) = crate::verbose::measure_description(measure_descs, col) {
+                if !descs_shown {
+                    out.push('\n');
+                    descs_shown = true;
+                }
+                out.push_str(&crate::verbose::format_description_line(desc, None));
+            }
         }
     }
     out

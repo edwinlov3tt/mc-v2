@@ -26,6 +26,8 @@ pub struct TraceCommand {
     pub coord: String,
     pub depth: Option<usize>,
     pub time_anchor: Option<String>,
+    /// Phase 4D: enrich text output with measure descriptions.
+    pub verbose: bool,
 }
 
 /// `schema_version` for the trace JSON envelope. Phase 6A.2 item 1.3
@@ -38,6 +40,7 @@ pub fn parse(args: &[String]) -> Result<TraceCommand, String> {
     let mut coord: Option<String> = None;
     let mut depth: Option<usize> = None;
     let mut time_anchor: Option<String> = None;
+    let mut verbose = false;
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -66,6 +69,7 @@ pub fn parse(args: &[String]) -> Result<TraceCommand, String> {
                 Some(v) => time_anchor = Some(v.clone()),
                 None => return Err("--time-anchor requires an element name".into()),
             },
+            "--verbose" | "-v" => verbose = true,
             other if !other.starts_with("--") && path.is_none() => {
                 path = Some(other.to_string());
             }
@@ -80,6 +84,7 @@ pub fn parse(args: &[String]) -> Result<TraceCommand, String> {
         coord,
         depth,
         time_anchor,
+        verbose,
     })
 }
 
@@ -105,6 +110,7 @@ pub fn run_captured(cmd: TraceCommand) -> (i32, String) {
     let principal = loaded.root_principal;
     let refs = &loaded.refs;
     let formulas = &loaded.formulas;
+    let measure_descs = &loaded.measure_descriptions;
 
     // Apply time-anchor override
     if let Some(anchor_name) = &cmd.time_anchor {
@@ -159,7 +165,26 @@ pub fn run_captured(cmd: TraceCommand) -> (i32, String) {
 
     let output_str = match cmd.format {
         OutputFormat::Json => format_trace_json(&trace_tree),
-        OutputFormat::Text => format_trace_text(&trace_tree, 0),
+        OutputFormat::Text => {
+            let mut out = format_trace_text(&trace_tree, 0);
+            // Phase 4D: verbose description at the root of the trace tree.
+            if cmd.verbose {
+                if let Some(measure_name) =
+                    crate::verbose::measure_name_from_coord(&trace_tree.coord)
+                {
+                    if let Some(desc) =
+                        crate::verbose::measure_description(measure_descs, measure_name)
+                    {
+                        let val_str = crate::query::format_scalar(&trace_tree.value);
+                        out.push_str(&crate::verbose::format_description_line(
+                            desc,
+                            Some(&val_str),
+                        ));
+                    }
+                }
+            }
+            out
+        }
         OutputFormat::Csv => format_trace_flat_csv(&trace_tree),
     };
     (0, output_str)

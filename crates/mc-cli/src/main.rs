@@ -38,6 +38,7 @@ mod sweep;
 mod tessera;
 mod trace;
 mod transform;
+mod verbose;
 mod whatif;
 mod write;
 

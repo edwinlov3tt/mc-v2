@@ -17,6 +17,8 @@ pub struct WriteCommand {
     pub value: f64,
     pub dry_run: bool,
     pub time_anchor: Option<String>,
+    /// Phase 4D: enrich text output with measure descriptions.
+    pub verbose: bool,
 }
 
 pub fn parse(args: &[String]) -> Result<WriteCommand, String> {
@@ -26,6 +28,7 @@ pub fn parse(args: &[String]) -> Result<WriteCommand, String> {
     let mut value: Option<f64> = None;
     let mut dry_run = false;
     let mut time_anchor: Option<String> = None;
+    let mut verbose = false;
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -55,6 +58,7 @@ pub fn parse(args: &[String]) -> Result<WriteCommand, String> {
                 Some(v) => time_anchor = Some(v.clone()),
                 None => return Err("--time-anchor requires an element name".into()),
             },
+            "--verbose" | "-v" => verbose = true,
             other if !other.starts_with("--") && path.is_none() => {
                 path = Some(other.to_string());
             }
@@ -71,6 +75,7 @@ pub fn parse(args: &[String]) -> Result<WriteCommand, String> {
         value,
         dry_run,
         time_anchor,
+        verbose,
     })
 }
 
@@ -95,6 +100,7 @@ pub fn run_captured(cmd: WriteCommand) -> (i32, String) {
     let mut cube = loaded.cube;
     let principal = loaded.root_principal;
     let refs = &loaded.refs;
+    let measure_descs = &loaded.measure_descriptions;
 
     // Apply time-anchor override
     if let Some(anchor_name) = &cmd.time_anchor {
@@ -150,12 +156,24 @@ pub fn run_captured(cmd: WriteCommand) -> (i32, String) {
                 out
             }
             _ => {
-                format!(
+                let mut out = format!(
                     "[dry-run] Would write {} = {} (currently {})\n",
                     cmd.coord,
                     cmd.value,
                     format_scalar(&before)
-                )
+                );
+                // Phase 4D: verbose measure description.
+                if cmd.verbose {
+                    let coord_names = parse_coord_string(&cmd.coord);
+                    if let Some(measure_name) = coord_names.get("Measure") {
+                        if let Some(desc) =
+                            crate::verbose::measure_description(measure_descs, measure_name)
+                        {
+                            out.push_str(&crate::verbose::format_description_line(desc, None));
+                        }
+                    }
+                }
+                out
             }
         };
         return (0, output_str);
@@ -214,12 +232,24 @@ pub fn run_captured(cmd: WriteCommand) -> (i32, String) {
                     out
                 }
                 _ => {
-                    format!(
+                    let mut out = format!(
                         "Written: {} = {} (was {}, write_id {write_id})\nInvalidated: {invalidated} derived cells\n",
                         cmd.coord,
                         cmd.value,
                         format_scalar(&before)
-                    )
+                    );
+                    // Phase 4D: verbose measure description.
+                    if cmd.verbose {
+                        let coord_names = parse_coord_string(&cmd.coord);
+                        if let Some(measure_name) = coord_names.get("Measure") {
+                            if let Some(desc) =
+                                crate::verbose::measure_description(measure_descs, measure_name)
+                            {
+                                out.push_str(&crate::verbose::format_description_line(desc, None));
+                            }
+                        }
+                    }
+                    out
                 }
             };
             (0, output_str)

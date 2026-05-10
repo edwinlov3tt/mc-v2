@@ -152,6 +152,11 @@ pub struct LoadedModel {
     /// Agents use this to chain queries to a specific revision via
     /// the `as_of_write_id` envelope field.
     pub as_of_write_id: Option<u64>,
+    /// Phase 4D: measure-name → description string, extracted from the
+    /// model's `measures[].description` field at load time. Only measures
+    /// that have a `description:` key appear in this map. Used by
+    /// `--verbose` mode in CLI verbs to enrich text output with prose.
+    pub measure_descriptions: HashMap<String, String>,
 }
 
 /// Load a YAML model with the given replay policy. See [`LoadPolicy`]
@@ -193,6 +198,15 @@ pub fn load_model_with_policy(
         .map(|r| (r.name, r.body_shape))
         .collect();
 
+    // Phase 4D: extract measure descriptions before compile consumes
+    // the validated model. Only measures with a description are included.
+    let measure_descriptions: HashMap<String, String> = validated
+        .parsed
+        .measures
+        .iter()
+        .filter_map(|m| m.description.as_ref().map(|d| (m.name.clone(), d.clone())))
+        .collect();
+
     let compiled = mc_model::compile(validated.clone())
         .map_err(|e| LoadModelError::Model(format!("compile error: {e}")))?;
     let mut cube = compiled.cube;
@@ -221,6 +235,7 @@ pub fn load_model_with_policy(
         policy,
         formulas,
         as_of_write_id,
+        measure_descriptions,
     })
 }
 

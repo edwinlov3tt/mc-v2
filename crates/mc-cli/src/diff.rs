@@ -19,6 +19,8 @@ pub struct DiffCommand {
     pub right: Option<String>,
     pub limit: usize,
     pub time_anchor: Option<String>,
+    /// Phase 4D: enrich text output with measure descriptions.
+    pub verbose: bool,
 }
 
 pub fn parse(args: &[String]) -> Result<DiffCommand, String> {
@@ -28,6 +30,7 @@ pub fn parse(args: &[String]) -> Result<DiffCommand, String> {
     let mut right: Option<String> = None;
     let mut limit = 50usize;
     let mut time_anchor: Option<String> = None;
+    let mut verbose = false;
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -59,6 +62,7 @@ pub fn parse(args: &[String]) -> Result<DiffCommand, String> {
                 Some(v) => time_anchor = Some(v.clone()),
                 None => return Err("--time-anchor requires an element name".into()),
             },
+            "--verbose" | "-v" => verbose = true,
             other if !other.starts_with("--") && path.is_none() => {
                 path = Some(other.to_string());
             }
@@ -76,6 +80,7 @@ pub fn parse(args: &[String]) -> Result<DiffCommand, String> {
         right,
         limit,
         time_anchor,
+        verbose,
     })
 }
 
@@ -100,6 +105,7 @@ pub fn run_captured(cmd: DiffCommand) -> (i32, String) {
     let mut cube = loaded.cube;
     let principal = loaded.root_principal;
     let refs = &loaded.refs;
+    let measure_descs = &loaded.measure_descriptions;
 
     // Apply time-anchor override
     if let Some(anchor_name) = &cmd.time_anchor {
@@ -218,6 +224,8 @@ pub fn run_captured(cmd: DiffCommand) -> (i32, String) {
         &cmd.left,
         &cmd.right,
         cmd.format,
+        cmd.verbose,
+        measure_descs,
     );
     (0, output_str)
 }
@@ -297,6 +305,8 @@ fn format_diff_output(
     left_desc: &Option<String>,
     right_desc: &Option<String>,
     format: OutputFormat,
+    verbose: bool,
+    measure_descs: &std::collections::HashMap<String, String>,
 ) -> String {
     let comparison = format!(
         "{} vs {}",
@@ -366,6 +376,20 @@ fn format_diff_output(
                     format_f64(entry.right),
                     delta_str
                 );
+            }
+            // Phase 4D: verbose descriptions for affected measures.
+            if verbose {
+                let mut descs_shown = false;
+                for name in measures_affected {
+                    if let Some(desc) = crate::verbose::measure_description(measure_descs, name) {
+                        if !descs_shown {
+                            out.push('\n');
+                            descs_shown = true;
+                        }
+                        let _ = writeln!(out, "{name}:");
+                        out.push_str(&crate::verbose::format_description_line(desc, None));
+                    }
+                }
             }
             out
         }

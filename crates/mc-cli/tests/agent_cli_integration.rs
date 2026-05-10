@@ -2890,3 +2890,198 @@ fn test_sweep_unknown_coefficient_fails_before_loop() {
         "stderr should mention the missing coefficient; got: {stderr}"
     );
 }
+
+// ===========================================================================
+// Phase 4D: --verbose / -v integration tests
+// ===========================================================================
+
+#[test]
+fn test_query_verbose_single_coord_includes_description() {
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--coord",
+        "Scenario=Baseline,Version=Working,Time=Jan_2026,Channel=Paid_Search,Market=Tampa,Measure=Spend",
+        "--verbose",
+    ]);
+    assert!(
+        output.status.success(),
+        "exit code: {}, stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Marketing dollars allocated"),
+        "verbose output should contain Spend's description; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_query_verbose_shorthand_v_flag() {
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--coord",
+        "Scenario=Baseline,Version=Working,Time=Jan_2026,Channel=Paid_Search,Market=Tampa,Measure=CPC",
+        "-v",
+    ]);
+    assert!(
+        output.status.success(),
+        "exit code: {}, stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Cost per click"),
+        "-v shorthand should produce verbose output; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_query_verbose_json_unchanged() {
+    let path = acme_yaml();
+    // Run with --verbose --format json: JSON output should NOT contain description text.
+    let output = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--coord",
+        "Scenario=Baseline,Version=Working,Time=Jan_2026,Channel=Paid_Search,Market=Tampa,Measure=Spend",
+        "--verbose",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        output.status.success(),
+        "exit code: {}, stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // JSON output should be valid JSON and NOT contain verbose description text.
+    assert!(
+        !stdout.contains("Marketing dollars allocated"),
+        "verbose should not affect JSON output; got:\n{stdout}"
+    );
+    let json = parse_json(&output.stdout);
+    assert!(json.get("value").is_some(), "JSON must have 'value' field");
+}
+
+#[test]
+fn test_query_verbose_tabular_includes_descriptions() {
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--where",
+        "Spend > 10000",
+        "--show",
+        "Spend,CPC",
+        "--verbose",
+        "--limit",
+        "5",
+    ]);
+    assert!(
+        output.status.success(),
+        "exit code: {}, stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Marketing dollars allocated"),
+        "verbose tabular output should include Spend description; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Cost per click"),
+        "verbose tabular output should include CPC description; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_whatif_verbose_includes_description() {
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "whatif",
+        path.to_str().unwrap(),
+        "--set",
+        "Scenario=Baseline,Version=Working,Time=Jan_2026,Channel=Paid_Search,Market=Tampa,Measure=Spend=20000",
+        "--show",
+        "Clicks,Revenue",
+        "--verbose",
+    ]);
+    assert!(
+        output.status.success(),
+        "exit code: {}, stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Derived click volume"),
+        "verbose whatif should include Clicks description; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_trace_verbose_includes_description() {
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "trace",
+        path.to_str().unwrap(),
+        "--coord",
+        "Scenario=Baseline,Version=Working,Time=Jan_2026,Channel=Paid_Search,Market=Tampa,Measure=Clicks",
+        "--verbose",
+    ]);
+    assert!(
+        output.status.success(),
+        "exit code: {}, stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Derived click volume"),
+        "verbose trace should include Clicks description at root; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_verbose_value_substitution() {
+    // Verify {value} substitution works when present in description.
+    // The Acme descriptions don't contain {value}, so this test exercises
+    // the code path indirectly (single-coord verbose passes the formatted
+    // value to format_description_line). If a future model has {value} in
+    // a description, it will be substituted.
+    let path = acme_yaml();
+    let output = run_mc(&[
+        "model",
+        "query",
+        path.to_str().unwrap(),
+        "--coord",
+        "Scenario=Baseline,Version=Working,Time=Jan_2026,Channel=Paid_Search,Market=Tampa,Measure=Spend",
+        "--verbose",
+    ]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Value should appear on first line, description on second (indented).
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(
+        lines.len() >= 2,
+        "verbose output should have at least 2 lines"
+    );
+    assert!(
+        lines[1].starts_with("  "),
+        "description line should be indented with 2 spaces; got: {:?}",
+        lines[1]
+    );
+}

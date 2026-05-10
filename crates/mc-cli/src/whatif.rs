@@ -39,6 +39,8 @@ pub struct WhatifCommand {
     pub show: Vec<String>,
     pub dry_run: bool,
     pub time_anchor: Option<String>,
+    /// Phase 4D: enrich text output with measure descriptions.
+    pub verbose: bool,
 }
 
 pub fn parse(args: &[String]) -> Result<WhatifCommand, String> {
@@ -50,6 +52,7 @@ pub fn parse(args: &[String]) -> Result<WhatifCommand, String> {
     let mut show: Option<Vec<String>> = None;
     let mut dry_run = false;
     let mut time_anchor: Option<String> = None;
+    let mut verbose = false;
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -83,6 +86,7 @@ pub fn parse(args: &[String]) -> Result<WhatifCommand, String> {
                 Some(v) => time_anchor = Some(v.clone()),
                 None => return Err("--time-anchor requires an element name".into()),
             },
+            "--verbose" | "-v" => verbose = true,
             other if !other.starts_with("--") && path.is_none() => {
                 path = Some(other.to_string());
             }
@@ -141,6 +145,7 @@ pub fn parse(args: &[String]) -> Result<WhatifCommand, String> {
         show,
         dry_run,
         time_anchor,
+        verbose,
     })
 }
 
@@ -165,6 +170,7 @@ pub fn run_captured(cmd: WhatifCommand) -> (i32, String) {
     let mut cube = loaded.cube;
     let principal = loaded.root_principal;
     let refs = &loaded.refs;
+    let measure_descs = &loaded.measure_descriptions;
 
     // Apply time-anchor override
     if let Some(anchor_name) = &cmd.time_anchor {
@@ -300,7 +306,13 @@ pub fn run_captured(cmd: WhatifCommand) -> (i32, String) {
         });
     }
 
-    let output_str = format_whatif_output(&override_rows, &affected, cmd.format);
+    let output_str = format_whatif_output(
+        &override_rows,
+        &affected,
+        cmd.format,
+        cmd.verbose,
+        measure_descs,
+    );
     (0, output_str)
 }
 
@@ -351,6 +363,8 @@ fn format_whatif_output(
     overrides: &[OverrideRow],
     affected: &[AffectedMeasure],
     format: OutputFormat,
+    verbose: bool,
+    measure_descs: &std::collections::HashMap<String, String>,
 ) -> String {
     match format {
         OutputFormat::Json => {
@@ -436,6 +450,18 @@ fn format_whatif_output(
                     })
                     .unwrap_or_else(|| "n/a".into());
                 let _ = writeln!(out, "    {:<20} {before_s} → {after_s} ({delta_s})", m.name);
+                // Phase 4D: verbose measure description.
+                if verbose {
+                    if let Some(desc) = crate::verbose::measure_description(measure_descs, &m.name)
+                    {
+                        let val_str = m.after.map(format_f64);
+                        out.push_str("    ");
+                        out.push_str(&crate::verbose::format_description_line(
+                            desc,
+                            val_str.as_deref(),
+                        ));
+                    }
+                }
             }
             out
         }

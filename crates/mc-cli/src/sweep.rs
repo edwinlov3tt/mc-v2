@@ -29,6 +29,8 @@ pub struct SweepCommand {
     /// `query --where`. Default (None) preserves the previous behaviour
     /// of evaluating the metric across every leaf coord.
     pub metric_where: Option<String>,
+    /// Phase 4D: enrich text output with measure descriptions.
+    pub verbose: bool,
 }
 
 pub fn parse(args: &[String]) -> Result<SweepCommand, String> {
@@ -43,6 +45,7 @@ pub fn parse(args: &[String]) -> Result<SweepCommand, String> {
     let mut dry_run = false;
     let mut time_anchor: Option<String> = None;
     let mut metric_where: Option<String> = None;
+    let mut verbose = false;
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -88,6 +91,7 @@ pub fn parse(args: &[String]) -> Result<SweepCommand, String> {
                 Some(v) => metric_where = Some(v.clone()),
                 None => return Err("--metric-where requires an expression argument".into()),
             },
+            "--verbose" | "-v" => verbose = true,
             other if !other.starts_with("--") && path.is_none() => {
                 path = Some(other.to_string());
             }
@@ -109,6 +113,7 @@ pub fn parse(args: &[String]) -> Result<SweepCommand, String> {
         dry_run,
         time_anchor,
         metric_where,
+        verbose,
     })
 }
 
@@ -186,6 +191,7 @@ pub fn run_captured(cmd: SweepCommand) -> (i32, String) {
     let mut cube = loaded.cube;
     let principal = loaded.root_principal;
     let refs = &loaded.refs;
+    let measure_descs = &loaded.measure_descriptions;
 
     // Apply time-anchor override (carries through every iteration).
     if let Some(anchor_name) = &cmd.time_anchor {
@@ -340,7 +346,15 @@ pub fn run_captured(cmd: SweepCommand) -> (i32, String) {
             })
     };
 
-    let output_str = format_sweep_output(&cmd, &results, baseline_result, optimal, cmd.format);
+    let output_str = format_sweep_output(
+        &cmd,
+        &results,
+        baseline_result,
+        optimal,
+        cmd.format,
+        cmd.verbose,
+        measure_descs,
+    );
     (0, output_str)
 }
 
@@ -493,6 +507,8 @@ fn format_sweep_output(
     baseline: Option<f64>,
     optimal: Option<&SweepPoint>,
     format: OutputFormat,
+    verbose: bool,
+    measure_descs: &std::collections::HashMap<String, String>,
 ) -> String {
     // Phase 6A.3 item 3: when `baseline` or a per-point metric is None
     // (the `--metric-where` filter matched zero coords), emit JSON `null`
@@ -541,6 +557,14 @@ fn format_sweep_output(
             let param_label = cmd.coefficient.as_deref().unwrap_or("parameter");
             let _ = writeln!(out, "Sweep: {} over range {}", param_label, cmd.range);
             let _ = writeln!(out, "Metric: {} (goal: {})", cmd.metric, cmd.goal);
+            // Phase 4D: verbose description for the swept metric.
+            if verbose {
+                let metric_name = extract_metric_measure_name(&cmd.metric);
+                if let Some(desc) = crate::verbose::measure_description(measure_descs, metric_name)
+                {
+                    out.push_str(&crate::verbose::format_description_line(desc, None));
+                }
+            }
             let _ = writeln!(out, "Baseline: {}\n", format_opt_f64(baseline));
             let _ = writeln!(out, "{:<12} {:<15} {:<15}", "Value", "Metric", "Delta");
             let _ = writeln!(out, "{}", "-".repeat(42));
@@ -593,6 +617,21 @@ fn push_opt_f64_json(out: &mut String, v: Option<f64>) {
             let _ = write!(out, "{f}");
         }
         None => out.push_str("null"),
+    }
+}
+
+/// Extract the inner measure name from a metric expression like
+/// `mean(Spend)`, `sum(Revenue)`, or just `Spend`.
+fn extract_metric_measure_name(metric: &str) -> &str {
+    let trimmed = metric.trim();
+    if let Some(inner) = strip_fn("mean", trimmed)
+        .or_else(|| strip_fn("sum", trimmed))
+        .or_else(|| strip_fn("max", trimmed))
+        .or_else(|| strip_fn("min", trimmed))
+    {
+        inner
+    } else {
+        trimmed
     }
 }
 
