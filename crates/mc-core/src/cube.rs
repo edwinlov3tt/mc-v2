@@ -84,6 +84,11 @@ pub struct Cube {
     /// Model-layer reference data (benchmarks, lookup tables, thresholds)
     /// used by cross-coordinate eval. Empty for cubes built without model data.
     pub reference_data: ReferenceData,
+    /// Per ADR-0027 Decision 5: tracks the `time_anchor_index` that was
+    /// active when each time-anchor-dependent cell was last cached.
+    /// On cache read, if the stored anchor differs from the current
+    /// `reference_data.time_anchor_index`, the cell is treated as stale.
+    time_anchor_cache: ahash::AHashMap<CellCoordinate, usize>,
 }
 
 impl Cube {
@@ -393,11 +398,32 @@ impl Cube {
         measure_meta: &MeasureMeta,
         request_trace: bool,
     ) -> Result<CellValue, EngineError> {
+        // Per ADR-0027 Decision 6: cells with registered dependency
+        // edges trust the graph's dirty flag, not the global revision.
+        // The revision check is DEMOTED to a safety net for cells that
+        // have never been evaluated (no edges registered yet).
+        let has_edges = !self.deps.dependencies_of(coord).is_empty();
         let cached_fresh = !self.dirty.is_dirty(coord)
             && self
                 .store
                 .read(coord)
-                .map(|s| s.revision == self.revision)
+                .map(|s| {
+                    if has_edges {
+                        // Cell has been evaluated with tracked dependencies.
+                        // Not dirty → safe to reuse. Per ADR-0027 Decision 5:
+                        // also verify time_anchor hasn't changed for
+                        // time-anchor-dependent cells.
+                        match self.time_anchor_cache.get(coord) {
+                            Some(cached_anchor) => {
+                                self.reference_data.time_anchor_index == Some(*cached_anchor)
+                            }
+                            None => true,
+                        }
+                    } else {
+                        // No edges yet (first eval). Fall back to revision.
+                        s.revision == self.revision
+                    }
+                })
                 .unwrap_or(false);
         if cached_fresh && !request_trace {
             // Cache hit — but ONLY if we're not asked for a trace; the
@@ -470,6 +496,10 @@ impl Cube {
         // declared-dependency superset check (per spec §3.10).
         let mut actual_reads: Vec<(ElementId, CellValue)> = Vec::new();
         let mut child_traces: Vec<TraceNode> = Vec::new();
+        // Per ADR-0027 Decision 3: track cross-coord reads for edge
+        // registration. Per Decision 5: track time-anchor usage.
+        let mut cross_coord_reads: Vec<CellCoordinate> = Vec::new();
+        let mut used_time_anchor = false;
 
         let target_coord = coord.clone();
         let cube_id = self.id;
@@ -500,6 +530,8 @@ impl Cube {
                         &target_coord,
                         measure_dim_position,
                         principal,
+                        &mut cross_coord_reads,
+                        &mut used_time_anchor,
                     ),
                 }
             };
@@ -563,6 +595,28 @@ impl Cube {
                     via: DependencySource::Rule(rule_id),
                 },
             );
+        }
+
+        // Per ADR-0027 Decision 3: register cross-coord dependency
+        // edges. These are fully-resolved (source_coord, target_coord)
+        // pairs collected during eval. Idempotent via add_edge dedup.
+        for cross_coord in &cross_coord_reads {
+            self.deps.add_edge(
+                coord.clone(),
+                DependencyEdge {
+                    to: cross_coord.clone(),
+                    via: DependencySource::Rule(rule_id),
+                },
+            );
+        }
+
+        // Per ADR-0027 Decision 5: if this eval used time-anchor-
+        // dependent functions, record the current time_anchor so
+        // the cache freshness check can detect anchor changes.
+        if used_time_anchor {
+            if let Some(anchor) = self.reference_data.time_anchor_index {
+                self.time_anchor_cache.insert(coord.clone(), anchor);
+            }
         }
 
         // Cache the result.
@@ -806,12 +860,21 @@ impl Cube {
     /// Resolve a `CrossCoordRead` in the context of `target_coord`.
     /// Called during rule evaluation to handle actual_ref, prev, lag,
     /// cumulative, rolling_avg, sum_over, benchmark, lookup, bucket, etc.
+    ///
+    /// Per ADR-0027 Decision 3: resolved source coordinates are pushed
+    /// to `cross_coord_reads` so the dependency graph can register
+    /// edges. Per Decision 4: coordinates are pushed even when the
+    /// read returns Null/Missing. Per Decision 5: `used_time_anchor`
+    /// is set when time-relative functions are evaluated.
+    #[allow(clippy::too_many_arguments)]
     fn resolve_cross_coord_read(
         &mut self,
         read: &CrossCoordRead,
         target_coord: &CellCoordinate,
         measure_dim_position: usize,
         principal: PrincipalId,
+        cross_coord_reads: &mut Vec<CellCoordinate>,
+        used_time_anchor: &mut bool,
     ) -> Result<ScalarValue, EngineError> {
         let cube_id = self.id;
         match read {
@@ -840,6 +903,8 @@ impl Cube {
                 elements[scenario_pos] = actuals_element;
                 elements[measure_dim_position] = *measure;
                 let shifted_coord = CellCoordinate::from_parts(cube_id, elements.iter().copied());
+                // Per ADR-0027 Decision 3+4: register even if read returns Null.
+                cross_coord_reads.push(shifted_coord.clone());
                 let cv = self.read_inner(&shifted_coord, principal, false)?;
                 Ok(cv.value)
             }
@@ -867,6 +932,8 @@ impl Cube {
                 elements[time_pos] = target_element;
                 elements[measure_dim_position] = *measure;
                 let shifted_coord = CellCoordinate::from_parts(cube_id, elements.iter().copied());
+                // Per ADR-0027 Decision 3+4: register even if read returns Null.
+                cross_coord_reads.push(shifted_coord.clone());
                 let cv = self.read_inner(&shifted_coord, principal, false)?;
                 Ok(cv.value)
             }
@@ -893,6 +960,8 @@ impl Cube {
                     elements[time_pos] = target_element;
                     elements[measure_dim_position] = *measure;
                     let c = CellCoordinate::from_parts(cube_id, elements.iter().copied());
+                    // Per ADR-0027 Decision 3+4: register each window coord.
+                    cross_coord_reads.push(c.clone());
                     let cv = self.read_inner(&c, principal, false)?;
                     if let ScalarValue::F64(v) = cv.value {
                         sum += v;
@@ -934,6 +1003,8 @@ impl Cube {
                     elements[time_pos] = target_element;
                     elements[measure_dim_position] = *measure;
                     let c = CellCoordinate::from_parts(cube_id, elements.iter().copied());
+                    // Per ADR-0027 Decision 3+4: register each window coord.
+                    cross_coord_reads.push(c.clone());
                     let cv = self.read_inner(&c, principal, false)?;
                     if let ScalarValue::F64(v) = cv.value {
                         sum += v;
@@ -961,12 +1032,16 @@ impl Cube {
             CrossCoordRead::AnchorIndex => {
                 // Per ADR-0014: time_anchor_index is set during compile from
                 // the Time dim's time_anchor field or --time-anchor CLI override.
+                // Per ADR-0027 Decision 5: mark as time-anchor-dependent.
+                *used_time_anchor = true;
                 match self.reference_data.time_anchor_index {
                     Some(idx) => Ok(ScalarValue::F64(idx as f64)),
                     None => Ok(ScalarValue::Null), // MC1017 should have fired at validate
                 }
             }
             CrossCoordRead::IsPast => {
+                // Per ADR-0027 Decision 5: mark as time-anchor-dependent.
+                *used_time_anchor = true;
                 let anchor = match self.reference_data.time_anchor_index {
                     Some(a) => a as f64,
                     None => return Ok(ScalarValue::Null),
@@ -988,6 +1063,8 @@ impl Cube {
                 }))
             }
             CrossCoordRead::IsCurrent => {
+                // Per ADR-0027 Decision 5: mark as time-anchor-dependent.
+                *used_time_anchor = true;
                 let anchor = match self.reference_data.time_anchor_index {
                     Some(a) => a as f64,
                     None => return Ok(ScalarValue::Null),
@@ -1009,6 +1086,8 @@ impl Cube {
                 }))
             }
             CrossCoordRead::IsFuture => {
+                // Per ADR-0027 Decision 5: mark as time-anchor-dependent.
+                *used_time_anchor = true;
                 let time_pos = match self.find_time_dimension_position() {
                     Some(p) => p,
                     None => return Ok(ScalarValue::Null),
@@ -1030,6 +1109,8 @@ impl Cube {
                 }))
             }
             CrossCoordRead::PeriodsSinceAnchor => {
+                // Per ADR-0027 Decision 5: mark as time-anchor-dependent.
+                *used_time_anchor = true;
                 let anchor = match self.reference_data.time_anchor_index {
                     Some(a) => a as f64,
                     None => return Ok(ScalarValue::Null),
@@ -1134,6 +1215,8 @@ impl Cube {
                     elements[dim_pos] = leaf_id;
                     elements[measure_dim_position] = *measure;
                     let c = CellCoordinate::from_parts(cube_id, elements.iter().copied());
+                    // Per ADR-0027 Decision 3+4: register each scanned coord.
+                    cross_coord_reads.push(c.clone());
                     let cv = self.read_inner(&c, principal, false)?;
                     if let ScalarValue::F64(v) = cv.value {
                         sum += v;
@@ -1192,6 +1275,8 @@ impl Cube {
                 elements[scenario_pos] = *scenario_element;
                 elements[measure_dim_position] = *measure;
                 let shifted_coord = CellCoordinate::from_parts(cube_id, elements.iter().copied());
+                // Per ADR-0027 Decision 3+4: register even if read returns Null.
+                cross_coord_reads.push(shifted_coord.clone());
                 let cv = self.read_inner(&shifted_coord, principal, false)?;
                 Ok(cv.value)
             }
@@ -1222,6 +1307,8 @@ impl Cube {
                     elements[time_pos] = prior_elem;
                     elements[measure_dim_position] = *measure;
                     let shifted = CellCoordinate::from_parts(cube_id, elements.iter().copied());
+                    // Per ADR-0027 Decision 3+4: register before reading.
+                    cross_coord_reads.push(shifted.clone());
                     let cv = self.read_inner(&shifted, principal, false)?;
                     if !cv.value.is_null() {
                         return Ok(cv.value);
@@ -1254,6 +1341,7 @@ impl Cube {
                 measure_dim_position,
                 principal,
                 DimAggOp::Avg,
+                cross_coord_reads,
             ),
             CrossCoordRead::DimensionMin { dimension, measure } => self.dimension_aggregate(
                 *dimension,
@@ -1262,6 +1350,7 @@ impl Cube {
                 measure_dim_position,
                 principal,
                 DimAggOp::Min,
+                cross_coord_reads,
             ),
             CrossCoordRead::DimensionMax { dimension, measure } => self.dimension_aggregate(
                 *dimension,
@@ -1270,6 +1359,7 @@ impl Cube {
                 measure_dim_position,
                 principal,
                 DimAggOp::Max,
+                cross_coord_reads,
             ),
             // Phase 3I: weighted average across leaf elements of `dim`.
             // Walks each leaf twice — once for value, once for weight —
@@ -1286,6 +1376,7 @@ impl Cube {
                 target_coord,
                 measure_dim_position,
                 principal,
+                cross_coord_reads,
             ),
             CrossCoordRead::PredictModel { model_id, features } => {
                 // Phase 3H.2: clone the model so subsequent `read_inner`
@@ -1352,6 +1443,7 @@ impl Cube {
                                 time_pos,
                                 measure_dim_position,
                                 principal,
+                                cross_coord_reads,
                             )?;
                             feature_values[feature_idx] = adstocked;
                         }
@@ -1484,6 +1576,7 @@ impl Cube {
     /// (with all other coordinates held constant), then reduces per
     /// `op`. Skip-Null per handoff item 5 W1: Nulls don't contribute,
     /// and an empty (all-Null) accumulator returns Null.
+    #[allow(clippy::too_many_arguments)]
     fn dimension_aggregate(
         &mut self,
         dimension: crate::id::DimensionId,
@@ -1492,6 +1585,7 @@ impl Cube {
         measure_dim_position: usize,
         principal: PrincipalId,
         op: DimAggOp,
+        cross_coord_reads: &mut Vec<CellCoordinate>,
     ) -> Result<ScalarValue, EngineError> {
         let cube_id = self.id;
         let dim_pos = match self.dimensions.iter().position(|d| d.id == dimension) {
@@ -1515,6 +1609,8 @@ impl Cube {
             elements[dim_pos] = leaf_id;
             elements[measure_dim_position] = measure;
             let c = CellCoordinate::from_parts(cube_id, elements.iter().copied());
+            // Per ADR-0027 Decision 3+4: register each scanned coord.
+            cross_coord_reads.push(c.clone());
             let cv = self.read_inner(&c, principal, false)?;
             if let ScalarValue::F64(v) = cv.value {
                 count += 1;
@@ -1537,6 +1633,7 @@ impl Cube {
     /// Phase 3I: weighted average across leaf elements of `dimension`.
     /// Per handoff item 5 W4, all-zero weight → Null. Null values or
     /// Null weights skip that leaf (don't contribute).
+    #[allow(clippy::too_many_arguments)]
     fn dimension_wavg(
         &mut self,
         dimension: crate::id::DimensionId,
@@ -1545,6 +1642,7 @@ impl Cube {
         target_coord: &CellCoordinate,
         measure_dim_position: usize,
         principal: PrincipalId,
+        cross_coord_reads: &mut Vec<CellCoordinate>,
     ) -> Result<ScalarValue, EngineError> {
         let cube_id = self.id;
         let dim_pos = match self.dimensions.iter().position(|d| d.id == dimension) {
@@ -1569,6 +1667,8 @@ impl Cube {
             value_elements[dim_pos] = leaf_id;
             value_elements[measure_dim_position] = value_measure;
             let value_coord = CellCoordinate::from_parts(cube_id, value_elements.iter().copied());
+            // Per ADR-0027 Decision 3+4: register each scanned coord.
+            cross_coord_reads.push(value_coord.clone());
             let value_cv = self.read_inner(&value_coord, principal, false)?;
             let value = match value_cv.value {
                 ScalarValue::F64(v) => v,
@@ -1580,6 +1680,8 @@ impl Cube {
             weight_elements[dim_pos] = leaf_id;
             weight_elements[measure_dim_position] = weight_measure;
             let weight_coord = CellCoordinate::from_parts(cube_id, weight_elements.iter().copied());
+            // Per ADR-0027 Decision 3+4: register each scanned coord.
+            cross_coord_reads.push(weight_coord.clone());
             let weight_cv = self.read_inner(&weight_coord, principal, false)?;
             let weight = match weight_cv.value {
                 ScalarValue::F64(v) => v,
@@ -1649,6 +1751,7 @@ impl Cube {
     /// `docs/research-notes/cross-coord-dep-graph.md`. The dedicated
     /// fix-it phase is targeted within the next 2 phase cycles per
     /// ADR-0018 Amendment §11.
+    #[allow(clippy::too_many_arguments)]
     fn apply_adstock(
         &mut self,
         current_value: f64,
@@ -1657,6 +1760,7 @@ impl Cube {
         time_pos: usize,
         measure_dim_position: usize,
         principal: PrincipalId,
+        cross_coord_reads: &mut Vec<CellCoordinate>,
     ) -> Result<f64, EngineError> {
         // Resolve `spec.feature` (a coefficient-name string) to a measure
         // ElementId via the Measure dim's name index.
@@ -1713,6 +1817,8 @@ impl Cube {
             elements[time_pos] = prior_time_id;
             elements[measure_dim_position] = feature_measure;
             let prior_coord = CellCoordinate::from_parts(cube_id, elements.iter().copied());
+            // Per ADR-0027 Decision 3+4: register each adstock backward scan coord.
+            cross_coord_reads.push(prior_coord.clone());
             let cv = self.read_inner(&prior_coord, principal, false)?;
             let prior_value = match cv.value {
                 ScalarValue::F64(v) => v,
@@ -2523,6 +2629,9 @@ impl Cube {
         self.store = snap.store.clone();
         self.revision = self.revision.next();
         self.dirty.clear_all();
+        // Per ADR-0027 Decision 5: clear time-anchor cache so
+        // rolled-back state re-evaluates time-anchor-dependent cells.
+        self.time_anchor_cache.clear();
         // Prune any Rule-provenance cells that came along on the clone;
         // they were valid at the snapshot's revision but their
         // `revision` field will appear stale at the new live revision,
@@ -3136,6 +3245,7 @@ impl CubeBuilder {
             deps: DependencyGraph::new(),
             dirty,
             reference_data: ReferenceData::default(),
+            time_anchor_cache: ahash::AHashMap::new(),
         })
     }
 }
