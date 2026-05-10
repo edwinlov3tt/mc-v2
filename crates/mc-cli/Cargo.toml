@@ -30,6 +30,8 @@ mc-demo-server = { path = "../mc-demo-server" }
 mc-narrative = { path = "../mc-narrative" }
 # Phase 7A.6: rich diagnostic rendering.
 mc-diagnostics = { path = "../mc-diagnostics" }
+# Phase 4C: workspace manifest + validation layer.
+mc-workspace = { path = "../mc-workspace" }
 
 [[bin]]
 name = "mc"

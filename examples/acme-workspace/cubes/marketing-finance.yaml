@@ -1,0 +1,164 @@
+# Acme Marketing Finance — workspace-form cube.
+#
+# Channel and Market dimensions use $ref to shared catalogs.
+# This cube is structurally equivalent to crates/mc-model/examples/acme.yaml
+# but demonstrates workspace $ref resolution.
+
+model_format_version: 1
+
+metadata:
+  name: "Acme_MarketingFinance"
+  description: "Acme marketing finance cube (workspace form) — 6 dims, 11 measures, 5 rules."
+  author: "Mosaic Phase 4C"
+  created: "2026-05-10"
+
+dimensions:
+  - name: "Scenario"
+    description: "Plan branches the user can switch between."
+    kind: "Scenario"
+    elements:
+      - { name: "Baseline", scenario_meta: "Default" }
+      - { name: "Aggressive", scenario_meta: "NonDefault" }
+      - { name: "Conservative", scenario_meta: "NonDefault" }
+
+  - name: "Version"
+    description: "Workflow state of a plan revision."
+    kind: "Version"
+    elements:
+      - { name: "Working", version_state: "Draft" }
+      - { name: "Submitted", version_state: "Submitted" }
+      - { name: "Approved", version_state: "Approved" }
+
+  - name: "Time"
+    description: "Calendar time periods (months, quarters, year)."
+    kind: "Standard"
+    elements:
+      - { name: "Jan_2026" }
+      - { name: "Feb_2026" }
+      - { name: "Mar_2026" }
+      - { name: "Apr_2026" }
+      - { name: "May_2026" }
+      - { name: "Jun_2026" }
+      - { name: "Jul_2026" }
+      - { name: "Aug_2026" }
+      - { name: "Sep_2026" }
+      - { name: "Oct_2026" }
+      - { name: "Nov_2026" }
+      - { name: "Dec_2026" }
+      - { name: "Q1_2026" }
+      - { name: "Q2_2026" }
+      - { name: "Q3_2026" }
+      - { name: "Q4_2026" }
+      - { name: "FY_2026" }
+
+  - name: "Channel"
+    description: "Marketing channels — resolved from shared catalog."
+    kind: "Standard"
+    $ref: "workspace://shared_dimensions/Channel"
+
+  - name: "Market"
+    description: "Geographic markets — resolved from shared catalog."
+    kind: "Standard"
+    $ref: "workspace://shared_dimensions/Market"
+
+  - name: "Measure"
+    description: "Measure dimension."
+    kind: "Measure"
+    elements: []
+
+hierarchies:
+  - dimension: "Time"
+    name: "Calendar"
+    default: true
+    edges:
+      - { parent: "FY_2026", child: "Q1_2026", weight: 1.0 }
+      - { parent: "FY_2026", child: "Q2_2026", weight: 1.0 }
+      - { parent: "FY_2026", child: "Q3_2026", weight: 1.0 }
+      - { parent: "FY_2026", child: "Q4_2026", weight: 1.0 }
+      - { parent: "Q1_2026", child: "Jan_2026", weight: 1.0 }
+      - { parent: "Q1_2026", child: "Feb_2026", weight: 1.0 }
+      - { parent: "Q1_2026", child: "Mar_2026", weight: 1.0 }
+      - { parent: "Q2_2026", child: "Apr_2026", weight: 1.0 }
+      - { parent: "Q2_2026", child: "May_2026", weight: 1.0 }
+      - { parent: "Q2_2026", child: "Jun_2026", weight: 1.0 }
+      - { parent: "Q3_2026", child: "Jul_2026", weight: 1.0 }
+      - { parent: "Q3_2026", child: "Aug_2026", weight: 1.0 }
+      - { parent: "Q3_2026", child: "Sep_2026", weight: 1.0 }
+      - { parent: "Q4_2026", child: "Oct_2026", weight: 1.0 }
+      - { parent: "Q4_2026", child: "Nov_2026", weight: 1.0 }
+      - { parent: "Q4_2026", child: "Dec_2026", weight: 1.0 }
+
+  - dimension: "Channel"
+    name: "Grouping"
+    default: true
+    edges:
+      - { parent: "All_Channels", child: "Paid_Media", weight: 1.0 }
+      - { parent: "All_Channels", child: "Owned_Earned", weight: 1.0 }
+      - { parent: "Paid_Media", child: "Paid_Search", weight: 1.0 }
+      - { parent: "Paid_Media", child: "Paid_Social", weight: 1.0 }
+      - { parent: "Paid_Media", child: "Display", weight: 1.0 }
+      - { parent: "Owned_Earned", child: "Email", weight: 1.0 }
+      - { parent: "Owned_Earned", child: "Organic", weight: 1.0 }
+
+  - dimension: "Market"
+    name: "Geographic"
+    default: true
+    edges:
+      - { parent: "USA", child: "Southeast", weight: 1.0 }
+      - { parent: "USA", child: "Northeast", weight: 1.0 }
+      - { parent: "Southeast", child: "Florida", weight: 1.0 }
+      - { parent: "Southeast", child: "Georgia", weight: 1.0 }
+      - { parent: "Southeast", child: "North_Carolina", weight: 1.0 }
+      - { parent: "Northeast", child: "New_York_State", weight: 1.0 }
+      - { parent: "Northeast", child: "Massachusetts", weight: 1.0 }
+      - { parent: "Florida", child: "Tampa", weight: 1.0 }
+      - { parent: "Florida", child: "Orlando", weight: 1.0 }
+      - { parent: "Florida", child: "Miami", weight: 1.0 }
+      - { parent: "Georgia", child: "Atlanta", weight: 1.0 }
+      - { parent: "North_Carolina", child: "Charlotte", weight: 1.0 }
+      - { parent: "New_York_State", child: "New_York_City", weight: 1.0 }
+      - { parent: "Massachusetts", child: "Boston", weight: 1.0 }
+
+measures:
+  - { name: "Spend", description: "Marketing dollars (USD).", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "CPC", description: "Cost per click.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Spend" }
+  - { name: "CVR", description: "Click-to-lead conversion rate.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Clicks" }
+  - { name: "Close_Rate", description: "Lead-to-customer close rate.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Leads" }
+  - { name: "AOV", description: "Average order value.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Customers" }
+  - { name: "COGS_Rate", description: "Cost-of-goods-sold rate.", role: "Input", data_type: "F64", aggregation: "WeightedAverage", weight_measure: "Revenue" }
+  - { name: "Clicks", description: "Derived click volume.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "Leads", description: "Derived lead volume.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "Customers", description: "Derived customer count.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "Revenue", description: "Derived revenue.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "Gross_Profit", description: "Derived gross profit.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+
+rules:
+  - name: "rule_clicks"
+    target_measure: "Clicks"
+    scope: "AllLeaves"
+    body: "Spend / CPC"
+    declared_dependencies: ["Spend", "CPC"]
+
+  - name: "rule_leads"
+    target_measure: "Leads"
+    scope: "AllLeaves"
+    body: "Clicks * CVR"
+    declared_dependencies: ["Clicks", "CVR"]
+
+  - name: "rule_customers"
+    target_measure: "Customers"
+    scope: "AllLeaves"
+    body: "Leads * Close_Rate"
+    declared_dependencies: ["Leads", "Close_Rate"]
+
+  - name: "rule_revenue"
+    target_measure: "Revenue"
+    scope: "AllLeaves"
+    body: "Customers * AOV"
+    declared_dependencies: ["Customers", "AOV"]
+
+  - name: "rule_gross_profit"
+    target_measure: "Gross_Profit"
+    scope: "AllLeaves"
+    body: "Revenue * (1 - COGS_Rate)"
+    declared_dependencies: ["Revenue", "COGS_Rate"]

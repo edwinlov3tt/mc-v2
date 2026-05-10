@@ -1351,6 +1351,7 @@ dependencies = [
  "mc-narrative",
  "mc-recipe",
  "mc-tessera",
+ "mc-workspace",
  "serde_json",
  "ureq",
 ]
@@ -1471,6 +1472,19 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "mc-workspace"
+version = "0.1.0"
+dependencies = [
+ "ahash 0.8.12",
+ "mc-core",
+ "mc-model",
+ "serde",
+ "serde_json",
+ "serde_yaml",
  "thiserror 1.0.69",
 ]
 

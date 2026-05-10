@@ -40,6 +40,7 @@ mod trace;
 mod transform;
 mod verbose;
 mod whatif;
+mod workspace;
 mod write;
 
 fn main() {
@@ -130,6 +131,10 @@ fn main() {
                 Err(e) => fatal(&e),
             }
         }
+        "workspace" => match workspace::parse(&args[2..]) {
+            Ok(cmd) => std::process::exit(workspace::run(cmd)),
+            Err(e) => fatal(&e),
+        },
         "mcp" => mcp::run(),
         "start" => run_start(&args[2..]),
         "--help" | "-h" | "help" => print_help(),
@@ -217,6 +222,13 @@ fn print_help() {
     println!("    mc tessera history    <model_dir>              [--format text|json]");
     println!("    mc tessera rollback   <import_id> --model-dir <path> [--format text|json]");
     println!("    mc tessera audit      <model_dir>              [--format text|json]");
+    println!();
+    println!();
+    println!("    mc workspace init     <name> [--domain <domain>] [--path <dir>]");
+    println!("    mc workspace validate [--path <dir>] [--format text|json]");
+    println!("    mc workspace lint     [--path <dir>] [--format text|json]");
+    println!("    mc workspace test     [--path <dir>] [--format text|json]");
+    println!("    mc workspace inspect  [--path <dir>] [--format text|json]");
     println!();
     println!("    mc mcp                                  # MCP server (stdio JSON-RPC)");
 }

@@ -1,0 +1,15 @@
+catalog_format_version: 1
+dimension: "Channel"
+elements:
+  - { name: "Paid_Search" }
+  - { name: "Paid_Social" }
+  - { name: "Display" }
+  - { name: "Email" }
+  - { name: "Organic" }
+  - { name: "Paid_Media" }
+  - { name: "Owned_Earned" }
+  - { name: "All_Channels" }
+hierarchy:
+  - { name: "Paid_Media", children: ["Paid_Search", "Paid_Social", "Display"] }
+  - { name: "Owned_Earned", children: ["Email", "Organic"] }
+  - { name: "All_Channels", children: ["Paid_Media", "Owned_Earned"] }

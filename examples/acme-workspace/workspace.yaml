@@ -1,0 +1,26 @@
+workspace_format_version: 1
+name: "acme-marketing"
+id: "acme-marketing"
+description: "Acme marketing finance workspace — workspace form of the canonical Acme demo."
+domain: "marketing-mix"
+
+# Shared dimension catalogs — referenced by cubes via $ref.
+shared_dimensions:
+  - id: "Channel"
+    source: "catalogs/channels.yaml"
+  - id: "Market"
+    source: "catalogs/markets.yaml"
+
+# Shared fitted models.
+shared_fitted_models: []
+
+# Cubes participating in this workspace.
+cubes:
+  - path: "cubes/marketing-finance.yaml"
+    name: "Marketing Finance"
+
+# Inter-cube links (none for the single-cube Acme demo).
+links: []
+
+# Workspace-level golden suites.
+golden_suites: []

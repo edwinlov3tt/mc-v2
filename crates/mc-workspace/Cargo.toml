@@ -1,0 +1,19 @@
+[package]
+name = "mc-workspace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Mosaic workspace + org manifest layer — Phase 4C (ADR-0026)."
+
+[dependencies]
+mc-model = { path = "../mc-model" }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9.34"
+serde_json = "1"
+thiserror = { workspace = true }
+ahash = { workspace = true }
+
+[dev-dependencies]
+mc-core = { path = "../mc-core" }

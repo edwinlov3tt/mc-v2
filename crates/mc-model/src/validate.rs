@@ -138,6 +138,10 @@ pub fn validate(parsed: ParsedModel) -> Result<ValidatedModel, Vec<Error>> {
     // a scope other than `FutureLeaves` requires the rule to set
     // `allow_past_extrapolation: true`. MC2067 fires otherwise.
     check_extrapolate_scope(&validated_rules, &mut val_errors);
+    // Phase 4C: dimension element_type validation. If element_type is
+    // "date", all element names must look like dates. If "numeric", all
+    // must parse as numbers.
+    check_element_type(&parsed, &mut val_errors);
 
     errors.extend(val_errors.into_iter().map(Error::Validation));
 
@@ -3933,6 +3937,60 @@ fn check_scope_variants(parsed: &ParsedModel, errors: &mut Vec<ValidationError>)
             other => {
                 errors.push(ValidationError::Schema {
                     message: format!("rule {:?}: unknown scope name {:?} (MC1029)", r.name, other),
+                });
+            }
+        }
+    }
+}
+
+/// Phase 4C: validate `element_type` constraints on dimensions.
+/// If `element_type: "date"`, every element name must contain digits
+/// (heuristic for date-like names). If `element_type: "numeric"`, every
+/// element name must parse as a number.
+fn check_element_type(parsed: &ParsedModel, errors: &mut Vec<ValidationError>) {
+    for dim in &parsed.dimensions {
+        let et = match &dim.element_type {
+            Some(t) => t.as_str(),
+            None => continue,
+        };
+        match et {
+            "string" => { /* No validation needed */ }
+            "date" => {
+                for elem in &dim.elements {
+                    // Heuristic: date elements should contain at least one digit.
+                    // Real date parsing would require knowing the format; we check
+                    // for the presence of any digit character as a basic guard.
+                    if !elem.name.chars().any(|c| c.is_ascii_digit()) {
+                        errors.push(ValidationError::Schema {
+                            message: format!(
+                                "dimension {:?} has element_type: \"date\" but element {:?} \
+                                 does not look like a date (no digits found)",
+                                dim.name, elem.name
+                            ),
+                        });
+                    }
+                }
+            }
+            "numeric" => {
+                for elem in &dim.elements {
+                    if elem.name.parse::<f64>().is_err() {
+                        errors.push(ValidationError::Schema {
+                            message: format!(
+                                "dimension {:?} has element_type: \"numeric\" but element {:?} \
+                                 does not parse as a number",
+                                dim.name, elem.name
+                            ),
+                        });
+                    }
+                }
+            }
+            other => {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "dimension {:?}: unknown element_type {:?} (expected \"string\", \
+                         \"date\", or \"numeric\")",
+                        dim.name, other
+                    ),
                 });
             }
         }

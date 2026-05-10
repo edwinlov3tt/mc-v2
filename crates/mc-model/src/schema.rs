@@ -107,6 +107,12 @@ pub struct ParsedDimension {
     /// (`anchor_index`, `is_past`, etc.) reference this element.
     #[serde(default)]
     pub time_anchor: Option<String>,
+    /// Phase 4C: optional element type constraint. `"string"` (default,
+    /// no validation), `"date"` (elements must parse as time periods),
+    /// `"numeric"` (elements must parse as numbers). Per ADR-0026 +
+    /// TM1 comparison Part 7.
+    #[serde(default)]
+    pub element_type: Option<String>,
     pub elements: Vec<ParsedElement>,
 }
 

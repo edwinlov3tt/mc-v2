@@ -1,0 +1,27 @@
+catalog_format_version: 1
+dimension: "Market"
+elements:
+  - { name: "Tampa" }
+  - { name: "Orlando" }
+  - { name: "Miami" }
+  - { name: "Atlanta" }
+  - { name: "Charlotte" }
+  - { name: "New_York_City" }
+  - { name: "Boston" }
+  - { name: "Florida" }
+  - { name: "Georgia" }
+  - { name: "North_Carolina" }
+  - { name: "New_York_State" }
+  - { name: "Massachusetts" }
+  - { name: "Southeast" }
+  - { name: "Northeast" }
+  - { name: "USA" }
+hierarchy:
+  - { name: "Florida", children: ["Tampa", "Orlando", "Miami"] }
+  - { name: "Georgia", children: ["Atlanta"] }
+  - { name: "North_Carolina", children: ["Charlotte"] }
+  - { name: "New_York_State", children: ["New_York_City"] }
+  - { name: "Massachusetts", children: ["Boston"] }
+  - { name: "Southeast", children: ["Florida", "Georgia", "North_Carolina"] }
+  - { name: "Northeast", children: ["New_York_State", "Massachusetts"] }
+  - { name: "USA", children: ["Southeast", "Northeast"] }

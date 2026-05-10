@@ -11,6 +11,7 @@ members = [
     "crates/mc-demo-server",
     "crates/mc-narrative",
     "crates/mc-diagnostics",
+    "crates/mc-workspace",
 ]
 
 [workspace.package]
