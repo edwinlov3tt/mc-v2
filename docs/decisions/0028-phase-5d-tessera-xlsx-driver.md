@@ -75,15 +75,15 @@ pub struct SourceConfig {
 
 **Dependency:** `calamine` (pure Rust, MIT licensed, no system dependencies, supports .xlsx and .xls)
 
-**Version pin:** `calamine = "0.26"` (or latest compatible with MSRV Rust 1.78). Verify MSRV compatibility before implementation — if calamine's current release requires Rust 1.85+, pin a compatible older release or use transitive dep pinning (same pattern as the criterion fix in Phase 1B).
+**Version pin:** `calamine = "0.30.1"` — verified MSRV-compatible. Calamine 0.31+ requires Rust 1.83; our MSRV is 1.78. Version 0.30.1 (MSRV 1.75) is the latest compatible release. MSRV verified 2026-05-10 via crates.io metadata.
 
 **Why calamine:**
 - Pure Rust (no C dependencies, no OpenXML system library)
 - MIT license (compatible with Mosaic's licensing)
-- Actively maintained (2024 releases)
 - Supports both .xlsx (Office Open XML) and .xls (legacy binary)
 - Read-only (Mosaic never writes Excel; only reads)
 - Does NOT evaluate formulas (treats formula cells as their cached value — correct for Tessera's "read source data" role)
+- v0.30.1 has full xlsx reading, sheet selection, cell type detection — all we need
 
 **Alternative considered:** `umya-spreadsheet` — heavier, also writes, more dependencies. Calamine is the right choice for read-only ingestion.
 
@@ -128,13 +128,19 @@ The XLSX driver infers column schemas by sampling the first 100 data rows:
 
 Header row determines column names. Columns with empty headers are named `_col_0`, `_col_1`, etc.
 
-### Decision 7: Merged cells are transparent
+### Decision 7: Merged cells are transparent (with header caveat)
 
 Calamine reports merged-cell ranges. The driver treats them as:
 - The top-left cell of a merge has the value
 - All other cells in the merge are empty/null
 
-This matches "export to CSV" behavior and is predictable. No special merge-awareness logic. Users who need merged-cell semantics must flatten their Excel file before ingestion.
+This matches "export to CSV" behavior and is predictable. No special merge-awareness logic.
+
+**Merged-header caveat:** Users with merged header rows (common in Excel — e.g., "Q1 2025" spanning 3 columns) will get empty column names for the right-side cells of the merge. These columns receive auto-generated names per Decision 6's `_col_N` pattern. **Merged headers are not supported; use a flat single-row header.** Document this in the diagnostic message when columns receive `_col_N` names — suggest the user check for merged cells in the header row.
+
+Users who need merged-header support must either:
+- Flatten their Excel headers manually before ingestion
+- Use `skip_rows` to jump past the merged header and point `header_row` at a flat row below
 
 ### Decision 8: New diagnostic codes (MC5019–MC5021)
 
@@ -146,34 +152,19 @@ This matches "export to CSV" behavior and is predictable. No special merge-aware
 
 These extend the MC5xxx range established by Phase 5A (MC5001–MC5018 already allocated across Tessera phases).
 
-### Decision 9: Aggregation transforms (`group_by`) — in scope
+### Decision 9: Aggregation transforms are OUT OF SCOPE (split to ADR-0029)
 
-Per the MASTER_PHASE_PLAN, Phase 5D also includes **aggregation transforms**:
+Per Claude Desktop review, aggregate transforms (`group_by` + aggregate functions) are a distinct architectural feature with unresolved design questions:
+- Cross-batch group semantics (unbounded memory if groups span batches)
+- `weighted_avg` edge cases (null/zero/negative weights)
+- `first`/`last` ordering semantics (non-deterministic for SQL sources without ORDER BY)
+- Diagnostic codes for aggregation errors
+- Interaction with column mapping (aggregate before or after mapping?)
+- Testing surface (8 functions × multiple edge cases)
 
-```yaml
-transforms:
-  - group_by: [Channel, Market, Time]
-    aggregate:
-      - source: impressions
-        function: sum
-      - source: spend
-        function: sum
-      - source: cpc
-        function: weighted_avg
-        weight: spend
-```
+**Decision:** Split aggregate transforms into a future ADR-0029 (Phase 5D.1 or 5E). Phase 5D ships the XLSX driver + layout descriptors only. This follows the Phase 3H pattern (3H.1 split from 3H.2 when scope grew).
 
-This is a post-fetch, pre-write transform that collapses rows from the source into cube-grain rows. It applies to ANY driver (CSV, XLSX, Postgres, etc.) and addresses the common pattern where source data is at a finer grain than the cube.
-
-**Supported aggregate functions:**
-- `sum` — sum of values in group
-- `avg` — arithmetic mean
-- `min` / `max` — minimum / maximum
-- `count` — row count per group
-- `weighted_avg` — weighted average (requires `weight` field referencing another column)
-- `first` / `last` — first or last value in group (order-dependent; source order preserved)
-
-**Implementation location:** New module `crates/mc-tessera/src/transforms/aggregate.rs`. Runs between `fetch_batch()` and `WriteBatch::push()` in the orchestrator pipeline.
+**Consequence for the Python workaround:** The `flatten_ltd_comparison.py` script (238 lines) does conditional logic (channel/scenario inference from cell content) and duplicate coalescing that are NOT expressible in a Tessera recipe even with aggregate transforms. The XLSX driver eliminates the openpyxl dependency and file-reading boilerplate, but the conditional business logic remains a script concern until conditional transforms are designed. See "Honest assessment" in Notes.
 
 ---
 
@@ -208,44 +199,50 @@ Modify `crates/mc-drivers/src/csv_driver.rs`:
 - Skip N rows before parsing header
 - This gives CSV the same layout capabilities as XLSX
 
-### Step 5: Implement aggregate transforms
-
-Create `crates/mc-tessera/src/transforms/aggregate.rs`:
-- Accept `group_by` field names + aggregate specs
-- Buffer rows until group boundary (or end of batch)
-- Emit one aggregated row per group
-- Wire into the orchestrator pipeline between fetch and write
-
-### Step 6: Integration tests
+### Step 5: Integration tests
 
 - XLSX with default settings (first sheet, header in row 0)
 - XLSX with explicit sheet name (valid + invalid → MC5019)
 - XLSX with skip_rows + header_row
 - XLSX with empty sheet → MC5021
+- XLSX with merged header → `_col_N` names generated (verify no crash)
 - CSV with skip_rows (regression: existing CSV behavior unchanged when skip_rows absent)
-- Aggregate transform: sum, avg, weighted_avg on grouped data
-- End-to-end: XLSX → aggregate → WriteBatch → verify cube cell values
+- CSV without skip_rows (regression: produces identical output to today)
+- End-to-end: XLSX → column mapping → WriteBatch → verify cube cell values
 
-### Step 7: Convert flatten_ltd_comparison.py to Tessera recipe
+### Step 6: Verify existing Tessera tests unchanged
 
-Prove the driver works by replacing the 238-line Python workaround with a Tessera recipe:
+All existing recipes and tests must produce identical results. Adding optional fields to SourceConfig must not change behavior when those fields are absent.
+
+### Step 7: Prove the driver works on real data
+
+Test against a real multi-sheet XLSX file (e.g., one sheet from the Tide Cleaners workbook):
 
 ```yaml
 version: 1
-name: tide_cleaners_q1_2025
+name: tide_cleaners_houston_2025
 source:
   driver: xlsx
   path: data/Tide Cleaners - LTD Comparison.xlsx
-  sheet: "2025"
-  skip_rows: 1        # skip year label row
-  header_row: 0       # first row after skip is the header
+  sheet: "Houston"
+  skip_rows: 9        # skip to 2025 block (rows 0-8 are 2024)
+  header_row: 0       # first row after skip is the 2025 header
 columns:
-  - source: Date
-    dimension: Time
-    time_format: "%m/%d/%Y"
-    map_to_period: month
-  # ... remaining column mappings
+  - source: "Ad Spend"
+    measure: AdSpend
+    type: f64
+  - source: "Matched Revenue"
+    measure: MatchedRevenue
+    type: f64
+  # ... remaining measures
+defaults:
+  Market: Houston
+  Channel: DirectMail
+  Scenario: Actual
+  Version: Working
 ```
+
+Note: This recipe handles ONE sheet + ONE year-block. The full Python script's conditional logic (channel inference, scenario inference, duplicate coalescing) requires either aggregate transforms (ADR-0029) or a simplified source file. The goal of this step is to prove the XLSX driver reads correctly, not to fully replace the script.
 
 ---
 
@@ -255,16 +252,15 @@ columns:
 2. XLSX files load correctly (single sheet, header detection, type inference)
 3. `sheet:` field selects a named sheet; invalid name → MC5019
 4. `skip_rows:` and `header_row:` work for both XLSX and CSV drivers
-5. Merged cells are transparent (top-left has value; rest are null)
-6. `group_by` + `aggregate` transforms collapse rows correctly
-7. `weighted_avg` aggregate produces correct weighted averages
-8. The 238-line Python workaround is replaceable by a Tessera recipe
-9. Calamine dependency is compatible with MSRV Rust 1.78 (verified)
-10. All existing Tessera tests pass unchanged (no regression)
-11. New MC5019–MC5021 diagnostics fire correctly
-12. `cargo test --workspace` passes
-13. `cargo clippy --all-targets --workspace -- -D warnings` passes
-14. No changes to `mc-core`
+5. Merged cells are transparent (top-left has value; rest are null; `_col_N` for empty headers)
+6. Existing CSV recipes WITHOUT layout fields produce identical output to today (regression test)
+7. `calamine = "0.30.1"` compiles cleanly at MSRV Rust 1.78 (verified pre-acceptance)
+8. All existing Tessera tests pass unchanged (no regression)
+9. New MC5019–MC5021 diagnostics fire correctly
+10. Schema inference is shared between CSV and XLSX (no duplicate implementation)
+11. `cargo test --workspace` passes
+12. `cargo clippy --all-targets --workspace -- -D warnings` passes
+13. No changes to `mc-core`
 
 ---
 
@@ -325,11 +321,11 @@ Considered. A recipe could target multiple sheets with per-sheet column mappings
 ## Dependencies
 
 **New external dependency:**
-- `calamine = "0.26"` (or latest MSRV-1.78-compatible version) — added to `crates/mc-drivers/Cargo.toml`
+- `calamine = "0.30.1"` — added to `crates/mc-drivers/Cargo.toml`
 - Pure Rust, MIT license, no system deps
-- MSRV verification required before implementation
+- MSRV: 1.75 (verified compatible with our 1.78; latest calamine 0.31+ requires 1.83)
 
-**No other new dependencies.** Aggregate transforms use std collections only.
+**No other new dependencies.**
 
 ---
 
@@ -352,4 +348,20 @@ Considered. A recipe could target multiple sheets with per-sheet column mappings
 
 **The layout descriptors are the real win.** `skip_rows` and `header_row` apply to CSV too. Many real CSV files have title rows, blank rows, or metadata rows before the header. Today users must manually strip these. After Phase 5D, a recipe handles it declaratively. This improves the experience for ALL file-based ingestion, not just XLSX.
 
-**Aggregate transforms complete the Tessera story.** Source data is often at a finer grain than the cube (daily data into monthly cubes, transaction-level into account-level). Without aggregation, users must pre-aggregate externally. The `group_by` transform closes this gap at the recipe level, eliminating another class of Python/SQL workarounds.
+**Honest assessment of the Python script replacement.** The `flatten_ltd_comparison.py` (238 lines) does significantly more than read Excel:
+- Multi-sheet processing (4 market sheets)
+- Year-block parsing with hardcoded row offsets
+- Two-pass processing (first pass: determine channel + scenario; second pass: emit rows)
+- Conditional channel inference ("Added Value" string → AddedValue channel)
+- Conditional scenario inference (MatchedRevenue present → Actual, absent → Plan)
+- Duplicate coalescing (multi-window drops in same month → sum)
+- Measure name mapping and junk filtering
+
+Phase 5D's XLSX driver eliminates the openpyxl dependency and handles the file-reading + year-block-skipping + sheet-selection portion (~40% of the script). The conditional business logic (channel/scenario inference from cell content) is NOT expressible in a declarative Tessera recipe. Full script replacement requires either:
+- ADR-0029 aggregate transforms + conditional column mapping (future)
+- A DuckDB pre-transform step (already possible but requires SQL expertise)
+- Accepting that this specific script is partially-but-not-fully replaceable
+
+The ADR does NOT claim "Phase 5D fully replaces the 238-line script." It claims "Phase 5D eliminates the XLSX-reading friction and handles the common case (single sheet, flat header, direct column mapping)."
+
+**Schema inference should be shared code.** Per Claude Desktop review: the type inference logic (sample N rows, determine column types) should be factored into a shared utility in `mc-drivers`, not duplicated between CSV and XLSX implementations. Two implementations will drift.
