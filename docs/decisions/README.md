@@ -53,6 +53,7 @@ Use [`../templates/adr.md`](../templates/adr.md) as the starting point.
 | [0024](./0024-rich-diagnostic-rendering.md) | Phase 7A.6 — Rich Diagnostic Rendering | Proposed |
 | [0025](./0025-kernel-discipline-and-deployment-architecture.md) | Kernel Discipline and Deployment Shape Architecture | **Accepted** — cross-cutting constitutional document; applies to all phases |
 | [0026](./0026-org-workspace-resource-scope-capability-grants.md) | Organization, Workspace, Resource Scope, and Capability Grants | **Accepted** — implementation vehicle: Phase 4C |
+| [0027](./0027-cross-coord-dependency-graph-fix.md) | Cross-Coordinate Dependency Graph Fix | **Proposed** — performance fix; target: before Phase 8 |
 
 ## When to write an ADR
 

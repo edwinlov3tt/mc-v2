@@ -90,7 +90,7 @@ Productization beyond the first usable product (multi-tenancy, customer-facing a
 | **9** | Cloud service — multi-tenant managed service, customer cubes in object storage (S3/R2), auth, billing, observability. Grout customer-controlled keys (Phase 9 Grout layer). ADR-0025 Shape 6. Do not start until Phase 8 has real users. | not started | — |
 | **10+** | Semantic overlay + cartridge marketplace — Mosaic in front of customer's data warehouse, DuckDB delegation, federated provenance, cartridge watermarking (Phase 10 Grout layer). ADR-0025 Shape 7. Build when customer signal is real. | not started | — |
 | **Security posture** | `docs/security/mosaic-security-posture.md` — cargo audit + cargo deny CI gates, input hardening, fuzzing plan. Must be active before Phase 8 (daemon) ships. | planned (doc filed; CI wiring needed before Phase 8) | — |
-| **Cross-coord dep-graph fix** | Dedicated fix-it phase for the cumulative cross-coord dep-graph debt inherited by 4+ ADRs (3E, 3J, 3H.2). Per ADR-0018 Amendment §11: scope within next 2 phase cycles after 3H.2. Performance-only fix (correctness preserved via revision-bumping). | planned (needs ADR; target within 2 cycles) | — |
+| **Cross-coord dep-graph fix** | Register cross-coord dependency edges (`prev`, `lag`, `actual_ref`, `scenario_ref`, `cumulative`, `rolling_avg`, adstock) in the graph so writes produce precise dirty sets proportional to actual fan-out instead of invalidating all derived cells. Lazy concrete edges, revision-bump safety net retained. Surgical change (1-3 sites in `cube.rs`). New dirty-set tests + synthetic benchmark. Per ADR-0027. | planned (ADR-0027 proposed; target: before Phase 8) | — |
 
 **Status legend.**
 - **complete** — shipped and tagged.
