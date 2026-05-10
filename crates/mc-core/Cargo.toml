@@ -92,3 +92,7 @@ harness = false
 [[bench]]
 name = "tessera_writeback"
 harness = false
+
+[[bench]]
+name = "cross_coord_write_precision"
+harness = false
