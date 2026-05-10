@@ -211,8 +211,7 @@ fn infer_dimension_name(table_name: &str) -> &'static str {
 fn date_sort_key(category: &str) -> String {
     // Try "Mon_YYYY" (sanitized dates like "Jul_2025")
     let month_names = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
     if category.len() >= 8 {
         for (i, name) in month_names.iter().enumerate() {

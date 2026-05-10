@@ -41,6 +41,18 @@ Use [`../templates/adr.md`](../templates/adr.md) as the starting point.
 | [0012](./0012-phase-3f-time-series-operations.md) | Phase 3F — Time-Series and Period Operations | Accepted |
 | [0013](./0013-phase-3g-reference-data-blocks.md) | Phase 3G — Reference-Data Blocks | Accepted |
 | [0014](./0014-time-representation.md) | Time Representation in Mosaic | Accepted |
+| [0015](./0015-phase-3i-formula-language-completion.md) | Phase 3I — Formula Language Completion | Accepted |
+| [0016](./0016-phase-3j-formula-deferred-items.md) | Phase 3J — Formula Authoring Deferred Items | Accepted |
+| [0017](./0017-phase-3h-1-fitted-model-output-bound.md) | Phase 3H.1 — Fitted-Model Output Bound | Accepted |
+| [0018](./0018-phase-3h-2-fitted-model-adstock-saturation.md) | Phase 3H.2 — Fitted-Model Adstock + Saturation | Accepted (closes formula-engine deferred queue) |
+| [0019](./0019-phase-6d-marketing-report-demo-mvp.md) | Phase 6D — Marketing Report Demo MVP | Accepted |
+| [0020](./0020-phase-7a-narrative-engine-plan.md) | Phase 7A — Narrative Engine Plan | Accepted |
+| [0021](./0021-phase-7a-4-benchmark-aggregation.md) | Phase 7A.4 — Benchmark Aggregation (Privacy-Aware) | Accepted |
+| [0022](./0022-phase-7a-5-explanation-chains.md) | Phase 7A.5 — Explanation Chains + Context Events | Accepted |
+| [0023](./0023-pptx-cascade-matcher.md) | Phase 6E — PPTX Cascade Matcher | Accepted |
+| [0024](./0024-rich-diagnostic-rendering.md) | Phase 7A.6 — Rich Diagnostic Rendering | Proposed |
+| [0025](./0025-kernel-discipline-and-deployment-architecture.md) | Kernel Discipline and Deployment Shape Architecture | **Accepted** — cross-cutting constitutional document; applies to all phases |
+| [0026](./0026-org-workspace-resource-scope-capability-grants.md) | Organization, Workspace, Resource Scope, and Capability Grants | **Accepted** — implementation vehicle: Phase 4C |
 
 ## When to write an ADR
 

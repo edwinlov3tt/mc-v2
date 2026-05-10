@@ -10,3 +10,4 @@ Cargo.lock.bak
 demo/frontend/node_modules/
 demo/frontend/dist/
 demo/sample-data/*.zip
+.mosaic/
