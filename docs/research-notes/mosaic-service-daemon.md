@@ -549,6 +549,135 @@ The daemon is NOT a rewrite of the demo server. It's a new crate that inherits p
 - **Demo server:** `crates/mc-demo-server/` — pattern reference (axum + tokio)
 - **Vision doc Part 4:** `docs/strategy/mosaic-architecture-and-vision.md` — Shape 4 narrative
 
+- **TM1 comparison:** `docs/strategy/mosaic-vs-tm1-strategic-comparison.md` — TM1 daemon-mode optimizations (multi-level caching, lazy consolidation) inform Phase 8 priorities
+
 ---
 
-**End of research note. When Phase 8 ADR drafts, this note is the starting point. The binding decisions live in the ADR; this note captures design intent and open questions.**
+## Part 16: Amendments from Claude Desktop review (2026-05-10)
+
+These resolve the open questions and address specific concerns raised during review. The ADR incorporates these as binding decisions.
+
+### Amendment 1: Concurrency model — per-cube channel (RESOLVED)
+
+**Verified:** `Cube::read()` takes `&mut self` (cube.rs line 164). Reads mutate the cube (lazy graph population + caching computed values + dirty flag clearing). Making reads `&self` would require major kernel refactoring — out of scope for Phase 8.
+
+**Decision: Per-cube tokio channel (Option A — sequential access per cube).**
+
+Each cube gets a dedicated tokio task. All requests targeting that cube are sent via an mpsc channel to that task. The task processes them sequentially. Different cubes run on different tasks → true parallelism across cubes, sequential within a cube.
+
+```rust
+// Conceptual shape
+struct CubeActor {
+    cube: Cube,
+    refs: ModelRefs,
+    rx: mpsc::Receiver<CubeRequest>,
+}
+
+enum CubeRequest {
+    Query { params: QueryParams, reply: oneshot::Sender<QueryResult> },
+    Write { params: WriteParams, reply: oneshot::Sender<WriteResult> },
+    // ...
+}
+```
+
+**Latency implication:** Concurrent requests to the SAME cube serialize. A dashboard with 5 widgets querying the same cube → widgets render sequentially (~5× latency vs parallel). For personal use this is acceptable. For production multi-user: Phase 9 explores MVCC or kernel `&self` reads.
+
+**Mitigation for dashboard case:** The daemon can batch multiple pending queries into one pass — group concurrent waiting requests for the same cube, execute them in sequence within one task wakeup, return all results together. This amortizes scheduling overhead even though execution is sequential.
+
+**What this means for the implementer:**
+- Each loaded cube lives in its own tokio task behind an mpsc channel
+- HTTP handlers send requests to the appropriate cube's channel and await the reply
+- Tokio's task scheduler provides cross-cube parallelism for free
+- No `Arc<Mutex<Cube>>` — cleaner and avoids async mutex poison
+
+### Amendment 2: Warm restart — content hashes, no default pre-loading (RESOLVED)
+
+**Problem with mtime:** Filesystem mtime is unreliable (clock skew, NFS, git checkout, file copy preserves timestamps). Content hash is authoritative.
+
+**Decision:**
+- `cache-manifest.json` records **content hash (SHA-256)** of each cube's model YAML, not mtime
+- On restart, daemon reads the manifest but does NOT pre-load cubes by default
+- Cubes are registered (paths known) but stay cold until first request (same lazy-load as fresh start)
+- The manifest is informational: "these are the cubes the previous session was using"
+- **Opt-in pre-loading:** `mc up --preload marketing-finance,brand-awareness` for specific cubes, or `daemon.toml` `preload_cubes = [...]` for deployments that want zero cold-start latency
+- On pre-load, verify content hash matches before loading — if hash changed, cold-load instead (model was edited while daemon was down)
+
+### Amendment 3: Write journal rigor (RESOLVED)
+
+**Ordering:** Queries to a cube BLOCK while a write-apply is in progress. Write-apply is atomic from the perspective of concurrent queries. The per-cube channel serialization (Amendment 1) makes this natural — write request is processed, cube mutates, then the next request (which might be a query) sees the new state.
+
+**Journal rotation:** Active journal is `write-journal.jsonl`. When it exceeds 10MB, rotate to `write-journal-{timestamp}.jsonl` and start fresh. Old segments are deleted after the next graceful shutdown confirms all writes are durable (cube snapshot taken).
+
+**Crash during journal write:** On replay, parse each line. If the last line is truncated/malformed (incomplete JSON), ignore it — that write was never acknowledged to the client (acknowledgment happens AFTER successful journal write). The client will retry. Add a log warning: "Ignoring truncated journal entry (crash during write)."
+
+**Journal entry format:**
+```json
+{"ts": "2026-05-10T14:30:00Z", "cube": "marketing-finance", "coord": [...], "value": 15000.0, "status": "pending"}
+{"ts": "2026-05-10T14:30:00Z", "cube": "marketing-finance", "coord": [...], "value": 15000.0, "status": "committed"}
+```
+
+On restart: entries with "pending" but no corresponding "committed" are replayed. Entries with "committed" are safe to ignore (already applied).
+
+### Amendment 4: Auth defaults — API key from day one (RESOLVED)
+
+**Decision:** Phase 8 ships with optional bearer-token auth.
+
+- `mc up --api-key <key>` enables authentication
+- Without `--api-key`, daemon **refuses to bind to non-localhost addresses**. If `--host 0.0.0.0` is set without `--api-key`, daemon exits with error: "Refusing to bind to non-localhost without --api-key. Set an API key for network-exposed deployments."
+- With `--api-key`, all requests must include `Authorization: Bearer <key>` header. Requests without it get 401.
+- API key is also configurable in `daemon.toml`: `api_key = "..."` (alternative to CLI flag)
+- This is NOT full auth (no users, no sessions, no RBAC) — just a shared secret. Phase 9 adds real auth.
+- Health endpoint (`/api/v1/health`) is exempt from auth (needed for monitoring)
+
+### Amendment 5: Tessera daemon transition plan (RESOLVED)
+
+**Phase 8 transition path:**
+1. `mc up` checks for `.tessera/daemon.pid` on startup. If a tessera daemon is running → error: "Tessera daemon is running (PID {pid}). Stop it with `mc tessera daemon --stop` before starting the service daemon."
+2. `mc up` handles all Tessera schedules internally (reads `.tessera/schedules.json`, fires due recipes, updates schedule state)
+3. `mc tessera daemon` remains functional as a standalone fallback for users who don't want the full daemon
+4. Phase 9+: `mc tessera daemon` becomes a compatibility shim that prints "Use `mc up` instead" and exits
+
+**What happens to existing schedules:** They continue to work under `mc up`. Same `schedules.json` format, same schedule IDs, same behavior. The only difference is which process fires them.
+
+### Amendment 6: Additional resolved decisions
+
+**MCP naming:** All MCP tools match the HTTP API path segments exactly. `mosaic.narrate_trends` (not `narrate-trends` — MCP tools use underscores). Add `mosaic.narrate_trends` to the MCP tool list.
+
+**Write-tool gating:** `mosaic.write` MCP tool requires `write_enabled = true` in `daemon.toml` (default: `false`). This prevents AI agents from accidentally modifying cube state. Explicit opt-in for write operations via MCP. HTTP API writes are always enabled (human-initiated).
+
+**`mc ps` shows:** cube name, workspace, state (warm/cold/loading), cache size (bytes), last access time, revision number. Not active requests (too transient to be useful in a CLI snapshot).
+
+**Request timeout:** Default 60s (not 30s). Sweep and narrate can be slow. Per-verb override in `daemon.toml`:
+```toml
+[timeouts]
+default_ms = 60000
+sweep_ms = 120000
+narrate_ms = 90000
+```
+
+**Max request body:** 10MB default (not 50MB). Tessera imports go through the Tessera recipe path, not the HTTP body. The only large body is `mc model write` with many cells, which is typically < 1MB. 50MB was too permissive.
+
+### Amendment 7: Non-goals (explicit)
+
+Phase 8 daemon is NOT:
+- A database (cube state lives in files; daemon is a cache layer)
+- A multi-process system (single process, multiple tasks)
+- Horizontally scalable (one daemon per machine; scale-out is Phase 9)
+- A security boundary (API key is a speed bump, not real auth — Phase 9 adds real auth)
+- A long-term storage layer (files are authoritative; daemon serves from cache)
+- A full web application server (serves API; web UI is a static bundle)
+- Multi-tenant (one org per daemon; multi-tenancy is Phase 9)
+
+### Amendment 8: Error handling decisions
+
+| Scenario | Behavior |
+|---|---|
+| Cube fails to load (malformed YAML) | Cube stays cold. Error logged. Health endpoint reports "degraded" with failing cube name. Requests to that cube get 503 with diagnostic. |
+| Write fails after journaling | Journal entry stays "pending." On next retry (or restart), replayed. Client gets error; can retry. |
+| Tessera recipe malformed | Schedule fires → error logged → schedule `failure_count` increments → after 2 consecutive failures, schedule paused. Same behavior as existing tessera daemon. |
+| Cube file deleted while warm | Next reload attempt fails → cube evicted from cache → requests get 404. Cube removed from `mc ps` listing. |
+| Out of cache budget during load | Evict LRU cube before loading new one. If no cube can be evicted (all actively in use), queue the load until one frees. |
+
+---
+
+**End of research note. When Phase 8 ADR drafts, this note is the starting point. The binding decisions live in the ADR; this note captures design intent, resolved questions, and the amendments from Claude Desktop review.**

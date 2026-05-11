@@ -54,7 +54,8 @@ Use [`../templates/adr.md`](../templates/adr.md) as the starting point.
 | [0025](./0025-kernel-discipline-and-deployment-architecture.md) | Kernel Discipline and Deployment Shape Architecture | **Accepted** — cross-cutting constitutional document; applies to all phases |
 | [0026](./0026-org-workspace-resource-scope-capability-grants.md) | Organization, Workspace, Resource Scope, and Capability Grants | **Accepted** — implementation vehicle: Phase 4C |
 | [0027](./0027-cross-coord-dependency-graph-fix.md) | Cross-Coordinate Dependency Graph Fix | **Proposed** — performance fix; target: before Phase 8 |
-| [0028](./0028-phase-5d-tessera-xlsx-driver.md) | Phase 5D — Tessera XLSX Driver and Layout Descriptors | **Proposed** — XLSX + skip_rows/header_row + group_by transforms |
+| [0028](./0028-phase-5d-tessera-xlsx-driver.md) | Phase 5D — Tessera XLSX Driver and Layout Descriptors | **Proposed** — XLSX + skip_rows/header_row |
+| [0029](./0029-phase-8-service-daemon.md) | Phase 8 — Mosaic Service Daemon | **Proposed** — `mc up`, per-cube actor, hot cache, write journal, API key auth |
 
 ## When to write an ADR
 
