@@ -290,4 +290,48 @@ product_name,subproduct_name,table_name,file_name,headers,description,is_require
 "Addressable Solutions","Geofencing with Foot Traffic","Performance by Zip","report-geofencing-performance-by-zip","Zip Code; City; State; Impressions; Clicks; CTR; Spend; Conversions; Foot Traffic","",FALSE,9
 "Blended Tactics","Targeted Display","Tracked Pixel Events by Day","report-targeteddisplay-tracked-pixel-events-by-day","Date; Event Type; Event Count; Unique Users; Conversion Value","",FALSE,10
 "Addressable Solutions","Geofencing with Foot Traffic","Conversion Zone Performance","report-geofencing-conversion-zone-performance","Conversion Zone; Zone Type; Impressions; Clicks; Conversions; Foot Traffic; Visitation Rate","",FALSE,10
-"Addressable Solutions","Geofencing with Foot Traffic","Target Fence Performance","report-geofencing-target-fence-performance","Fence Name; Fence Type; Radius; Impressions; Clicks; Conversions; Foot Traffic; Visitation Rate","",TRUE,11
+"Addressable Solutions","Geofencing with Foot Traffic","Target Fence Performance","report-geofencing-target-fence-performance","Fence Name; Fence Type; Radius; Impressions; Clicks; Conversions; Foot Traffic; Visitation Rate","",TRUE,11"Meta","Meta Ads","Monthly Performance","report-meta-monthly-performance","Date; Impressions; Link Clicks; CTR(Link Click-Through Rate); Post Engagements; Conversions (Default); Total Leads","",TRUE,0
+"Meta","Meta Ads","Campaign Performance","report-meta-campaign-performance","Campaign; Impressions; Link Clicks; CTR(Link Click-Through Rate); Post Engagements; Total Leads","",TRUE,1
+"Meta","Meta Ads","Device Performance","report-meta-device-performance","Device; Impressions; Link Clicks; CTR(Link Click-Through Rate); Post Engagements","",FALSE,2
+"Meta","Meta Ads","Creative Performance (Display)","report-meta-creative-performance-display","Creative Name; Impressions; Link Clicks; CTR (Link Click-Through Rate); Post Shares; Post Engagements; Total Leads","",FALSE,3
+"Meta","Meta Ads","Creative Performance (Video)","report-meta-creative-performance-video","Creative Name; Impressions; ThruPlays; ThruPlay Rate; Video Plays; Video Avg Play Time","",FALSE,3
+"Meta","Meta Ads","Weekly Performance","report-meta-weekly-performance","Date; Impressions; Link Clicks; CTR(Link Click-Through Rate); Post Engagements; Conversions (Default); Total Leads","",FALSE,4
+"Meta","Meta Ads","Age Breakdown","report-meta-age-breakdown","Age; Impressions; Link Clicks; CTR(Link Click-Through Rate); Post Engagements","",FALSE,5
+"Meta","Meta Ads","Gender Breakdown","report-meta-gender-breakdown","Gender; Impressions; Link Clicks; CTR(Link Click-Through Rate); Post Engagements","",FALSE,5
+"Meta","Meta Ads","DMA Performance","report-meta-dma-performance","DMA; Impressions; Link Clicks; CTR(Link Click-Through Rate); Post Engagements","",FALSE,6
+"Meta","Meta Ads","Region Performance","report-meta-region-performance","Region; Impressions; Link Clicks; CTR(Link Click-Through Rate); Post Engagements","",FALSE,6
+"Meta","Meta Ads","Facebook Ads Performance","report-meta-facebook-ads-performance","Ad Name; Impressions; Link Clicks; CTR(Link Click-Through Rate); Post Engagements","",FALSE,7
+"Meta","Meta Ads","Instagram Ads Performance","report-meta-instagram-ads-performance","Ad Name; Impressions; Link Clicks; CTR(Link Click-Through Rate); Post Engagements","",FALSE,7
+"Meta","Meta Ads","Ad Set Performance","report-meta-ad-set-performance","Ad Set; Impressions; Link Clicks; CTR(Link Click-Through Rate); Post Engagements","",FALSE,7
+"Meta","Meta Ads","Reach & Frequency","report-meta-reach-frequency","Date; Reach; Frequency; Impressions; Spend","",FALSE,8
+"Meta","Meta Ads","Comscore Market","report-meta-comscore-market","Market; Impressions; Link Clicks; CTR(Link Click-Through Rate)","",FALSE,8
+"Meta","Meta Ads","Post Interactions by Campaign","report-meta-post-interactions-by-campaign","Campaign; Likes; Comments; Shares; Saves; Total Interactions","",FALSE,8
+"Meta","Meta Ads","Conversion Events Total","report-meta-conversion-events-total","Event Name; Total Count; Unique Count; Cost Per Event","",FALSE,9
+"Meta","Meta Ads","Conversion Events by Campaign","report-meta-conversion-events-by-campaign","Campaign; Event Name; Total Count; Unique Count","",FALSE,9
+"Meta","Meta Ads","Conversion Events by Creative","report-meta-conversion-events-by-creative","Creative; Event Name; Total Count; Unique Count","",FALSE,9
+"YouTube","YouTube","Monthly Performance","report-youtube-monthly-performance","Date; Impressions; 25% Complete; 50% Complete; 75% Complete; 100% Completion; VCR(%); Clicks; Interactions","",TRUE,0
+"YouTube","YouTube","Campaign Performance","report-youtube-campaign-performance","Campaign Name; Impressions; 25% Complete; 50% Complete; 75% Complete; 100% Completion; VCR(%); Clicks; Interactions","",TRUE,1
+"YouTube","YouTube","Creative Performance","report-youtube-creative-performance","Creative Name; Impressions; 25% Complete; 50% Complete; 75% Complete; 100% Completion; VCR(%); Clicks","",FALSE,2
+"YouTube","YouTube","Device Performance","report-youtube-device-performance","Device; Impressions; Video Views; VCR(%); Clicks; Interactions","",FALSE,3
+"YouTube","YouTube","Weekly Performance","report-youtube-weekly-performance","Date; Impressions; 25% Complete; 50% Complete; 75% Complete; 100% Completion; VCR(%); Clicks; Interactions","",FALSE,4
+"YouTube","YouTube","Geo Performance (City)","report-youtube-geo-performance-city","City; Impressions; Video Views; VCR(%); Clicks; Interactions","",FALSE,5
+"YouTube","YouTube","Geo Performance (Metro Area)","report-youtube-geo-performance-metro-area","Metro Area; Impressions; Video Views; VCR(%); Clicks; Interactions","",FALSE,5
+"YouTube","YouTube","Performance by Age Group","report-youtube-performance-by-age-group","Age Group; Impressions; Video Views; VCR(%); Clicks","",FALSE,6
+"YouTube","YouTube","Placements Top 10","report-youtube-placements-top-10","Placement; Impressions; Video Views; VCR(%); Clicks","",FALSE,7
+"SEM","Search & Intent Media","Monthly Performance","report-searchandintentmedia-monthly-performance","Date; Impressions; Clicks; CTR(%); Primary Conversions; Primary Conversions Rate; All Conversions; All Conversions Rate","",TRUE,0
+"SEM","Search & Intent Media","Client Performance","report-searchandintentmedia-client-performance","Client; Impressions; Clicks; CTR(%); Conversions; Conversion Rate; Spend","",TRUE,1
+"SEM","Search & Intent Media","Campaign Type Performance","report-searchandintentmedia-campaign-type-performance","Campaign Type; Impressions; Clicks; CTR(%); Conversions; Spend","",FALSE,2
+"SEM","Search & Intent Media","Device Performance","report-searchandintentmedia-device-performance","Device; Impressions; Clicks; CTR(%); Primary Conversions; All Conversions","",FALSE,3
+"SEM","Search & Intent Media","Weekly Performance","report-searchandintentmedia-weekly-performance","Date; Impressions; Clicks; CTR(%); Primary Conversions; All Conversions","",FALSE,4
+"SEM","Search & Intent Media","Ad Group Performance","report-searchandintentmedia-ad-group-performance","Ad Group; Impressions; Clicks; CTR(%); Conversions; Spend","",FALSE,5
+"SEM","Search & Intent Media","Platform Performance","report-searchandintentmedia-platform-performance","Platform; Impressions; Clicks; CTR(%); Conversions; Spend","",FALSE,5
+"SEM","Search & Intent Media","Performance by City","report-searchandintentmedia-performance-by-city","City; Impressions; Clicks; CTR(%); Conversions","",FALSE,6
+"SEM","Search & Intent Media","Performance by Zip","report-searchandintentmedia-performance-by-zip","Zip; Impressions; Clicks; CTR(%); Conversions","",FALSE,6
+"SEM","Search & Intent Media","Top 10 Keywords (Clicks)","report-searchandintentmedia-top-10-keywords-clicks-","Keyword; Clicks","",FALSE,7
+"SEM","Search & Intent Media","Top 10 Keywords (Impressions)","report-searchandintentmedia-top-10-keywords-impressions-","Keyword; Impressions","",FALSE,7
+"SEM","Search & Intent Media","Top 10 Keywords (Conversions)","report-searchandintentmedia-top-10-keywords-conversions-","Keyword; Conversions","",FALSE,7
+"SEM","Search & Intent Media","Overall Keyword Performance","report-searchandintentmedia-overall-keyword-performance","Keyword; Impressions; Clicks; CTR(%); Conversions; Spend","",FALSE,8
+"SEM","Search & Intent Media","Placements Top 10","report-searchandintentmedia-placements-top-10","Placement; Impressions; Clicks; CTR(%)","",FALSE,8
+"SEM","Search & Intent Media","Conversion Type","report-searchandintentmedia-conversion-type","Conversion Type; Conversions; Conversion Rate","",FALSE,9
+"Addressable Solutions","Addressable Display","Conversion Zone Performance","report-addressabledisplay-conversion-zone-performance","Zone Name; Impressions; Clicks; CTR(%); Conversions; Walk-In Visits","",FALSE,7
+"Blended Tactics","Overall Display","Product Performance","report-overall-display-product-performance","Product; Impressions; Clicks; CTR(%); Conversions","",FALSE,0

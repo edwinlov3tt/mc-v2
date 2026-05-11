@@ -376,19 +376,9 @@ function ResultsView({
         <TacticSection key={ti} tactic={tactic} />
       ))}
 
-      {/* Unmatched files */}
+      {/* Unmatched files — collapsed dropdown */}
       {unmatched.length > 0 && (
-        <div className="mb-6">
-          <h3 className="text-lg font-semibold text-amber-700 mb-3">Unmatched Files</h3>
-          <div className="space-y-2">
-            {unmatched.map((d, i) => (
-              <div key={i} className="flex items-center justify-between p-3 bg-neutral-50 border border-neutral-200 rounded-lg">
-                <span className="text-neutral-500">{d.filename}</span>
-                <span className="text-xs text-neutral-400">Not in registry</span>
-              </div>
-            ))}
-          </div>
-        </div>
+        <UnmatchedDropdown files={unmatched} />
       )}
 
       {/* ROI Calculator */}
@@ -416,6 +406,28 @@ const LLM = {
   input_cost_per_1k: 0.003,       // Claude Sonnet input pricing
   output_cost_per_1k: 0.015,      // Claude Sonnet output pricing
   seconds_per_report: 45,         // realistic for multi-section report with retries
+}
+
+function UnmatchedDropdown({ files }: { files: Detection[] }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mb-6">
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-2 text-sm text-neutral-500 hover:text-neutral-700 transition-colors"
+      >
+        <span className={`transition-transform ${open ? 'rotate-90' : ''}`}>&#9654;</span>
+        <span>{files.length} unmatched file{files.length !== 1 ? 's' : ''} not in registry</span>
+      </button>
+      {open && (
+        <div className="mt-2 pl-5 text-xs text-neutral-400 space-y-0.5">
+          {files.map((d, i) => (
+            <div key={i}>{d.filename}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function ROICalculator({ processingTimeMs }: { processingTimeMs: number }) {
