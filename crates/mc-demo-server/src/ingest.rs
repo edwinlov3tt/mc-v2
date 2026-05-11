@@ -87,13 +87,86 @@ impl IdGen {
     }
 }
 
+/// Canonical name mapping for CSV headers.
+///
+/// Maps common column name variations to the canonical names that
+/// narrative templates reference. This is what makes templates work
+/// across Meta, YouTube, SEM, Display, etc. without per-tactic logic.
+fn canonical_measure_name(raw_header: &str) -> String {
+    let h = raw_header.trim().to_lowercase();
+    let canonical = match h.as_str() {
+        // Click variations
+        "link clicks" | "link click" => "Clicks",
+        "clicks" => "Clicks",
+        // CTR variations
+        "ctr(link click-through rate)" | "ctr (link click-through rate)" => "CTR",
+        "ctr(%)" | "ctr" => "CTR",
+        // Video metrics
+        "vcr(%)" | "vcr" => "VCR",
+        "video views" => "VideoViews",
+        "100% completion" => "Completions",
+        "25% complete" => "Complete25",
+        "50% complete" => "Complete50",
+        "75% complete" => "Complete75",
+        // Conversion variations
+        "primary conversions" | "conversions (default)" | "total conversions" => "Conversions",
+        "primary conversions rate" | "all conversions rate" | "conversion rate" => "ConversionRate",
+        "all conversions" => "AllConversions",
+        // Engagement
+        "post engagements" | "post engagement" => "Engagements",
+        "total leads" | "leads" => "Leads",
+        "interactions" => "Interactions",
+        // Foot traffic
+        "foot traffic visits" | "foot traffic" => "FootTraffic",
+        // Reach / frequency
+        "reach" => "Reach",
+        "frequency" => "Frequency",
+        // Cost
+        "spend" => "Spend",
+        "cpm" => "CPM",
+        "cpc" => "CPC",
+        "cpa" => "CPA",
+        "cpl" => "CPL",
+        "cplc" => "CPLC",
+        "cpv" => "CPV",
+        _ => return sanitize_name(raw_header),
+    };
+    canonical.to_string()
+}
+
+/// Returns true if a column header name refers to a geographic/identity
+/// field that should always be treated as text, even if values look numeric.
+fn is_forced_text_column(header: &str) -> bool {
+    let h = header.trim().to_lowercase();
+    h.contains("postal") || h.contains("zip") || h.contains("code")
+        || h.contains("dma") || h.contains("fips") || h.contains("area code")
+}
+
+/// Score a column header for "how specific an identifier is this?"
+/// Higher = more specific = better category column.
+fn category_specificity(header: &str) -> u8 {
+    let h = header.trim().to_lowercase();
+    if h.contains("city") { return 10; }
+    if h.contains("zip") || h.contains("postal") { return 9; }
+    if h.contains("metro") { return 8; }
+    if h.contains("campaign") || h.contains("ad set") || h.contains("ad group") { return 8; }
+    if h.contains("creative") || h.contains("keyword") { return 8; }
+    if h.contains("device") { return 7; }
+    if h.contains("tactic") || h.contains("placement") { return 7; }
+    if h.contains("age") || h.contains("gender") { return 6; }
+    if h.contains("dma") || h.contains("market") { return 5; }
+    if h.contains("region") || h.contains("state") { return 3; }
+    if h == "date" || h.contains("week") || h.contains("month") { return 2; }
+    1 // unknown
+}
+
 /// Ingest a single CSV into a Mosaic cube.
 ///
 /// Cube shape:
 ///   - Scenario dim (1 element: "Actual")
 ///   - Version dim (1 element: "Current")
-///   - Category dim (from first column: Date, Device, Campaign, etc.)
-///   - Measure dim (one element per numeric column)
+///   - Category dim (from the most-specific text column)
+///   - Measure dim (one element per numeric column, with canonical name aliasing)
 ///
 /// Decision 11 optimization #2: constructs the cube directly via
 /// CubeBuilder — no YAML generation, no parsing overhead.
@@ -114,28 +187,35 @@ pub fn ingest_csv(
     let cube_name = format!("{} — {}", spec.subproduct_name, spec.table_name);
 
     // Identify which columns are numeric (measures) vs categorical.
-    // Find all non-numeric columns, then pick the best category column:
-    // for geo CSVs (city/zip), use the most specific geo column (last
-    // non-numeric before the numbers start), not the state column.
+    // Columns with geo/identity headers (zip, postal code) are forced to text
+    // even if their values parse as numbers.
     let mut non_numeric_cols: Vec<usize> = Vec::new();
     let mut measure_cols: Vec<(usize, String)> = Vec::new();
     for (i, header) in csv.headers.iter().enumerate() {
+        if is_forced_text_column(header) {
+            non_numeric_cols.push(i);
+            continue;
+        }
         let is_numeric = csv.rows.iter().any(|row| {
             row.get(i)
                 .map(|v| parse_numeric(v).is_some())
                 .unwrap_or(false)
         });
         if is_numeric {
-            measure_cols.push((i, sanitize_name(header)));
+            // Use canonical name aliasing so templates can reference "Clicks" not "Link_Clicks"
+            measure_cols.push((i, canonical_measure_name(header)));
         } else {
             non_numeric_cols.push(i);
         }
     }
 
-    // Pick the best category column: the first non-numeric column
-    // (e.g., "City" in "City,State,Impressions,..." or "Zip" in "Zip,City,State,...").
-    // The first column is typically the most specific identifier.
-    let category_col = non_numeric_cols.first().copied().unwrap_or(0);
+    // Pick the best category column: the most specific text column.
+    // Prefer City > Zip > Metro > Campaign > Device > Region > Date > first.
+    let category_col = non_numeric_cols
+        .iter()
+        .copied()
+        .max_by_key(|&i| category_specificity(&csv.headers[i]))
+        .unwrap_or(0);
     let category_header = &csv.headers[category_col];
 
     if measure_cols.is_empty() {
