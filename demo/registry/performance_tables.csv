@@ -334,4 +334,4 @@ product_name,subproduct_name,table_name,file_name,headers,description,is_require
 "SEM","Search & Intent Media","Placements Top 10","report-searchandintentmedia-placements-top-10","Placement; Impressions; Clicks; CTR(%)","",FALSE,8
 "SEM","Search & Intent Media","Conversion Type","report-searchandintentmedia-conversion-type","Conversion Type; Conversions; Conversion Rate","",FALSE,9
 "Addressable Solutions","Addressable Display","Conversion Zone Performance","report-addressabledisplay-conversion-zone-performance","Zone Name; Impressions; Clicks; CTR(%); Conversions; Walk-In Visits","",FALSE,7
-"Blended Tactics","Overall Display","Product Performance","report-overall-display-product-performance","Product; Impressions; Clicks; CTR(%); Conversions","",FALSE,0
+"Blended Tactics","Targeted Display","Product Performance","report-overall-display-product-performance","Product; Impressions; Clicks; CTR(%); Conversions","",FALSE,11

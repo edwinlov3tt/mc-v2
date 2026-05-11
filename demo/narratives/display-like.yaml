@@ -1,38 +1,23 @@
-# Narrative templates for display-like tactics
-# (Targeted Display, Addressable Display, Social Display, Native)
+# Narrative templates for all tactic types
+# (Display, Addressable, Social, Video, SEM)
 #
-# These are the actual template definitions that the narrative engine
-# parses at startup and evaluates at request time. The engine is in
-# crates/mc-demo-server/src/narrative.rs — it reads these YAML files,
-# compiles the `when:` predicates, and evaluates them against populated
-# cube data. No Rust code changes needed to add/modify templates.
+# These fire based on `when:` predicates and `table_types:` matching.
+# No Rust code changes needed to add/modify templates.
 #
-# Template shape:
-#   id:          unique identifier (used in evidence + payload)
-#   family:      which tactic families this fires for
-#   severity:    info | warning | critical
-#   table_types: which report table types this template applies to
-#   when:        predicate expression — template fires only if true
-#   template:    output string with {placeholder} substitution
-#   bindings:    named values computed from cube data, used in template
+# SUPPORTED functions in `when:` and `bindings:`:
+#   if(cond, then, else)   abs(x)   not(x)   element_count(Dim)
+#   count_where(cond, Dim)  any_where(cond, Dim)  names_where(cond, Dim)
+#   first_where(cond, Dim).name / .Measure
 #
-# Available variables in `when:` and `bindings:` expressions:
-#   current.<Measure>       — value at the current (latest) time period
-#   prev.<Measure>          — value at the previous time period
-#   period_count            — number of distinct time periods in the cube
-#   sum.<Measure>           — sum across all time periods
-#   campaign_avg.<Measure>  — average across all time periods
-#   max_by.<Dimension>.<Measure>  — element with highest value in that dimension
-#   min_by.<Dimension>.<Measure>  — element with lowest value
-#   count_where(<condition>, <Dimension>)  — count of elements matching condition
-#   any_where(<condition>, <Dimension>)    — true if any element matches
+# SUPPORTED variables:
+#   current.<Measure>   prev.<Measure>   period_count
+#   sum.<Measure>   campaign_avg.<Measure>
+#   max_by.<Dim>.<Measure>.name / .value
+#   min_by.<Dim>.<Measure>.name / .value
 #
-# Format hints in template strings:
-#   {value:.0f}   — integer (no decimals)
-#   {value:.1f}   — one decimal
-#   {value:.2f}   — two decimals
-#   {value:,.0f}  — integer with commas (e.g., 55,757)
-#   {value:+.0f}  — with sign prefix (+22, -5)
+# NOT SUPPORTED: concat(), format(), first.<Measure>
+#
+# Format hints: {val:.0f} {val:,.0f} {val:.2f} {val:+.0f}
 
 narrative_format_version: 1
 
@@ -41,25 +26,34 @@ templates:
   # ─── Campaign overview ──────────────────────────────────────
 
   - id: campaign_overview
-    family: [display-like, video-like, search-like, social-like]
+    family: [display-like, search-like, social-like]
     severity: info
     table_types: ["Monthly Performance"]
-    sort_order: -20  # fires first — sets the stage
+    sort_order: -20
     deduplicate: true
-    when: "true"
+    when: "campaign_avg.CTR > 0"
     template: >
       **{period_count} months** of campaign data —
       **{total_impressions:,.0f}** impressions,
       **{total_clicks:,.0f}** clicks,
-      **{avg_ctr:.2f}%** average CTR{conversion_note}.
+      **{avg_ctr:.2f}%** average CTR.
     bindings:
       total_impressions: "sum.Impressions"
       total_clicks: "sum.Clicks"
       avg_ctr: "campaign_avg.CTR"
-      conversion_note: >
-        if(sum.Conversions > 0,
-          concat(', **', format(sum.Conversions, ',.0f'), '** conversions'),
-          '')
+
+  - id: campaign_overview_with_conversions
+    family: [display-like, search-like, social-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    sort_order: -19
+    deduplicate: true
+    when: "sum.Conversions > 0"
+    template: >
+      **{total_conversions:,.0f}** conversions generated across
+      **{period_count}** months.
+    bindings:
+      total_conversions: "sum.Conversions"
 
   - id: data_sufficiency
     family: [display-like, video-like, search-like, social-like]
@@ -120,7 +114,6 @@ templates:
       Clicks {verb} **{abs_pct:.0f}%** month-over-month
       (**{prev_value:,.0f}** → **{current_value:,.0f}**).
     bindings:
-      direction: "if(current.Clicks >= prev.Clicks, 'increasing', 'decreasing')"
       verb: >
         if(abs_pct > 100, 'more than doubled',
           if(abs_pct > 50, 'surged',
@@ -133,7 +126,7 @@ templates:
     family: [display-like, social-like]
     severity: info
     table_types: ["Monthly Performance"]
-    when: "period_count >= 2 AND abs(current.CTR - prev.CTR) > 0.03"
+    when: "period_count >= 2 AND campaign_avg.CTR > 0 AND abs(current.CTR - prev.CTR) > 0.03"
     template: >
       CTR {direction} from **{prev_ctr:.2f}%** to **{current_ctr:.2f}%**
       ({change_pct:+.0f}% relative change).
@@ -143,28 +136,6 @@ templates:
       current_ctr: "current.CTR"
       change_pct: "(current.CTR - prev.CTR) / prev.CTR * 100"
 
-  - id: full_campaign_ctr_trend
-    family: [display-like, social-like, search-like]
-    severity: info
-    table_types: ["Monthly Performance"]
-    when: "period_count >= 3"
-    template: >
-      Over the full **{period_count}-month** campaign, CTR moved from
-      **{first_ctr:.2f}%** to **{last_ctr:.2f}%** — a
-      **{total_change:+.0f}%** shift{assessment}.
-    bindings:
-      first_ctr: "first.CTR"
-      last_ctr: "current.CTR"
-      total_change: "(current.CTR - first.CTR) / first.CTR * 100"
-      assessment: >
-        if(total_change > 50,
-          ', indicating strong campaign optimization over time',
-          if(total_change > 10,
-            ', suggesting gradual improvement in targeting or creative',
-            if(total_change < -20,
-              ' — creative refresh or audience expansion may be needed',
-              ', holding relatively steady')))
-
   - id: monthly_run_rate
     family: [display-like, social-like, search-like]
     severity: info
@@ -172,15 +143,20 @@ templates:
     when: "period_count >= 2"
     template: >
       Average monthly delivery: **{avg_impressions:,.0f}** impressions
-      and **{avg_clicks:,.0f}** clicks per month{efficiency_note}.
+      and **{avg_clicks:,.0f}** clicks per month.
     bindings:
       avg_impressions: "sum.Impressions / period_count"
       avg_clicks: "sum.Clicks / period_count"
-      efficiency_note: >
-        if(sum.Conversions > 0,
-          concat(' generating **', format(sum.Conversions / period_count, ',.0f'),
-            '** conversions/month'),
-          '')
+
+  - id: monthly_conversion_rate
+    family: [display-like, social-like, search-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: "period_count >= 2 AND sum.Conversions > 0"
+    template: >
+      Generating **{avg_conversions:.0f}** conversions per month on average.
+    bindings:
+      avg_conversions: "sum.Conversions / period_count"
 
   - id: engagement_acceleration
     family: [display-like, social-like]
@@ -223,27 +199,21 @@ templates:
     when: "period_count >= 3"
     template: >
       At current run rate, the next **90 days** would deliver approximately
-      **{proj_impressions:,.0f}** impressions and **{proj_clicks:,.0f}** clicks{proj_conversions_note}.
+      **{proj_impressions:,.0f}** impressions and **{proj_clicks:,.0f}** clicks.
     bindings:
       proj_impressions: "sum.Impressions / period_count * 3"
       proj_clicks: "sum.Clicks / period_count * 3"
-      proj_conversions_note: >
-        if(sum.Conversions > 0,
-          concat(' with an estimated **', format(sum.Conversions / period_count * 3, ',.0f'),
-            '** conversions'),
-          '')
 
-  - id: cost_efficiency
-    family: [search-like]
+  - id: forecast_conversions
+    family: [display-like, social-like, search-like]
     severity: info
     table_types: ["Monthly Performance"]
-    when: "period_count >= 2 AND sum.Conversions > 0"
+    when: "period_count >= 3 AND sum.Conversions > 0"
     template: >
-      SEM delivered **{total_conversions:,.0f}** conversions at an average rate of
-      **{avg_rate:.1f}%** across **{period_count}** months.
+      At current conversion rate, expect approximately
+      **{proj_conversions:.0f}** conversions over the next 90 days.
     bindings:
-      total_conversions: "sum.Conversions"
-      avg_rate: "campaign_avg.ConversionRate"
+      proj_conversions: "sum.Conversions / period_count * 3"
 
   # ─── Benchmark comparisons ──────────────────────────────────
 
@@ -251,7 +221,7 @@ templates:
     family: [display-like]
     severity: info
     table_types: ["Monthly Performance", "Campaign Performance"]
-    when: "true"
+    when: "campaign_avg.CTR > 0"
     template: >
       Campaign CTR of **{campaign_ctr:.2f}%** is **{multiple:.1f}x** the
       industry average (**{benchmark}%**). {interpretation}
@@ -272,11 +242,11 @@ templates:
     family: [display-like]
     severity: info
     table_types: ["Device Performance"]
-    when: "element_count(Device) >= 2"
+    when: "element_count(Device) >= 2 AND campaign_avg.CTR > 0"
     template: >
-      {best_device} was the top-performing device by engagement:
-      {best_ctr:.2f}% CTR — {comparison} the campaign average.
-      {worst_device} underperformed at {worst_ctr:.2f}% CTR.
+      **{best_device}** was the top-performing device by engagement:
+      **{best_ctr:.2f}%** CTR — {comparison} the campaign average.
+      **{worst_device}** underperformed at **{worst_ctr:.2f}%** CTR.
     bindings:
       best_device: "max_by.Device.CTR.name"
       best_ctr: "max_by.Device.CTR.value"
@@ -291,12 +261,12 @@ templates:
     family: [display-like]
     severity: warning
     table_types: ["Device Performance"]
-    when: "min_by.Device.CTR.value < campaign_avg.CTR * 0.25"
+    when: "campaign_avg.CTR > 0 AND min_by.Device.CTR.value < campaign_avg.CTR * 0.25"
     template: >
-      {worst_device} is significantly underperforming at
-      {worst_ctr:.2f}% CTR — {deficit:.0f}% below the campaign
-      average ({avg_ctr:.2f}%). This device served
-      {worst_impressions:,.0f} impressions with minimal engagement.
+      **{worst_device}** is significantly underperforming at
+      **{worst_ctr:.2f}%** CTR — **{deficit:.0f}%** below the campaign
+      average (**{avg_ctr:.2f}%**). This device served
+      **{worst_impressions:,.0f}** impressions with minimal engagement.
     bindings:
       worst_device: "min_by.Device.CTR.name"
       worst_ctr: "min_by.Device.CTR.value"
@@ -312,8 +282,8 @@ templates:
     table_types: ["Performance by City", "Performance by Zip"]
     when: "max_by.geo.Impressions.value / sum.Impressions > 0.70"
     template: >
-      {top_area} accounts for {share:.0f}% of total impressions
-      ({top_value:,.0f} of {total:,.0f}).
+      **{top_area}** accounts for **{share:.0f}%** of total impressions
+      (**{top_value:,.0f}** of **{total:,.0f}**).
     bindings:
       top_area: "max_by.geo.Impressions.name"
       top_value: "max_by.geo.Impressions.value"
@@ -327,7 +297,7 @@ templates:
     deduplicate: true
     when: "any_where(Clicks == 0 AND Impressions > 50, geo_dimension)"
     template: >
-      {area_name} received {impressions:,.0f} impressions with
+      **{area_name}** received **{impressions:,.0f}** impressions with
       zero clicks. This area is consuming delivery with no
       engagement signal — evaluate whether geo-targeting includes
       this area intentionally.
@@ -341,21 +311,16 @@ templates:
     family: [display-like]
     severity: info
     table_types: ["Creative By Name"]
-    when: "element_count(Creative) >= 3"
+    when: "element_count(Creative) >= 3 AND campaign_avg.CTR > 0"
     template: >
-      Top creative: "{best_name}" at {best_ctr:.2f}% CTR across
-      {best_impressions:,.0f} impressions.
+      Top creative: "**{best_name}**" at **{best_ctr:.2f}%** CTR across
+      **{best_impressions:,.0f}** impressions.
     bindings:
       best_name: "max_by.Creative.CTR.name"
       best_ctr: "max_by.Creative.CTR.value"
       best_impressions: "max_by.Creative.Impressions.value"
 
-  # ─── Video-specific templates (YouTube, STV, Video) ─────────
-  #
-  # These fire when VCR (Video Completion Rate) exists.
-  # YouTube and STV don't have CTR — they have VCR, VideoViews,
-  # and completion quartiles. These templates replace CTR-based
-  # analysis for video tactics.
+  # ─── Video-specific (YouTube, STV) ──────────────────────────
 
   - id: video_overview
     family: [video-like]
@@ -363,24 +328,33 @@ templates:
     table_types: ["Monthly Performance"]
     sort_order: -15
     deduplicate: true
-    when: "sum.VCR > 0"
+    when: "campaign_avg.VCR > 0"
     template: >
       **{period_count} months** of video campaign data —
       **{total_impressions:,.0f}** impressions with
-      **{avg_vcr:.1f}%** average completion rate{completions_note}.
+      **{avg_vcr:.1f}%** average completion rate.
     bindings:
       total_impressions: "sum.Impressions"
       avg_vcr: "campaign_avg.VCR"
-      completions_note: >
-        if(sum.Completions > 0,
-          concat(' and **', format(sum.Completions, ',.0f'), '** full completions'),
-          '')
+
+  - id: video_completions
+    family: [video-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    sort_order: -14
+    deduplicate: true
+    when: "sum.Completions > 0"
+    template: >
+      **{total_completions:,.0f}** full video completions across
+      **{period_count}** months.
+    bindings:
+      total_completions: "sum.Completions"
 
   - id: vcr_trend
     family: [video-like]
     severity: info
     table_types: ["Monthly Performance"]
-    when: "period_count >= 2 AND sum.VCR > 0"
+    when: "period_count >= 2 AND campaign_avg.VCR > 0"
     template: >
       Video completion rate {direction} from **{prev_vcr:.1f}%** to
       **{current_vcr:.1f}%** ({change:+.1f} points).
@@ -390,29 +364,11 @@ templates:
       current_vcr: "current.VCR"
       change: "current.VCR - prev.VCR"
 
-  - id: vcr_full_campaign_trend
-    family: [video-like]
-    severity: info
-    table_types: ["Monthly Performance"]
-    when: "period_count >= 3 AND sum.VCR > 0"
-    template: >
-      Over the full **{period_count}-month** campaign, VCR moved from
-      **{first_vcr:.1f}%** to **{last_vcr:.1f}%**{assessment}.
-    bindings:
-      first_vcr: "first.VCR"
-      last_vcr: "current.VCR"
-      assessment: >
-        if(current.VCR > first.VCR + 5,
-          ' — completion rates are improving, indicating stronger creative hold',
-          if(current.VCR < first.VCR - 5,
-            ' — completion rates are declining, consider creative refresh',
-            ' — completion rates are holding steady'))
-
   - id: vcr_benchmark
     family: [video-like]
     severity: info
     table_types: ["Monthly Performance", "Campaign Performance"]
-    when: "sum.VCR > 0"
+    when: "campaign_avg.VCR > 0"
     template: >
       Campaign VCR of **{avg_vcr:.1f}%** is {assessment} the **50%** industry
       benchmark for video ads.
@@ -431,7 +387,7 @@ templates:
     family: [video-like]
     severity: info
     table_types: ["Device Performance"]
-    when: "element_count(Device) >= 2 AND sum.VCR > 0"
+    when: "element_count(Device) >= 2 AND campaign_avg.VCR > 0"
     template: >
       **{best_device}** led with **{best_vcr:.1f}%** VCR.
       **{worst_device}** had the lowest at **{worst_vcr:.1f}%** VCR.
@@ -445,7 +401,7 @@ templates:
     family: [video-like]
     severity: info
     table_types: ["Monthly Performance"]
-    when: "period_count >= 2 AND sum.VCR > 0"
+    when: "period_count >= 2 AND campaign_avg.VCR > 0"
     template: >
       Average monthly delivery: **{avg_impressions:,.0f}** video impressions
       with **{avg_vcr:.1f}%** completion rate per month.
@@ -457,19 +413,14 @@ templates:
     family: [video-like]
     severity: info
     table_types: ["Monthly Performance"]
-    when: "period_count >= 3 AND sum.VCR > 0"
+    when: "period_count >= 3 AND campaign_avg.VCR > 0"
     template: >
       At current run rate, the next **90 days** would deliver approximately
-      **{proj_impressions:,.0f}** video impressions with an estimated
-      **{proj_completions:,.0f}** full views.
+      **{proj_impressions:,.0f}** video impressions.
     bindings:
       proj_impressions: "sum.Impressions / period_count * 3"
-      proj_completions: >
-        if(sum.Completions > 0,
-          sum.Completions / period_count * 3,
-          sum.Impressions / period_count * 3 * campaign_avg.VCR / 100)
 
-  # ─── Social-specific templates (Meta) ───────────────────────
+  # ─── Social-specific (Meta) ─────────────────────────────────
 
   - id: social_engagement_overview
     family: [social-like]
@@ -481,15 +432,25 @@ templates:
     template: >
       **{total_engagements:,.0f}** post engagements across
       **{total_impressions:,.0f}** impressions
-      (**{engagement_rate:.2f}%** engagement rate){leads_note}.
+      (**{engagement_rate:.2f}%** engagement rate).
     bindings:
       total_engagements: "sum.Engagements"
       total_impressions: "sum.Impressions"
       engagement_rate: "sum.Engagements / sum.Impressions * 100"
-      leads_note: >
-        if(sum.Leads > 0,
-          concat(', generating **', format(sum.Leads, ',.0f'), '** leads'),
-          '')
+
+  - id: social_lead_count
+    family: [social-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    sort_order: -13
+    deduplicate: true
+    when: "sum.Leads > 0"
+    template: >
+      **{total_leads:,.0f}** leads generated across **{period_count}** months
+      (**{avg_leads:.0f}** leads/month).
+    bindings:
+      total_leads: "sum.Leads"
+      avg_leads: "sum.Leads / period_count"
 
   - id: social_engagement_trend
     family: [social-like]
@@ -505,26 +466,19 @@ templates:
       prev_value: "prev.Engagements"
       current_value: "current.Engagements"
 
-  - id: lead_performance
-    family: [social-like, search-like]
+  # ─── SEM-specific ───────────────────────────────────────────
+
+  - id: sem_conversion_performance
+    family: [search-like]
     severity: info
     table_types: ["Monthly Performance"]
-    when: "sum.Leads > 0 AND period_count >= 2"
+    when: "period_count >= 2 AND sum.Conversions > 0"
     template: >
-      **{total_leads:,.0f}** total leads across **{period_count}** months
-      (**{avg_leads:.0f}** leads/month).
-      {trend_note}
+      SEM delivered **{total_conversions:,.0f}** conversions across
+      **{period_count}** months at **{avg_ctr:.1f}%** CTR.
     bindings:
-      total_leads: "sum.Leads"
-      avg_leads: "sum.Leads / period_count"
-      trend_note: >
-        if(current.Leads > prev.Leads,
-          concat('Lead volume **increased** from **', format(prev.Leads, ',.0f'),
-            '** to **', format(current.Leads, ',.0f'), '** in the latest period.'),
-          if(current.Leads < prev.Leads,
-            concat('Lead volume **decreased** from **', format(prev.Leads, ',.0f'),
-              '** to **', format(current.Leads, ',.0f'), '** in the latest period.'),
-            'Lead volume held steady.'))
+      total_conversions: "sum.Conversions"
+      avg_ctr: "campaign_avg.CTR"
 
   # ─── Conversion tracking ────────────────────────────────────
 
