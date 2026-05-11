@@ -32,6 +32,8 @@ mc-narrative = { path = "../mc-narrative" }
 mc-diagnostics = { path = "../mc-diagnostics" }
 # Phase 4C: workspace manifest + validation layer.
 mc-workspace = { path = "../mc-workspace" }
+# Phase 8.0: service daemon (mc up / mc down / mc status).
+mc-daemon = { path = "../mc-daemon" }
 
 [[bin]]
 name = "mc"

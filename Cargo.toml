@@ -4,6 +4,7 @@ members = [
     "crates/mc-core",
     "crates/mc-fixtures",
     "crates/mc-cli",
+    "crates/mc-daemon",
     "crates/mc-model",
     "crates/mc-recipe",
     "crates/mc-drivers",

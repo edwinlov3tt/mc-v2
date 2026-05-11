@@ -1,0 +1,36 @@
+[package]
+name = "mc-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Mosaic service daemon — persistent HTTP API with hot cube cache, per-cube actors, and crash recovery (Phase 8)"
+
+[dependencies]
+# Mosaic crates (kernel stays untouched per ADR-0025)
+mc-core = { path = "../mc-core" }
+mc-model = { path = "../mc-model" }
+mc-workspace = { path = "../mc-workspace" }
+mc-tessera = { path = "../mc-tessera" }
+
+# Async runtime + HTTP (permitted in deployment shells per ADR-0025 Rule 1.6)
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors"] }
+
+# Serialization (daemon-layer only; mc-core remains serde-free)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+# Unix signal sending for mc down (process management)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[lib]
+name = "mc_daemon"
+path = "src/lib.rs"

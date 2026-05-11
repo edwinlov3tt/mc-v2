@@ -137,6 +137,9 @@ fn main() {
         },
         "mcp" => mcp::run(),
         "start" => run_start(&args[2..]),
+        "up" => run_up(&args[2..]),
+        "down" => run_down(&args[2..]),
+        "status" => run_status(&args[2..]),
         "--help" | "-h" | "help" => print_help(),
         other => {
             eprintln!("unknown command: {other:?}");
@@ -174,6 +177,49 @@ fn run_start(args: &[String]) {
         }
     }
     mc_demo_server::run(port, static_dir.as_deref());
+}
+
+fn run_up(args: &[String]) {
+    match mc_daemon::config::parse_up_args(args) {
+        Ok(flags) => match mc_daemon::config::DaemonConfig::resolve(flags) {
+            Ok(config) => mc_daemon::run(config),
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(mc_daemon::exit_codes::CONFIG_ERROR);
+            }
+        },
+        Err(e) => fatal(&e),
+    }
+}
+
+fn run_down(args: &[String]) {
+    let mut workspace = std::path::PathBuf::from(".");
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--workspace" => match iter.next() {
+                Some(v) => workspace = std::path::PathBuf::from(v),
+                None => fatal("--workspace requires a path"),
+            },
+            other => fatal(&format!("unknown argument to `mc down`: {other:?}")),
+        }
+    }
+    std::process::exit(mc_daemon::stop(&workspace));
+}
+
+fn run_status(args: &[String]) {
+    let mut workspace = std::path::PathBuf::from(".");
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--workspace" => match iter.next() {
+                Some(v) => workspace = std::path::PathBuf::from(v),
+                None => fatal("--workspace requires a path"),
+            },
+            other => fatal(&format!("unknown argument to `mc status`: {other:?}")),
+        }
+    }
+    std::process::exit(mc_daemon::status(&workspace));
 }
 
 fn print_help() {
@@ -231,6 +277,10 @@ fn print_help() {
     println!("    mc workspace inspect  [--path <dir>] [--format text|json]");
     println!();
     println!("    mc mcp                                  # MCP server (stdio JSON-RPC)");
+    println!();
+    println!("    mc up [--port N] [--host H] [--api-key K] [--workspace P] [--detach]");
+    println!("    mc down [--workspace P]                 # Graceful daemon shutdown");
+    println!("    mc status [--workspace P]               # Daemon health status");
 }
 
 // ---------------------------------------------------------------------------
