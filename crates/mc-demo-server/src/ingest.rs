@@ -132,9 +132,10 @@ pub fn ingest_csv(
         }
     }
 
-    // Pick the best category column: the last non-numeric column
-    // (e.g., "City" in "State,City,Impressions,...").
-    let category_col = non_numeric_cols.last().copied().unwrap_or(0);
+    // Pick the best category column: the first non-numeric column
+    // (e.g., "City" in "City,State,Impressions,..." or "Zip" in "Zip,City,State,...").
+    // The first column is typically the most specific identifier.
+    let category_col = non_numeric_cols.first().copied().unwrap_or(0);
     let category_header = &csv.headers[category_col];
 
     if measure_cols.is_empty() {
