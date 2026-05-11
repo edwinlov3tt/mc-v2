@@ -38,26 +38,43 @@ narrative_format_version: 1
 
 templates:
 
-  # ─── Data quality + context ─────────────────────────────────
+  # ─── Campaign overview ──────────────────────────────────────
+
+  - id: campaign_overview
+    family: [display-like, video-like, search-like, social-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    sort_order: -20  # fires first — sets the stage
+    deduplicate: true
+    when: "true"
+    template: >
+      **{period_count} months** of campaign data —
+      **{total_impressions:,.0f}** impressions,
+      **{total_clicks:,.0f}** clicks,
+      **{avg_ctr:.2f}%** average CTR{conversion_note}.
+    bindings:
+      total_impressions: "sum.Impressions"
+      total_clicks: "sum.Clicks"
+      avg_ctr: "campaign_avg.CTR"
+      conversion_note: >
+        if(sum.Conversions > 0,
+          concat(', **', format(sum.Conversions, ',.0f'), '** conversions'),
+          '')
 
   - id: data_sufficiency
     family: [display-like, video-like, search-like, social-like]
     severity: info
     table_types: ["Monthly Performance"]
-    sort_order: -10  # fires first
+    sort_order: -10
     deduplicate: true
-    when: "true"
+    when: "period_count <= 2"
     template: >
-      This analysis is based on {period_count} reporting
-      period{plural}. {confidence}
+      {confidence}
     bindings:
-      plural: "if(period_count > 1, 's', '')"
       confidence: >
         if(period_count == 1,
-          'Single-period snapshot — no trend analysis possible. All comparisons are against industry benchmarks only.',
-          if(period_count == 2,
-            'Directional trends are visible but 3+ periods are recommended for statistically confident trend assessment.',
-            'Sufficient data for meaningful trend analysis across all metrics.'))
+          'Single-period snapshot — trend analysis requires 2+ months of data.',
+          'Directional trends are visible but 3+ periods are recommended for confident assessment.')
 
   - id: small_sample_warning
     family: [display-like]
@@ -79,14 +96,13 @@ templates:
   # ─── Time-series trends ─────────────────────────────────────
 
   - id: impressions_mom
-    family: [display-like]
+    family: [display-like, social-like]
     severity: info
     table_types: ["Monthly Performance"]
     when: "period_count >= 2"
     template: >
-      {tactic_name} impressions {direction} {abs_pct:.0f}% from
-      {prev_period} ({prev_value:,.0f}) to {current_period}
-      ({current_value:,.0f}).
+      Impressions {direction} **{abs_pct:.0f}%** from {prev_period}
+      (**{prev_value:,.0f}**) to {current_period} (**{current_value:,.0f}**).
     bindings:
       direction: "if(current.Impressions >= prev.Impressions, 'grew', 'declined')"
       abs_pct: "abs((current.Impressions - prev.Impressions) / prev.Impressions * 100)"
@@ -96,14 +112,13 @@ templates:
       current_period: "current.period_name"
 
   - id: clicks_mom
-    family: [display-like]
+    family: [display-like, social-like, search-like]
     severity: info
     table_types: ["Monthly Performance"]
     when: "period_count >= 2 AND abs((current.Clicks - prev.Clicks) / prev.Clicks) > 0.10"
     template: >
-      Clicks {verb}, {direction} {abs_pct:.0f}% from
-      {prev_period} ({prev_value:,.0f}) to {current_period}
-      ({current_value:,.0f}).
+      Clicks {verb} **{abs_pct:.0f}%** month-over-month
+      (**{prev_value:,.0f}** → **{current_value:,.0f}**).
     bindings:
       direction: "if(current.Clicks >= prev.Clicks, 'increasing', 'decreasing')"
       verb: >
@@ -115,19 +130,60 @@ templates:
       current_value: "current.Clicks"
 
   - id: ctr_trend
-    family: [display-like]
+    family: [display-like, social-like]
     severity: info
     table_types: ["Monthly Performance"]
-    when: "period_count >= 2 AND abs(current.CTR - prev.CTR) > 0.05"
+    when: "period_count >= 2 AND abs(current.CTR - prev.CTR) > 0.03"
     template: >
-      CTR {direction} from {prev_ctr:.2f}% to {current_ctr:.2f}%.
+      CTR {direction} from **{prev_ctr:.2f}%** to **{current_ctr:.2f}%**
+      ({change_pct:+.0f}% relative change).
     bindings:
       direction: "if(current.CTR >= prev.CTR, 'strengthened', 'weakened')"
       prev_ctr: "prev.CTR"
       current_ctr: "current.CTR"
+      change_pct: "(current.CTR - prev.CTR) / prev.CTR * 100"
+
+  - id: full_campaign_ctr_trend
+    family: [display-like, social-like, search-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: "period_count >= 3"
+    template: >
+      Over the full **{period_count}-month** campaign, CTR moved from
+      **{first_ctr:.2f}%** to **{last_ctr:.2f}%** — a
+      **{total_change:+.0f}%** shift{assessment}.
+    bindings:
+      first_ctr: "first.CTR"
+      last_ctr: "current.CTR"
+      total_change: "(current.CTR - first.CTR) / first.CTR * 100"
+      assessment: >
+        if(total_change > 50,
+          ', indicating strong campaign optimization over time',
+          if(total_change > 10,
+            ', suggesting gradual improvement in targeting or creative',
+            if(total_change < -20,
+              ' — creative refresh or audience expansion may be needed',
+              ', holding relatively steady')))
+
+  - id: monthly_run_rate
+    family: [display-like, social-like, search-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: "period_count >= 2"
+    template: >
+      Average monthly delivery: **{avg_impressions:,.0f}** impressions
+      and **{avg_clicks:,.0f}** clicks per month{efficiency_note}.
+    bindings:
+      avg_impressions: "sum.Impressions / period_count"
+      avg_clicks: "sum.Clicks / period_count"
+      efficiency_note: >
+        if(sum.Conversions > 0,
+          concat(' generating **', format(sum.Conversions / period_count, ',.0f'),
+            '** conversions/month'),
+          '')
 
   - id: engagement_acceleration
-    family: [display-like]
+    family: [display-like, social-like]
     severity: info
     table_types: ["Monthly Performance"]
     when: >
@@ -135,17 +191,16 @@ templates:
       AND abs(click_growth) > abs(impr_growth) * 1.5
       AND click_growth > 0
     template: >
-      Engagement is accelerating faster than reach: clicks grew
-      {click_growth:.0f}% while impressions grew only
-      {impr_growth:.0f}%. The campaign is improving its ability
-      to convert attention into action.
+      Engagement outpacing reach: clicks grew **{click_growth:.0f}%** while impressions
+      grew only **{impr_growth:.0f}%** — the campaign is converting attention into action
+      more efficiently.
     bindings:
       click_growth: "(current.Clicks - prev.Clicks) / prev.Clicks * 100"
       impr_growth: "(current.Impressions - prev.Impressions) / prev.Impressions * 100"
 
   - id: uniform_momentum
-    family: [display-like]
-    severity: info
+    family: [display-like, social-like]
+    severity: success
     table_types: ["Monthly Performance"]
     when: >
       period_count >= 2
@@ -153,16 +208,42 @@ templates:
       AND current.Clicks > prev.Clicks
       AND current.CTR > prev.CTR
     template: >
-      All key metrics improved from {prev_period} to
-      {current_period}: impressions (+{impr_pct:.0f}%), clicks
-      (+{click_pct:.0f}%), and CTR (+{ctr_pct:.0f}%). Uniform
-      positive momentum across reach, engagement, and efficiency
-      indicates the campaign is strengthening — not trading one
-      metric for another.
+      All key metrics improved: impressions (**+{impr_pct:.0f}%**), clicks
+      (**+{click_pct:.0f}%**), and CTR (**+{ctr_pct:.0f}%**). Uniform positive
+      momentum — the campaign is strengthening, not trading one metric for another.
     bindings:
       impr_pct: "(current.Impressions - prev.Impressions) / prev.Impressions * 100"
       click_pct: "(current.Clicks - prev.Clicks) / prev.Clicks * 100"
       ctr_pct: "(current.CTR - prev.CTR) / prev.CTR * 100"
+
+  - id: forecast_next_quarter
+    family: [display-like, social-like, search-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: "period_count >= 3"
+    template: >
+      At current run rate, the next **90 days** would deliver approximately
+      **{proj_impressions:,.0f}** impressions and **{proj_clicks:,.0f}** clicks{proj_conversions_note}.
+    bindings:
+      proj_impressions: "sum.Impressions / period_count * 3"
+      proj_clicks: "sum.Clicks / period_count * 3"
+      proj_conversions_note: >
+        if(sum.Conversions > 0,
+          concat(' with an estimated **', format(sum.Conversions / period_count * 3, ',.0f'),
+            '** conversions'),
+          '')
+
+  - id: cost_efficiency
+    family: [search-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: "period_count >= 2 AND sum.Conversions > 0"
+    template: >
+      SEM delivered **{total_conversions:,.0f}** conversions at an average rate of
+      **{avg_rate:.1f}%** across **{period_count}** months.
+    bindings:
+      total_conversions: "sum.Conversions"
+      avg_rate: "campaign_avg.ConversionRate"
 
   # ─── Benchmark comparisons ──────────────────────────────────
 
@@ -172,19 +253,18 @@ templates:
     table_types: ["Monthly Performance", "Campaign Performance"]
     when: "true"
     template: >
-      Campaign CTR of {campaign_ctr:.2f}% is {multiple:.1f}x the
-      industry average for Targeted Display ({benchmark}%).
-      {interpretation}
+      Campaign CTR of **{campaign_ctr:.2f}%** is **{multiple:.1f}x** the
+      industry average (**{benchmark}%**). {interpretation}
     bindings:
       campaign_ctr: "campaign_avg.CTR"
       benchmark: "0.10"
       multiple: "campaign_avg.CTR / 0.10"
       interpretation: >
         if(campaign_avg.CTR > 0.30,
-          'This significant outperformance indicates strong creative-audience alignment.',
+          'Strong creative-audience alignment.',
           if(campaign_avg.CTR > 0.10,
-            'Performance is above industry norms — targeting appears effective.',
-            'Performance is at or below industry norms — review targeting and creative.'))
+            'Targeting appears effective.',
+            'Review targeting and creative.'))
 
   # ─── Device analysis ────────────────────────────────────────
 
@@ -279,8 +359,8 @@ templates:
     deduplicate: true
     when: "sum.Conversions == 0 AND sum.Impressions > 1000"
     template: >
-      Zero conversions recorded across {total_impressions:,.0f}
-      impressions. Recommend verifying conversion pixel
-      installation.
+      **Zero conversions** recorded across **{total_impressions:,.0f}** impressions
+      over **{period_count}** reporting periods. Verify conversion pixel installation
+      and attribution window configuration.
     bindings:
       total_impressions: "sum.Impressions"

@@ -47,7 +47,7 @@ interface IngestedCube {
 
 interface NarrativeOutput {
   id: string
-  severity: 'info' | 'warning' | 'critical'
+  severity: 'info' | 'success' | 'warning' | 'critical'
   text: string
   template_id: string
   evidence: Record<string, number>
@@ -363,11 +363,11 @@ function ResultsView({
       {response.summary.summary_narratives.length > 0 && (
         <div className="mb-6">
           <h3 className="text-lg font-semibold mb-3">Summary</h3>
-          <div className="space-y-2">
+          <ul className="space-y-1">
             {response.summary.summary_narratives.map((n, i) => (
               <NarrativeCard key={i} narrative={n} />
             ))}
-          </div>
+          </ul>
         </div>
       )}
 
@@ -765,11 +765,11 @@ function TacticSection({ tactic }: { tactic: TacticGroup }) {
 
       {/* Per-tactic narratives */}
       {tactic.narratives.length > 0 && (
-        <div className="space-y-2 mb-4">
+        <ul className="space-y-1 mb-4">
           {tactic.narratives.map((n, i) => (
             <NarrativeCard key={i} narrative={n} />
           ))}
-        </div>
+        </ul>
       )}
 
       {/* Expandable cube data */}
@@ -784,33 +784,37 @@ function TacticSection({ tactic }: { tactic: TacticGroup }) {
   )
 }
 
+/** Render **bold** markers in narrative text as <strong> tags. */
+function renderNarrativeText(text: string) {
+  const parts = text.split(/\*\*(.*?)\*\*/g)
+  return parts.map((part, i) =>
+    i % 2 === 1
+      ? <strong key={i} className="font-semibold text-[#111]">{part}</strong>
+      : <span key={i}>{part}</span>
+  )
+}
+
 function NarrativeCard({ narrative }: { narrative: NarrativeOutput }) {
-  const severityStyles = {
-    info: 'border-l-neutral-400 bg-white',
-    warning: 'border-l-amber-500 bg-amber-50/50',
-    critical: 'border-l-red-500 bg-red-50/50',
+  const dotColors: Record<string, string> = {
+    info: 'bg-neutral-300',
+    success: 'bg-emerald-400',
+    warning: 'bg-amber-400',
+    critical: 'bg-red-500',
   }
-  const severityLabels = {
+  const borderColors: Record<string, string> = {
     info: '',
-    warning: 'Warning',
-    critical: 'Alert',
+    success: 'border-l-2 border-l-emerald-400',
+    warning: 'border-l-2 border-l-amber-400',
+    critical: 'border-l-2 border-l-red-400',
   }
-  const label = severityLabels[narrative.severity]
 
   return (
-    <div className={`border border-neutral-200 border-l-4 rounded-lg p-4 ${severityStyles[narrative.severity]}`}>
-      {label && (
-        <span className={`text-xs font-semibold uppercase tracking-wide mb-1 block ${
-          narrative.severity === 'critical' ? 'text-red-600' : 'text-amber-600'
-        }`}>
-          {label}
-        </span>
-      )}
-      <p className="text-[#1a1a1a] leading-relaxed">{narrative.text}</p>
-      <div className="mt-2 flex items-center gap-3 text-xs text-neutral-400">
-        <span className="font-mono">{narrative.template_id}</span>
-      </div>
-    </div>
+    <li className={`flex items-start gap-2.5 py-1 pl-1 ${borderColors[narrative.severity] || ''}`}>
+      <span className={`mt-[7px] h-1.5 w-1.5 rounded-full flex-shrink-0 ${dotColors[narrative.severity] || dotColors.info}`} />
+      <p className="text-sm text-[#2a2a2a] leading-relaxed">
+        {renderNarrativeText(narrative.text)}
+      </p>
+    </li>
   )
 }
 
