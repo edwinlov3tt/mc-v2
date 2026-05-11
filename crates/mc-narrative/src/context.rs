@@ -63,6 +63,7 @@ pub fn build_context(cube: &CubeData) -> Ctx {
     // Period info: count time-series entries (from first measure).
     let period_count = cube.values.values().next().map(|v| v.len()).unwrap_or(0);
     ctx.insert("period_count".into(), Val::Num(period_count as f64));
+    ctx.insert("total_periods".into(), Val::Num(period_count as f64));
 
     // Per-measure aggregates.
     // Sort entries chronologically to ensure "current" = latest period and
@@ -83,6 +84,44 @@ pub fn build_context(cube: &CubeData) -> Ctx {
         ctx.insert(format!("current.{measure}"), Val::Num(current));
         ctx.insert(format!("prev.{measure}"), Val::Num(prev));
 
+        // first/last aliases (Phase 7A.7).
+        let first_val = sorted[0].value;
+        ctx.insert(format!("first.{measure}"), Val::Num(first_val));
+        ctx.insert(format!("last.{measure}"), Val::Num(current));
+
+        // Min/max across all periods (Phase 7A.7).
+        let min_val = sorted.iter().map(|e| e.value).fold(f64::INFINITY, f64::min);
+        let max_val = sorted
+            .iter()
+            .map(|e| e.value)
+            .fold(f64::NEG_INFINITY, f64::max);
+        ctx.insert(format!("min.{measure}"), Val::Num(min_val));
+        ctx.insert(format!("max.{measure}"), Val::Num(max_val));
+
+        // Min/max period names (earliest on tie for determinism).
+        if let Some(min_entry) = sorted.iter().min_by(|a, b| {
+            a.value
+                .partial_cmp(&b.value)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) {
+            ctx.insert(
+                format!("min.{measure}.period"),
+                Val::Str(readable_name(&min_entry.category)),
+            );
+        }
+        if let Some(max_entry) = sorted.iter().min_by(|a, b| {
+            // min_by with reversed value comparison: pick earliest entry on tie.
+            a.value
+                .partial_cmp(&b.value)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .reverse()
+        }) {
+            ctx.insert(
+                format!("max.{measure}.period"),
+                Val::Str(readable_name(&max_entry.category)),
+            );
+        }
+
         // Period names: set once (first measure defines them).
         if !ctx.contains_key("current.period_name") {
             ctx.insert(
@@ -91,6 +130,15 @@ pub fn build_context(cube: &CubeData) -> Ctx {
             );
             ctx.insert(
                 "current_period".into(),
+                Val::Str(readable_name(&sorted[n - 1].category)),
+            );
+            // first/last period names (Phase 7A.7).
+            ctx.insert(
+                "first.period_name".into(),
+                Val::Str(readable_name(&sorted[0].category)),
+            );
+            ctx.insert(
+                "last.period_name".into(),
                 Val::Str(readable_name(&sorted[n - 1].category)),
             );
             if n >= 2 {
@@ -208,7 +256,7 @@ fn infer_dimension_name(table_name: &str) -> &'static str {
 /// "YYYY-MM", "YYYY-MM-DD", "WW/DD/YYYY" (weekly). Falls back to
 /// the original string for non-date categories (Device, City, etc.),
 /// which preserves insertion order.
-fn date_sort_key(category: &str) -> String {
+pub fn date_sort_key(category: &str) -> String {
     // Try "Mon_YYYY" (sanitized dates like "Jul_2025")
     let month_names = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",

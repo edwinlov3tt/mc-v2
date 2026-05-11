@@ -8,14 +8,18 @@
 #   if(cond, then, else)   abs(x)   not(x)   element_count(Dim)
 #   count_where(cond, Dim)  any_where(cond, Dim)  names_where(cond, Dim)
 #   first_where(cond, Dim).name / .Measure
+#   concat(a, b, ...)  format(num, spec)  round(val, n)
+#   pct_change(cur, prev)  ratio(num, den)  plural(n, sing, plur)  coalesce(a, b, ...)
+#   trend_slope(Measure)  trend_consistency(Measure)  streak(Measure)
+#   best_period(Measure)  worst_period(Measure)  volatility(Measure)
 #
 # SUPPORTED variables:
-#   current.<Measure>   prev.<Measure>   period_count
+#   current.<Measure>   prev.<Measure>   period_count   total_periods
+#   first.<Measure>   last.<Measure>   first.period_name   last.period_name
+#   min.<Measure>   max.<Measure>   min.<Measure>.period   max.<Measure>.period
 #   sum.<Measure>   campaign_avg.<Measure>
 #   max_by.<Dim>.<Measure>.name / .value
 #   min_by.<Dim>.<Measure>.name / .value
-#
-# NOT SUPPORTED: concat(), format(), first.<Measure>
 #
 # Format hints: {val:.0f} {val:,.0f} {val:.2f} {val:+.0f}
 
@@ -33,27 +37,19 @@ templates:
     deduplicate: true
     when: "campaign_avg.CTR > 0"
     template: >
-      **{period_count} months** of campaign data —
-      **{total_impressions:,.0f}** impressions,
-      **{total_clicks:,.0f}** clicks,
-      **{avg_ctr:.2f}%** average CTR.
+      **{period_count} {period_word}** of campaign data —
+      **{total_impressions}** impressions,
+      **{total_clicks}** clicks,
+      **{avg_ctr:.2f}%** average CTR{conversion_note}.
     bindings:
-      total_impressions: "sum.Impressions"
-      total_clicks: "sum.Clicks"
+      period_word: "plural(period_count, 'month', 'months')"
+      total_impressions: "format(sum.Impressions, ',')"
+      total_clicks: "format(sum.Clicks, ',')"
       avg_ctr: "campaign_avg.CTR"
-
-  - id: campaign_overview_with_conversions
-    family: [display-like, search-like, social-like]
-    severity: info
-    table_types: ["Monthly Performance"]
-    sort_order: -19
-    deduplicate: true
-    when: "sum.Conversions > 0"
-    template: >
-      **{total_conversions:,.0f}** conversions generated across
-      **{period_count}** months.
-    bindings:
-      total_conversions: "sum.Conversions"
+      conversion_note: >
+        if(sum.Conversions > 0,
+          concat(', generating **', format(sum.Conversions, ','), '** conversions'),
+          '')
 
   - id: data_sufficiency
     family: [display-like, video-like, search-like, social-like]
@@ -77,14 +73,14 @@ templates:
     deduplicate: true
     when: "count_where(Impressions < 500, geo_dimension) > 0"
     template: >
-      {count} geographic area{plural} had fewer than 500
+      {count} geographic {area_word} had fewer than 500
       impressions ({area_list}). CTR values for these areas
       should be considered directionally indicative only —
       sample sizes are insufficient for confident performance
       assessment.
     bindings:
       count: "count_where(Impressions < 500, geo_dimension)"
-      plural: "if(count > 1, 's', '')"
+      area_word: "plural(count, 'area', 'areas')"
       area_list: "names_where(Impressions < 500, geo_dimension)"
 
   # ─── Time-series trends ─────────────────────────────────────
@@ -99,7 +95,7 @@ templates:
       (**{prev_value:,.0f}**) to {current_period} (**{current_value:,.0f}**).
     bindings:
       direction: "if(current.Impressions >= prev.Impressions, 'grew', 'declined')"
-      abs_pct: "abs((current.Impressions - prev.Impressions) / prev.Impressions * 100)"
+      abs_pct: "abs(pct_change(current.Impressions, prev.Impressions))"
       prev_value: "prev.Impressions"
       current_value: "current.Impressions"
       prev_period: "prev.period_name"
@@ -109,7 +105,7 @@ templates:
     family: [display-like, social-like, search-like]
     severity: info
     table_types: ["Monthly Performance"]
-    when: "period_count >= 2 AND abs((current.Clicks - prev.Clicks) / prev.Clicks) > 0.10"
+    when: "period_count >= 2 AND abs(pct_change(current.Clicks, prev.Clicks)) > 10"
     template: >
       Clicks {verb} **{abs_pct:.0f}%** month-over-month
       (**{prev_value:,.0f}** → **{current_value:,.0f}**).
@@ -118,7 +114,7 @@ templates:
         if(abs_pct > 100, 'more than doubled',
           if(abs_pct > 50, 'surged',
             if(current.Clicks >= prev.Clicks, 'increased', 'declined')))
-      abs_pct: "abs((current.Clicks - prev.Clicks) / prev.Clicks * 100)"
+      abs_pct: "abs(pct_change(current.Clicks, prev.Clicks))"
       prev_value: "prev.Clicks"
       current_value: "current.Clicks"
 
@@ -134,7 +130,32 @@ templates:
       direction: "if(current.CTR >= prev.CTR, 'strengthened', 'weakened')"
       prev_ctr: "prev.CTR"
       current_ctr: "current.CTR"
-      change_pct: "(current.CTR - prev.CTR) / prev.CTR * 100"
+      change_pct: "pct_change(current.CTR, prev.CTR)"
+
+  - id: full_campaign_trend
+    family: [display-like, social-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: "period_count >= 3 AND campaign_avg.CTR > 0"
+    template: >
+      Over **{period_count}** {period_word}, CTR moved from **{first_ctr:.2f}%**
+      to **{last_ctr:.2f}%** — a **{slope}** and **{consistency}** trajectory.
+      {peak_note}{streak_note}
+    bindings:
+      period_word: "plural(period_count, 'month', 'months')"
+      first_ctr: "first.CTR"
+      last_ctr: "last.CTR"
+      slope: "trend_slope(CTR)"
+      consistency: "trend_consistency(CTR)"
+      peak_note: >
+        concat('Peak performance was **', best_period(CTR), '** at **',
+          format(max.CTR, '.2'), '%** CTR. ')
+      streak_note: >
+        if(streak(CTR) >= 3,
+          concat('CTR has increased for **', streak(CTR), '** consecutive months.'),
+          if(streak(CTR) <= -3,
+            concat('CTR has declined for **', abs(streak(CTR)), '** consecutive months.'),
+            ''))
 
   - id: monthly_run_rate
     family: [display-like, social-like, search-like]
@@ -142,11 +163,11 @@ templates:
     table_types: ["Monthly Performance"]
     when: "period_count >= 2"
     template: >
-      Average monthly delivery: **{avg_impressions:,.0f}** impressions
-      and **{avg_clicks:,.0f}** clicks per month.
+      Average monthly delivery: **{avg_impressions}** impressions
+      and **{avg_clicks}** clicks per month.
     bindings:
-      avg_impressions: "sum.Impressions / period_count"
-      avg_clicks: "sum.Clicks / period_count"
+      avg_impressions: "format(sum.Impressions / period_count, ',.0')"
+      avg_clicks: "format(sum.Clicks / period_count, ',.0')"
 
   - id: monthly_conversion_rate
     family: [display-like, social-like, search-like]
@@ -171,8 +192,8 @@ templates:
       grew only **{impr_growth:.0f}%** — the campaign is converting attention into action
       more efficiently.
     bindings:
-      click_growth: "(current.Clicks - prev.Clicks) / prev.Clicks * 100"
-      impr_growth: "(current.Impressions - prev.Impressions) / prev.Impressions * 100"
+      click_growth: "pct_change(current.Clicks, prev.Clicks)"
+      impr_growth: "pct_change(current.Impressions, prev.Impressions)"
 
   - id: uniform_momentum
     family: [display-like, social-like]
@@ -188,9 +209,9 @@ templates:
       (**+{click_pct:.0f}%**), and CTR (**+{ctr_pct:.0f}%**). Uniform positive
       momentum — the campaign is strengthening, not trading one metric for another.
     bindings:
-      impr_pct: "(current.Impressions - prev.Impressions) / prev.Impressions * 100"
-      click_pct: "(current.Clicks - prev.Clicks) / prev.Clicks * 100"
-      ctr_pct: "(current.CTR - prev.CTR) / prev.CTR * 100"
+      impr_pct: "pct_change(current.Impressions, prev.Impressions)"
+      click_pct: "pct_change(current.Clicks, prev.Clicks)"
+      ctr_pct: "pct_change(current.CTR, prev.CTR)"
 
   - id: forecast_next_quarter
     family: [display-like, social-like, search-like]
@@ -199,10 +220,10 @@ templates:
     when: "period_count >= 3"
     template: >
       At current run rate, the next **90 days** would deliver approximately
-      **{proj_impressions:,.0f}** impressions and **{proj_clicks:,.0f}** clicks.
+      **{proj_impressions}** impressions and **{proj_clicks}** clicks.
     bindings:
-      proj_impressions: "sum.Impressions / period_count * 3"
-      proj_clicks: "sum.Clicks / period_count * 3"
+      proj_impressions: "format(sum.Impressions / period_count * 3, ',.0')"
+      proj_clicks: "format(sum.Clicks / period_count * 3, ',.0')"
 
   - id: forecast_conversions
     family: [display-like, social-like, search-like]
@@ -228,7 +249,7 @@ templates:
     bindings:
       campaign_ctr: "campaign_avg.CTR"
       benchmark: "0.10"
-      multiple: "campaign_avg.CTR / 0.10"
+      multiple: "ratio(campaign_avg.CTR, 0.10)"
       interpretation: >
         if(campaign_avg.CTR > 0.30,
           'Strong creative-audience alignment.',
@@ -271,7 +292,7 @@ templates:
       worst_device: "min_by.Device.CTR.name"
       worst_ctr: "min_by.Device.CTR.value"
       avg_ctr: "campaign_avg.CTR"
-      deficit: "(1 - min_by.Device.CTR.value / campaign_avg.CTR) * 100"
+      deficit: "(1 - ratio(min_by.Device.CTR.value, campaign_avg.CTR)) * 100"
       worst_impressions: "min_by.Device.Impressions.value"
 
   # ─── Geographic analysis ────────────────────────────────────
@@ -280,15 +301,15 @@ templates:
     family: [display-like]
     severity: warning
     table_types: ["Performance by City", "Performance by Zip"]
-    when: "max_by.geo.Impressions.value / sum.Impressions > 0.70"
+    when: "ratio(max_by.geo.Impressions.value, sum.Impressions) > 0.70"
     template: >
       **{top_area}** accounts for **{share:.0f}%** of total impressions
-      (**{top_value:,.0f}** of **{total:,.0f}**).
+      (**{top_value}** of **{total}**).
     bindings:
       top_area: "max_by.geo.Impressions.name"
-      top_value: "max_by.geo.Impressions.value"
-      total: "sum.Impressions"
-      share: "max_by.geo.Impressions.value / sum.Impressions * 100"
+      top_value: "format(max_by.geo.Impressions.value, ',.0')"
+      total: "format(sum.Impressions, ',.0')"
+      share: "ratio(max_by.geo.Impressions.value, sum.Impressions) * 100"
 
   - id: zero_engagement_alarm
     family: [display-like]
@@ -314,11 +335,11 @@ templates:
     when: "element_count(Creative) >= 3 AND campaign_avg.CTR > 0"
     template: >
       Top creative: "**{best_name}**" at **{best_ctr:.2f}%** CTR across
-      **{best_impressions:,.0f}** impressions.
+      **{best_impressions}** impressions.
     bindings:
       best_name: "max_by.Creative.CTR.name"
       best_ctr: "max_by.Creative.CTR.value"
-      best_impressions: "max_by.Creative.Impressions.value"
+      best_impressions: "format(max_by.Creative.Impressions.value, ',.0')"
 
   # ─── Video-specific (YouTube, STV) ──────────────────────────
 
@@ -330,11 +351,12 @@ templates:
     deduplicate: true
     when: "campaign_avg.VCR > 0"
     template: >
-      **{period_count} months** of video campaign data —
-      **{total_impressions:,.0f}** impressions with
+      **{period_count} {period_word}** of video campaign data —
+      **{total_impressions}** impressions with
       **{avg_vcr:.1f}%** average completion rate.
     bindings:
-      total_impressions: "sum.Impressions"
+      period_word: "plural(period_count, 'month', 'months')"
+      total_impressions: "format(sum.Impressions, ',')"
       avg_vcr: "campaign_avg.VCR"
 
   - id: video_completions
@@ -345,10 +367,11 @@ templates:
     deduplicate: true
     when: "sum.Completions > 0"
     template: >
-      **{total_completions:,.0f}** full video completions across
-      **{period_count}** months.
+      **{total_completions}** full video completions across
+      **{period_count}** {period_word}.
     bindings:
-      total_completions: "sum.Completions"
+      total_completions: "format(sum.Completions, ',.0')"
+      period_word: "plural(period_count, 'month', 'months')"
 
   - id: vcr_trend
     family: [video-like]
@@ -403,10 +426,10 @@ templates:
     table_types: ["Monthly Performance"]
     when: "period_count >= 2 AND campaign_avg.VCR > 0"
     template: >
-      Average monthly delivery: **{avg_impressions:,.0f}** video impressions
+      Average monthly delivery: **{avg_impressions}** video impressions
       with **{avg_vcr:.1f}%** completion rate per month.
     bindings:
-      avg_impressions: "sum.Impressions / period_count"
+      avg_impressions: "format(sum.Impressions / period_count, ',.0')"
       avg_vcr: "campaign_avg.VCR"
 
   - id: video_forecast
@@ -416,9 +439,9 @@ templates:
     when: "period_count >= 3 AND campaign_avg.VCR > 0"
     template: >
       At current run rate, the next **90 days** would deliver approximately
-      **{proj_impressions:,.0f}** video impressions.
+      **{proj_impressions}** video impressions.
     bindings:
-      proj_impressions: "sum.Impressions / period_count * 3"
+      proj_impressions: "format(sum.Impressions / period_count * 3, ',.0')"
 
   # ─── Social-specific (Meta) ─────────────────────────────────
 
@@ -430,13 +453,13 @@ templates:
     deduplicate: true
     when: "sum.Engagements > 0"
     template: >
-      **{total_engagements:,.0f}** post engagements across
-      **{total_impressions:,.0f}** impressions
+      **{total_engagements}** post engagements across
+      **{total_impressions}** impressions
       (**{engagement_rate:.2f}%** engagement rate).
     bindings:
-      total_engagements: "sum.Engagements"
-      total_impressions: "sum.Impressions"
-      engagement_rate: "sum.Engagements / sum.Impressions * 100"
+      total_engagements: "format(sum.Engagements, ',')"
+      total_impressions: "format(sum.Impressions, ',')"
+      engagement_rate: "ratio(sum.Engagements, sum.Impressions) * 100"
 
   - id: social_lead_count
     family: [social-like]
@@ -446,23 +469,24 @@ templates:
     deduplicate: true
     when: "sum.Leads > 0"
     template: >
-      **{total_leads:,.0f}** leads generated across **{period_count}** months
+      **{total_leads}** leads generated across **{period_count}** {period_word}
       (**{avg_leads:.0f}** leads/month).
     bindings:
-      total_leads: "sum.Leads"
+      total_leads: "format(sum.Leads, ',.0')"
+      period_word: "plural(period_count, 'month', 'months')"
       avg_leads: "sum.Leads / period_count"
 
   - id: social_engagement_trend
     family: [social-like]
     severity: info
     table_types: ["Monthly Performance"]
-    when: "period_count >= 2 AND sum.Engagements > 0 AND abs((current.Engagements - prev.Engagements) / prev.Engagements) > 0.10"
+    when: "period_count >= 2 AND sum.Engagements > 0 AND abs(pct_change(current.Engagements, prev.Engagements)) > 10"
     template: >
       Engagements {direction} **{abs_pct:.0f}%** month-over-month
       (**{prev_value:,.0f}** → **{current_value:,.0f}**).
     bindings:
       direction: "if(current.Engagements >= prev.Engagements, 'grew', 'declined')"
-      abs_pct: "abs((current.Engagements - prev.Engagements) / prev.Engagements * 100)"
+      abs_pct: "abs(pct_change(current.Engagements, prev.Engagements))"
       prev_value: "prev.Engagements"
       current_value: "current.Engagements"
 
@@ -474,10 +498,11 @@ templates:
     table_types: ["Monthly Performance"]
     when: "period_count >= 2 AND sum.Conversions > 0"
     template: >
-      SEM delivered **{total_conversions:,.0f}** conversions across
-      **{period_count}** months at **{avg_ctr:.1f}%** CTR.
+      SEM delivered **{total_conversions}** conversions across
+      **{period_count}** {period_word} at **{avg_ctr:.1f}%** CTR.
     bindings:
-      total_conversions: "sum.Conversions"
+      total_conversions: "format(sum.Conversions, ',.0')"
+      period_word: "plural(period_count, 'month', 'months')"
       avg_ctr: "campaign_avg.CTR"
 
   # ─── Conversion tracking ────────────────────────────────────
@@ -490,7 +515,8 @@ templates:
     when: "sum.Conversions == 0 AND sum.Impressions > 1000"
     template: >
       **Zero conversions** recorded across **{total_impressions:,.0f}** impressions
-      over **{period_count}** reporting periods. Verify conversion pixel installation
+      over **{period_count}** reporting {period_word}. Verify conversion pixel installation
       and attribution window configuration.
     bindings:
       total_impressions: "sum.Impressions"
+      period_word: "plural(period_count, 'period', 'periods')"

@@ -481,6 +481,14 @@ impl Val {
         }
     }
 
+    /// Try to interpret this value as a string reference.
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Val::Str(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
     /// Whether this value is truthy (non-zero, non-empty, non-null).
     pub fn is_truthy(&self) -> bool {
         match self {
@@ -942,6 +950,49 @@ fn eval_atom(
     }
     if let Some(inner) = strip_func(expr, "context_event_count") {
         return eval_context_event_count(inner, context, scope_key);
+    }
+
+    // ─── Core functions (Phase 7A.7) ───────────────────────────────────
+    if let Some(inner) = strip_func(expr, "concat") {
+        return eval_concat(inner, ctx, cube, ledger, benchmark, context, scope_key);
+    }
+    if let Some(inner) = strip_func(expr, "format") {
+        return eval_format(inner, ctx, cube, ledger, benchmark, context, scope_key);
+    }
+    if let Some(inner) = strip_func(expr, "round") {
+        return eval_round(inner, ctx, cube, ledger, benchmark, context, scope_key);
+    }
+    if let Some(inner) = strip_func(expr, "pct_change") {
+        return eval_pct_change(inner, ctx, cube, ledger, benchmark, context, scope_key);
+    }
+    if let Some(inner) = strip_func(expr, "ratio") {
+        return eval_ratio(inner, ctx, cube, ledger, benchmark, context, scope_key);
+    }
+    if let Some(inner) = strip_func(expr, "plural") {
+        return eval_plural(inner, ctx, cube, ledger, benchmark, context, scope_key);
+    }
+    if let Some(inner) = strip_func(expr, "coalesce") {
+        return eval_coalesce(inner, ctx, cube, ledger, benchmark, context, scope_key);
+    }
+
+    // ─── Analysis functions (Phase 7A.7) ─────────────────────────────
+    if let Some(inner) = strip_func(expr, "trend_slope") {
+        return eval_trend_slope(inner, ctx, cube);
+    }
+    if let Some(inner) = strip_func(expr, "trend_consistency") {
+        return eval_trend_consistency(inner, ctx, cube);
+    }
+    if let Some(inner) = strip_func(expr, "streak") {
+        return eval_streak(inner, ctx, cube);
+    }
+    if let Some(inner) = strip_func(expr, "best_period") {
+        return eval_best_period(inner, ctx, cube);
+    }
+    if let Some(inner) = strip_func(expr, "worst_period") {
+        return eval_worst_period(inner, ctx, cube);
+    }
+    if let Some(inner) = strip_func(expr, "volatility") {
+        return eval_volatility(inner, ctx, cube);
     }
 
     // Generic aggregate functions (Finding #1: evaluate arbitrary predicates).
@@ -1634,6 +1685,598 @@ fn eval_context_event_count(args: &str, context: Option<&ContextIndex>, scope_ke
     Val::Num(context.count_events(event_type, scope_key, lookback) as f64)
 }
 
+// ─── Core function implementations (Phase 7A.7) ────────────────────
+
+/// `concat(a, b, ...)` — variadic string join, skip nulls, auto-coerce numbers.
+fn eval_concat(
+    args: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    benchmark: Option<&BenchmarkIndex>,
+    context: Option<&ContextIndex>,
+    scope_key: &str,
+) -> Val {
+    let parts = split_top_level_commas(args);
+    let mut result = String::new();
+    for part in &parts {
+        let val = eval_expr_full(
+            part.trim(),
+            ctx,
+            cube,
+            ledger,
+            benchmark,
+            context,
+            scope_key,
+        );
+        match val {
+            Val::Null => {}
+            Val::Str(s) => result.push_str(&s),
+            Val::Num(n) => {
+                if (n - n.round()).abs() < 1e-9 {
+                    result.push_str(&format!("{}", n as i64));
+                } else {
+                    result.push_str(&format!("{n}"));
+                }
+            }
+            Val::Bool(b) => result.push_str(if b { "true" } else { "false" }),
+        }
+    }
+    Val::Str(result)
+}
+
+/// `format(number, spec)` — number formatting with spec grammar: [+][,][.N][%].
+///
+/// Special values: NaN → "—", +Inf → "∞", -Inf → "−∞", Null → "".
+fn eval_format(
+    args: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    benchmark: Option<&BenchmarkIndex>,
+    context: Option<&ContextIndex>,
+    scope_key: &str,
+) -> Val {
+    let parts = split_top_level_commas(args);
+    if parts.len() != 2 {
+        return Val::Null;
+    }
+    let num_val = eval_expr_full(
+        parts[0].trim(),
+        ctx,
+        cube,
+        ledger,
+        benchmark,
+        context,
+        scope_key,
+    );
+    let spec_val = eval_expr_full(
+        parts[1].trim(),
+        ctx,
+        cube,
+        ledger,
+        benchmark,
+        context,
+        scope_key,
+    );
+    match (&num_val, spec_val.as_str()) {
+        (Val::Null, _) => Val::Str(String::new()),
+        (_, Some(spec)) => match num_val.as_num() {
+            Some(n) => Val::Str(format_number(n, spec)),
+            None => Val::Null,
+        },
+        _ => Val::Null,
+    }
+}
+
+/// Format a number according to the spec grammar: [+][,][.N][%].
+fn format_number(n: f64, spec: &str) -> String {
+    if n.is_nan() {
+        return "\u{2014}".to_string(); // em-dash
+    }
+    if n.is_infinite() {
+        return if n > 0.0 {
+            "\u{221e}".to_string() // ∞
+        } else {
+            "\u{2212}\u{221e}".to_string() // −∞
+        };
+    }
+
+    // Parse spec: [+][,][.N][%]
+    let mut show_sign = false;
+    let mut use_comma = false;
+    let mut precision: Option<usize> = None;
+    let mut is_percent = false;
+
+    let mut chars = spec.chars().peekable();
+    if chars.peek() == Some(&'+') {
+        show_sign = true;
+        chars.next();
+    }
+    if chars.peek() == Some(&',') {
+        use_comma = true;
+        chars.next();
+    }
+    if chars.peek() == Some(&'.') {
+        chars.next();
+        let mut digits = String::new();
+        while let Some(&c) = chars.peek() {
+            if c.is_ascii_digit() {
+                digits.push(c);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        precision = digits.parse().ok();
+    }
+    if chars.peek() == Some(&'%') {
+        is_percent = true;
+    }
+
+    let mut val = n;
+    if is_percent {
+        val *= 100.0;
+    }
+
+    // Round to precision.
+    let formatted = match precision {
+        Some(p) => {
+            let factor = 10_f64.powi(p as i32);
+            let rounded = (val * factor).round() / factor;
+            format!("{rounded:.prec$}", prec = p)
+        }
+        None => {
+            // No precision: if integer-valued, show no decimals; otherwise default.
+            if (val - val.round()).abs() < 1e-9 {
+                format!("{}", val as i64)
+            } else {
+                format!("{val}")
+            }
+        }
+    };
+
+    // Apply comma separator.
+    let formatted = if use_comma {
+        add_thousands_separator(&formatted)
+    } else {
+        formatted
+    };
+
+    // Apply sign prefix.
+    let formatted = if show_sign && val >= 0.0 {
+        format!("+{formatted}")
+    } else {
+        formatted
+    };
+
+    // Append percent suffix.
+    if is_percent {
+        format!("{formatted}%")
+    } else {
+        formatted
+    }
+}
+
+/// Insert commas as thousands separators into a numeric string.
+fn add_thousands_separator(s: &str) -> String {
+    // Split on decimal point.
+    let (integer_part, decimal_part) = match s.find('.') {
+        Some(pos) => (&s[..pos], Some(&s[pos..])),
+        None => (s, None),
+    };
+
+    // Handle negative sign.
+    let (sign, digits) = if let Some(stripped) = integer_part.strip_prefix('-') {
+        ("-", stripped)
+    } else {
+        ("", integer_part)
+    };
+
+    // Insert commas every 3 digits from the right.
+    let mut result = String::new();
+    for (i, ch) in digits.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(ch);
+    }
+    let reversed: String = result.chars().rev().collect();
+
+    match decimal_part {
+        Some(dec) => format!("{sign}{reversed}{dec}"),
+        None => format!("{sign}{reversed}"),
+    }
+}
+
+/// `round(value, decimals)` — numeric rounding.
+fn eval_round(
+    args: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    benchmark: Option<&BenchmarkIndex>,
+    context: Option<&ContextIndex>,
+    scope_key: &str,
+) -> Val {
+    let parts = split_top_level_commas(args);
+    if parts.len() != 2 {
+        return Val::Null;
+    }
+    let val = eval_expr_full(
+        parts[0].trim(),
+        ctx,
+        cube,
+        ledger,
+        benchmark,
+        context,
+        scope_key,
+    )
+    .as_num();
+    let decimals = eval_expr_full(
+        parts[1].trim(),
+        ctx,
+        cube,
+        ledger,
+        benchmark,
+        context,
+        scope_key,
+    )
+    .as_num();
+    match (val, decimals) {
+        (Some(v), Some(d)) => {
+            let factor = 10_f64.powi(d as i32);
+            Val::Num((v * factor).round() / factor)
+        }
+        _ => Val::Null,
+    }
+}
+
+/// `pct_change(current, previous)` — (cur - prev) / prev * 100. Zero denom → Null.
+fn eval_pct_change(
+    args: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    benchmark: Option<&BenchmarkIndex>,
+    context: Option<&ContextIndex>,
+    scope_key: &str,
+) -> Val {
+    let parts = split_top_level_commas(args);
+    if parts.len() != 2 {
+        return Val::Null;
+    }
+    let cur = eval_expr_full(
+        parts[0].trim(),
+        ctx,
+        cube,
+        ledger,
+        benchmark,
+        context,
+        scope_key,
+    )
+    .as_num();
+    let prev = eval_expr_full(
+        parts[1].trim(),
+        ctx,
+        cube,
+        ledger,
+        benchmark,
+        context,
+        scope_key,
+    )
+    .as_num();
+    match (cur, prev) {
+        (Some(c), Some(p)) => {
+            if p.abs() < 1e-15 {
+                Val::Null
+            } else {
+                Val::Num((c - p) / p * 100.0)
+            }
+        }
+        _ => Val::Null,
+    }
+}
+
+/// `ratio(numerator, denominator)` — division with zero→Null safety.
+fn eval_ratio(
+    args: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    benchmark: Option<&BenchmarkIndex>,
+    context: Option<&ContextIndex>,
+    scope_key: &str,
+) -> Val {
+    let parts = split_top_level_commas(args);
+    if parts.len() != 2 {
+        return Val::Null;
+    }
+    let num = eval_expr_full(
+        parts[0].trim(),
+        ctx,
+        cube,
+        ledger,
+        benchmark,
+        context,
+        scope_key,
+    )
+    .as_num();
+    let den = eval_expr_full(
+        parts[1].trim(),
+        ctx,
+        cube,
+        ledger,
+        benchmark,
+        context,
+        scope_key,
+    )
+    .as_num();
+    match (num, den) {
+        (Some(n), Some(d)) => {
+            if d.abs() < 1e-15 {
+                Val::Null
+            } else {
+                Val::Num(n / d)
+            }
+        }
+        _ => Val::Null,
+    }
+}
+
+/// `plural(count, singular, plural_form)` — conditional pluralization.
+fn eval_plural(
+    args: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    benchmark: Option<&BenchmarkIndex>,
+    context: Option<&ContextIndex>,
+    scope_key: &str,
+) -> Val {
+    let parts = split_top_level_commas(args);
+    if parts.len() != 3 {
+        return Val::Null;
+    }
+    let count = eval_expr_full(
+        parts[0].trim(),
+        ctx,
+        cube,
+        ledger,
+        benchmark,
+        context,
+        scope_key,
+    )
+    .as_num();
+    let singular = eval_expr_full(
+        parts[1].trim(),
+        ctx,
+        cube,
+        ledger,
+        benchmark,
+        context,
+        scope_key,
+    );
+    let plural_form = eval_expr_full(
+        parts[2].trim(),
+        ctx,
+        cube,
+        ledger,
+        benchmark,
+        context,
+        scope_key,
+    );
+    match count {
+        Some(c) => {
+            if (c - 1.0).abs() < 1e-9 {
+                singular
+            } else {
+                plural_form
+            }
+        }
+        None => Val::Null,
+    }
+}
+
+/// `coalesce(a, b, ...)` — first non-null value. Zero is NOT null.
+fn eval_coalesce(
+    args: &str,
+    ctx: &Ctx,
+    cube: Option<&CubeData>,
+    ledger: Option<&LedgerIndex>,
+    benchmark: Option<&BenchmarkIndex>,
+    context: Option<&ContextIndex>,
+    scope_key: &str,
+) -> Val {
+    let parts = split_top_level_commas(args);
+    for part in &parts {
+        let val = eval_expr_full(
+            part.trim(),
+            ctx,
+            cube,
+            ledger,
+            benchmark,
+            context,
+            scope_key,
+        );
+        if !matches!(val, Val::Null) {
+            return val;
+        }
+    }
+    Val::Null
+}
+
+// ─── Analysis function implementations (Phase 7A.7) ─────────────────
+
+/// Get sorted time-series values for a measure from cube data.
+fn get_sorted_measure_values(measure: &str, cube: &CubeData) -> Vec<(String, f64)> {
+    let entries = match cube.values.get(measure) {
+        Some(e) => e,
+        None => return Vec::new(),
+    };
+    let mut sorted: Vec<_> = entries.iter().collect();
+    sorted.sort_by(|a, b| {
+        crate::context::date_sort_key(&a.category).cmp(&crate::context::date_sort_key(&b.category))
+    });
+    sorted
+        .iter()
+        .map(|e| (e.category.clone(), e.value))
+        .collect()
+}
+
+/// `trend_slope(measure)` → 'up'/'down'/'flat' (±5% dead zone).
+fn eval_trend_slope(measure_arg: &str, _ctx: &Ctx, cube: Option<&CubeData>) -> Val {
+    let cube = match cube {
+        Some(c) => c,
+        None => return Val::Null,
+    };
+    let measure = measure_arg.trim().trim_matches('\'').trim_matches('"');
+    let values = get_sorted_measure_values(measure, cube);
+    if values.len() < 2 {
+        return Val::Null;
+    }
+    let first = values[0].1;
+    let last = values[values.len() - 1].1;
+    if first.abs() < 1e-15 {
+        // Can't compute percentage change from zero.
+        return if (last - first).abs() < 1e-9 {
+            Val::Str("flat".into())
+        } else if last > first {
+            Val::Str("up".into())
+        } else {
+            Val::Str("down".into())
+        };
+    }
+    let total_change_pct = (last - first) / first * 100.0;
+    if total_change_pct.abs() < 5.0 {
+        Val::Str("flat".into())
+    } else if total_change_pct > 0.0 {
+        Val::Str("up".into())
+    } else {
+        Val::Str("down".into())
+    }
+}
+
+/// `trend_consistency(measure)` → 'steady'/'variable'/'volatile' (CV thresholds: 0.15, 0.50).
+fn eval_trend_consistency(measure_arg: &str, _ctx: &Ctx, cube: Option<&CubeData>) -> Val {
+    let cube = match cube {
+        Some(c) => c,
+        None => return Val::Null,
+    };
+    let measure = measure_arg.trim().trim_matches('\'').trim_matches('"');
+    let values = get_sorted_measure_values(measure, cube);
+    if values.len() < 3 {
+        return Val::Null;
+    }
+    let vals: Vec<f64> = values.iter().map(|(_, v)| *v).collect();
+    let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+    if mean.abs() < 1e-15 {
+        return Val::Str("steady".into());
+    }
+    let variance = vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / vals.len() as f64;
+    let stddev = variance.sqrt();
+    let cv = stddev / mean.abs();
+    if cv < 0.15 {
+        Val::Str("steady".into())
+    } else if cv < 0.50 {
+        Val::Str("variable".into())
+    } else {
+        Val::Str("volatile".into())
+    }
+}
+
+/// `streak(measure)` → signed integer (+3 = three consecutive ups).
+fn eval_streak(measure_arg: &str, _ctx: &Ctx, cube: Option<&CubeData>) -> Val {
+    let cube = match cube {
+        Some(c) => c,
+        None => return Val::Null,
+    };
+    let measure = measure_arg.trim().trim_matches('\'').trim_matches('"');
+    let values = get_sorted_measure_values(measure, cube);
+    if values.len() < 2 {
+        return Val::Num(0.0);
+    }
+    // Walk from latest period backwards, count consecutive same-direction changes.
+    let n = values.len();
+    let last_diff = values[n - 1].1 - values[n - 2].1;
+    if last_diff.abs() < 1e-9 {
+        return Val::Num(0.0);
+    }
+    let direction = if last_diff > 0.0 { 1 } else { -1 };
+    let mut count = 1i64;
+    for i in (1..n - 1).rev() {
+        let diff = values[i].1 - values[i - 1].1;
+        if (direction > 0 && diff > 1e-9) || (direction < 0 && diff < -1e-9) {
+            count += 1;
+        } else {
+            break;
+        }
+    }
+    Val::Num((count * direction) as f64)
+}
+
+/// `best_period(measure)` → period name with highest value (earliest on tie).
+fn eval_best_period(measure_arg: &str, _ctx: &Ctx, cube: Option<&CubeData>) -> Val {
+    let cube = match cube {
+        Some(c) => c,
+        None => return Val::Null,
+    };
+    let measure = measure_arg.trim().trim_matches('\'').trim_matches('"');
+    let values = get_sorted_measure_values(measure, cube);
+    if values.is_empty() {
+        return Val::Null;
+    }
+    // Find max value; on tie, earliest (first in sorted order) wins.
+    let mut best_idx = 0;
+    for i in 1..values.len() {
+        if values[i].1 > values[best_idx].1 {
+            best_idx = i;
+        }
+    }
+    Val::Str(readable_name(&values[best_idx].0))
+}
+
+/// `worst_period(measure)` → period name with lowest value (earliest on tie).
+fn eval_worst_period(measure_arg: &str, _ctx: &Ctx, cube: Option<&CubeData>) -> Val {
+    let cube = match cube {
+        Some(c) => c,
+        None => return Val::Null,
+    };
+    let measure = measure_arg.trim().trim_matches('\'').trim_matches('"');
+    let values = get_sorted_measure_values(measure, cube);
+    if values.is_empty() {
+        return Val::Null;
+    }
+    let mut worst_idx = 0;
+    for i in 1..values.len() {
+        if values[i].1 < values[worst_idx].1 {
+            worst_idx = i;
+        }
+    }
+    Val::Str(readable_name(&values[worst_idx].0))
+}
+
+/// `volatility(measure)` → coefficient of variation (stddev / mean).
+fn eval_volatility(measure_arg: &str, _ctx: &Ctx, cube: Option<&CubeData>) -> Val {
+    let cube = match cube {
+        Some(c) => c,
+        None => return Val::Null,
+    };
+    let measure = measure_arg.trim().trim_matches('\'').trim_matches('"');
+    let values = get_sorted_measure_values(measure, cube);
+    if values.len() < 2 {
+        return Val::Null;
+    }
+    let vals: Vec<f64> = values.iter().map(|(_, v)| *v).collect();
+    let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+    if mean.abs() < 1e-15 {
+        return Val::Null;
+    }
+    let variance = vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / vals.len() as f64;
+    let stddev = variance.sqrt();
+    Val::Num(stddev / mean.abs())
+}
+
 // ─── Parsing helpers ────────────────────────────────────────────────
 
 /// Find the position of `needle` at the top level (not inside parens or quotes).
@@ -2197,5 +2840,450 @@ mod tests {
             0.0,
             "no ledger should return 0 for has"
         );
+    }
+
+    // ─── Phase 7A.7: Core function tests ────────────────────────────────
+
+    #[test]
+    fn test_concat_strings() {
+        let ctx = Ctx::new();
+        let val = eval_expr("concat('a', 'b', 'c')", &ctx);
+        assert_eq!(val.as_str().unwrap(), "abc");
+    }
+
+    #[test]
+    fn test_concat_with_null() {
+        let mut ctx = Ctx::new();
+        ctx.insert("x".into(), Val::Str("a".into()));
+        // "missing" is not in ctx → Null → skipped.
+        let val = eval_expr("concat(x, missing, 'b')", &ctx);
+        assert_eq!(val.as_str().unwrap(), "ab");
+    }
+
+    #[test]
+    fn test_concat_with_number() {
+        let ctx = make_ctx(&[]);
+        let val = eval_expr("concat('Total: ', 42)", &ctx);
+        assert_eq!(val.as_str().unwrap(), "Total: 42");
+    }
+
+    #[test]
+    fn test_format_comma() {
+        let ctx = make_ctx(&[("x", 441263.0)]);
+        let val = eval_expr("format(x, ',')", &ctx);
+        assert_eq!(val.as_str().unwrap(), "441,263");
+    }
+
+    #[test]
+    fn test_format_decimal() {
+        let ctx = make_ctx(&[("x", 1.456)]);
+        let val = eval_expr("format(x, '.2')", &ctx);
+        assert_eq!(val.as_str().unwrap(), "1.46");
+    }
+
+    #[test]
+    fn test_format_signed() {
+        let ctx = make_ctx(&[("x", 5.0)]);
+        let val = eval_expr("format(x, '+.0')", &ctx);
+        assert_eq!(val.as_str().unwrap(), "+5");
+    }
+
+    #[test]
+    fn test_format_percent() {
+        let ctx = make_ctx(&[("x", 0.0146)]);
+        let val = eval_expr("format(x, '.2%')", &ctx);
+        assert_eq!(val.as_str().unwrap(), "1.46%");
+    }
+
+    #[test]
+    fn test_format_nan() {
+        // 0/0 in our evaluator returns 0.0 (div-by-zero guard), so test directly.
+        let result = format_number(f64::NAN, ".2");
+        assert_eq!(result, "\u{2014}");
+    }
+
+    #[test]
+    fn test_format_combined_spec() {
+        let ctx = make_ctx(&[("x", 1234.567)]);
+        let val = eval_expr("format(x, ',.2')", &ctx);
+        assert_eq!(val.as_str().unwrap(), "1,234.57");
+    }
+
+    #[test]
+    fn test_format_signed_comma() {
+        let ctx = make_ctx(&[("x", 1234.567)]);
+        let val = eval_expr("format(x, '+,.1')", &ctx);
+        assert_eq!(val.as_str().unwrap(), "+1,234.6");
+    }
+
+    #[test]
+    fn test_round() {
+        let ctx = make_ctx(&[("x", 1.456)]);
+        let val = eval_expr("round(x, 2)", &ctx);
+        assert!((val.as_num().unwrap() - 1.46).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_pct_change() {
+        let ctx = make_ctx(&[("cur", 120.0), ("prev", 100.0)]);
+        let val = eval_expr("pct_change(cur, prev)", &ctx);
+        assert!((val.as_num().unwrap() - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_pct_change_zero_denom() {
+        let ctx = make_ctx(&[("cur", 5.0), ("prev", 0.0)]);
+        let val = eval_expr("pct_change(cur, prev)", &ctx);
+        assert!(matches!(val, Val::Null));
+    }
+
+    #[test]
+    fn test_ratio_zero_denom() {
+        let ctx = make_ctx(&[("num", 100.0), ("den", 0.0)]);
+        let val = eval_expr("ratio(num, den)", &ctx);
+        assert!(matches!(val, Val::Null));
+    }
+
+    #[test]
+    fn test_ratio_normal() {
+        let ctx = make_ctx(&[("num", 100.0), ("den", 4.0)]);
+        let val = eval_expr("ratio(num, den)", &ctx);
+        assert!((val.as_num().unwrap() - 25.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_plural_singular() {
+        let ctx = make_ctx(&[("n", 1.0)]);
+        let val = eval_expr("plural(n, 'month', 'months')", &ctx);
+        assert_eq!(val.as_str().unwrap(), "month");
+    }
+
+    #[test]
+    fn test_plural_multiple() {
+        let ctx = make_ctx(&[("n", 5.0)]);
+        let val = eval_expr("plural(n, 'month', 'months')", &ctx);
+        assert_eq!(val.as_str().unwrap(), "months");
+    }
+
+    #[test]
+    fn test_coalesce_first_wins() {
+        let ctx = make_ctx(&[("x", 42.0), ("y", 99.0)]);
+        let val = eval_expr("coalesce(x, y)", &ctx);
+        assert!((val.as_num().unwrap() - 42.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_coalesce_skip_null() {
+        let ctx = make_ctx(&[("y", 99.0)]);
+        // "missing" is not in ctx → Null → skipped.
+        let val = eval_expr("coalesce(missing, y)", &ctx);
+        assert!((val.as_num().unwrap() - 99.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_coalesce_zero_not_null() {
+        let ctx = make_ctx(&[("x", 0.0), ("y", 99.0)]);
+        let val = eval_expr("coalesce(x, y)", &ctx);
+        assert!(
+            (val.as_num().unwrap() - 0.0).abs() < 1e-9,
+            "zero is NOT null"
+        );
+    }
+
+    // ─── Phase 7A.7: Analysis function tests ────────────────────────────
+
+    fn make_time_series_cube(measure: &str, values: &[(&str, f64)]) -> CubeData {
+        CubeData {
+            table_name: "Monthly Performance".into(),
+            subproduct: "Test".into(),
+            source_file: "test.csv".into(),
+            dimension_name: Some("Time".into()),
+            values: BTreeMap::from([(
+                measure.to_string(),
+                values
+                    .iter()
+                    .map(|(cat, val)| CellEntry {
+                        category: cat.to_string(),
+                        value: *val,
+                    })
+                    .collect(),
+            )]),
+        }
+    }
+
+    #[test]
+    fn test_trend_slope_up() {
+        let cube = make_time_series_cube(
+            "CTR",
+            &[
+                ("Jan_2026", 1.0),
+                ("Feb_2026", 2.0),
+                ("Mar_2026", 3.0),
+                ("Apr_2026", 4.0),
+                ("May_2026", 5.0),
+            ],
+        );
+        let ctx = crate::context::build_context(&cube);
+        let val = eval_expr_with_cube("trend_slope(CTR)", &ctx, Some(&cube));
+        assert_eq!(val.as_str().unwrap(), "up");
+    }
+
+    #[test]
+    fn test_trend_slope_flat() {
+        let cube = make_time_series_cube(
+            "CTR",
+            &[
+                ("Jan_2026", 10.0),
+                ("Feb_2026", 10.2),
+                ("Mar_2026", 9.8),
+                ("Apr_2026", 10.1),
+            ],
+        );
+        let ctx = crate::context::build_context(&cube);
+        let val = eval_expr_with_cube("trend_slope(CTR)", &ctx, Some(&cube));
+        assert_eq!(val.as_str().unwrap(), "flat");
+    }
+
+    #[test]
+    fn test_trend_slope_down() {
+        let cube = make_time_series_cube(
+            "CTR",
+            &[("Jan_2026", 10.0), ("Feb_2026", 8.0), ("Mar_2026", 6.0)],
+        );
+        let ctx = crate::context::build_context(&cube);
+        let val = eval_expr_with_cube("trend_slope(CTR)", &ctx, Some(&cube));
+        assert_eq!(val.as_str().unwrap(), "down");
+    }
+
+    #[test]
+    fn test_trend_consistency_steady() {
+        // Low CV → "steady"
+        let cube = make_time_series_cube(
+            "CTR",
+            &[
+                ("Jan_2026", 10.0),
+                ("Feb_2026", 10.1),
+                ("Mar_2026", 9.9),
+                ("Apr_2026", 10.05),
+            ],
+        );
+        let ctx = crate::context::build_context(&cube);
+        let val = eval_expr_with_cube("trend_consistency(CTR)", &ctx, Some(&cube));
+        assert_eq!(val.as_str().unwrap(), "steady");
+    }
+
+    #[test]
+    fn test_trend_consistency_volatile() {
+        // High CV → "volatile"
+        let cube = make_time_series_cube(
+            "CTR",
+            &[
+                ("Jan_2026", 1.0),
+                ("Feb_2026", 10.0),
+                ("Mar_2026", 2.0),
+                ("Apr_2026", 15.0),
+            ],
+        );
+        let ctx = crate::context::build_context(&cube);
+        let val = eval_expr_with_cube("trend_consistency(CTR)", &ctx, Some(&cube));
+        assert_eq!(val.as_str().unwrap(), "volatile");
+    }
+
+    #[test]
+    fn test_streak_positive() {
+        // Values [1,2,3,4] → 3 up-moves → streak = +3
+        let cube = make_time_series_cube(
+            "CTR",
+            &[
+                ("Jan_2026", 1.0),
+                ("Feb_2026", 2.0),
+                ("Mar_2026", 3.0),
+                ("Apr_2026", 4.0),
+            ],
+        );
+        let ctx = crate::context::build_context(&cube);
+        let val = eval_expr_with_cube("streak(CTR)", &ctx, Some(&cube));
+        assert!((val.as_num().unwrap() - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_streak_negative() {
+        // Values [4,3,2,1] → 3 down-moves → streak = -3
+        let cube = make_time_series_cube(
+            "CTR",
+            &[
+                ("Jan_2026", 4.0),
+                ("Feb_2026", 3.0),
+                ("Mar_2026", 2.0),
+                ("Apr_2026", 1.0),
+            ],
+        );
+        let ctx = crate::context::build_context(&cube);
+        let val = eval_expr_with_cube("streak(CTR)", &ctx, Some(&cube));
+        assert!((val.as_num().unwrap() - (-3.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_streak_mixed() {
+        // Values [1,3,2,4] → only last move is up → streak = +1
+        let cube = make_time_series_cube(
+            "CTR",
+            &[
+                ("Jan_2026", 1.0),
+                ("Feb_2026", 3.0),
+                ("Mar_2026", 2.0),
+                ("Apr_2026", 4.0),
+            ],
+        );
+        let ctx = crate::context::build_context(&cube);
+        let val = eval_expr_with_cube("streak(CTR)", &ctx, Some(&cube));
+        assert!((val.as_num().unwrap() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_best_period() {
+        let cube = make_time_series_cube(
+            "CTR",
+            &[("Jan_2026", 1.0), ("Feb_2026", 5.0), ("Mar_2026", 3.0)],
+        );
+        let ctx = crate::context::build_context(&cube);
+        let val = eval_expr_with_cube("best_period(CTR)", &ctx, Some(&cube));
+        assert_eq!(val.as_str().unwrap(), "Feb 2026");
+    }
+
+    #[test]
+    fn test_worst_period() {
+        let cube = make_time_series_cube(
+            "CTR",
+            &[("Jan_2026", 1.0), ("Feb_2026", 5.0), ("Mar_2026", 3.0)],
+        );
+        let ctx = crate::context::build_context(&cube);
+        let val = eval_expr_with_cube("worst_period(CTR)", &ctx, Some(&cube));
+        assert_eq!(val.as_str().unwrap(), "Jan 2026");
+    }
+
+    #[test]
+    fn test_best_period_tie() {
+        // Two periods with same max → earliest wins.
+        let cube = make_time_series_cube(
+            "CTR",
+            &[("Jan_2026", 5.0), ("Feb_2026", 3.0), ("Mar_2026", 5.0)],
+        );
+        let ctx = crate::context::build_context(&cube);
+        let val = eval_expr_with_cube("best_period(CTR)", &ctx, Some(&cube));
+        assert_eq!(val.as_str().unwrap(), "Jan 2026", "earliest on tie");
+    }
+
+    #[test]
+    fn test_volatility() {
+        // CV = stddev / mean. For [10, 10, 10]: stddev=0, CV=0.
+        let cube = make_time_series_cube(
+            "CTR",
+            &[("Jan_2026", 10.0), ("Feb_2026", 10.0), ("Mar_2026", 10.0)],
+        );
+        let ctx = crate::context::build_context(&cube);
+        let val = eval_expr_with_cube("volatility(CTR)", &ctx, Some(&cube));
+        assert!((val.as_num().unwrap() - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_volatility_nonzero() {
+        // For [1, 10, 2, 15]: should be high volatility.
+        let cube = make_time_series_cube(
+            "CTR",
+            &[
+                ("Jan_2026", 1.0),
+                ("Feb_2026", 10.0),
+                ("Mar_2026", 2.0),
+                ("Apr_2026", 15.0),
+            ],
+        );
+        let ctx = crate::context::build_context(&cube);
+        let val = eval_expr_with_cube("volatility(CTR)", &ctx, Some(&cube));
+        assert!(val.as_num().unwrap() > 0.5, "should be volatile");
+    }
+
+    // ─── Phase 7A.7: Context variable tests ─────────────────────────────
+
+    #[test]
+    fn test_first_last_context_vars() {
+        let cube = make_time_series_cube(
+            "CTR",
+            &[("Jan_2026", 0.85), ("Feb_2026", 1.10), ("Mar_2026", 2.25)],
+        );
+        let ctx = crate::context::build_context(&cube);
+
+        // first.CTR = earliest period value = 0.85
+        let first = ctx.get("first.CTR").unwrap().as_num().unwrap();
+        assert!((first - 0.85).abs() < 1e-9);
+
+        // last.CTR = latest period value = 2.25
+        let last = ctx.get("last.CTR").unwrap().as_num().unwrap();
+        assert!((last - 2.25).abs() < 1e-9);
+
+        // Period names.
+        assert_eq!(
+            ctx.get("first.period_name").unwrap().as_str().unwrap(),
+            "Jan 2026"
+        );
+        assert_eq!(
+            ctx.get("last.period_name").unwrap().as_str().unwrap(),
+            "Mar 2026"
+        );
+    }
+
+    #[test]
+    fn test_min_max_context_vars() {
+        let cube = make_time_series_cube(
+            "CTR",
+            &[("Jan_2026", 0.85), ("Feb_2026", 0.07), ("Mar_2026", 2.25)],
+        );
+        let ctx = crate::context::build_context(&cube);
+
+        let min_val = ctx.get("min.CTR").unwrap().as_num().unwrap();
+        assert!((min_val - 0.07).abs() < 1e-9);
+
+        let max_val = ctx.get("max.CTR").unwrap().as_num().unwrap();
+        assert!((max_val - 2.25).abs() < 1e-9);
+
+        assert_eq!(
+            ctx.get("min.CTR.period").unwrap().as_str().unwrap(),
+            "Feb 2026"
+        );
+        assert_eq!(
+            ctx.get("max.CTR.period").unwrap().as_str().unwrap(),
+            "Mar 2026"
+        );
+    }
+
+    #[test]
+    fn test_total_periods_alias() {
+        let cube = make_time_series_cube(
+            "CTR",
+            &[("Jan_2026", 1.0), ("Feb_2026", 2.0), ("Mar_2026", 3.0)],
+        );
+        let ctx = crate::context::build_context(&cube);
+        let total = ctx.get("total_periods").unwrap().as_num().unwrap();
+        let count = ctx.get("period_count").unwrap().as_num().unwrap();
+        assert!(
+            (total - count).abs() < 1e-9,
+            "total_periods should equal period_count"
+        );
+    }
+
+    #[test]
+    fn test_concat_nested_format() {
+        // Realistic template pattern: concat with format inside.
+        let ctx = make_ctx(&[("x", 1234.0)]);
+        let val = eval_expr("concat('Got ', format(x, ','), ' hits')", &ctx);
+        assert_eq!(val.as_str().unwrap(), "Got 1,234 hits");
+    }
+
+    #[test]
+    fn test_format_null_returns_empty() {
+        let ctx = Ctx::new();
+        // "missing" not in ctx → Null → format should return empty string.
+        let val = eval_expr("format(missing, ',')", &ctx);
+        assert_eq!(val.as_str().unwrap(), "");
     }
 }

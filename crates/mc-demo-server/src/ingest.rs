@@ -138,25 +138,51 @@ fn canonical_measure_name(raw_header: &str) -> String {
 /// field that should always be treated as text, even if values look numeric.
 fn is_forced_text_column(header: &str) -> bool {
     let h = header.trim().to_lowercase();
-    h.contains("postal") || h.contains("zip") || h.contains("code")
-        || h.contains("dma") || h.contains("fips") || h.contains("area code")
+    h.contains("postal")
+        || h.contains("zip")
+        || h.contains("code")
+        || h.contains("dma")
+        || h.contains("fips")
+        || h.contains("area code")
 }
 
 /// Score a column header for "how specific an identifier is this?"
 /// Higher = more specific = better category column.
 fn category_specificity(header: &str) -> u8 {
     let h = header.trim().to_lowercase();
-    if h.contains("city") { return 10; }
-    if h.contains("zip") || h.contains("postal") { return 9; }
-    if h.contains("metro") { return 8; }
-    if h.contains("campaign") || h.contains("ad set") || h.contains("ad group") { return 8; }
-    if h.contains("creative") || h.contains("keyword") { return 8; }
-    if h.contains("device") { return 7; }
-    if h.contains("tactic") || h.contains("placement") { return 7; }
-    if h.contains("age") || h.contains("gender") { return 6; }
-    if h.contains("dma") || h.contains("market") { return 5; }
-    if h.contains("region") || h.contains("state") { return 3; }
-    if h == "date" || h.contains("week") || h.contains("month") { return 2; }
+    if h.contains("city") {
+        return 10;
+    }
+    if h.contains("zip") || h.contains("postal") {
+        return 9;
+    }
+    if h.contains("metro") {
+        return 8;
+    }
+    if h.contains("campaign") || h.contains("ad set") || h.contains("ad group") {
+        return 8;
+    }
+    if h.contains("creative") || h.contains("keyword") {
+        return 8;
+    }
+    if h.contains("device") {
+        return 7;
+    }
+    if h.contains("tactic") || h.contains("placement") {
+        return 7;
+    }
+    if h.contains("age") || h.contains("gender") {
+        return 6;
+    }
+    if h.contains("dma") || h.contains("market") {
+        return 5;
+    }
+    if h.contains("region") || h.contains("state") {
+        return 3;
+    }
+    if h == "date" || h.contains("week") || h.contains("month") {
+        return 2;
+    }
     1 // unknown
 }
 
