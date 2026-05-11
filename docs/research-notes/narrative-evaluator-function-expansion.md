@@ -345,6 +345,147 @@ Items 1-3 are the must-haves. Items 4-5 are what make it Claude-tier.
 
 ---
 
+---
+
+## Amendments from Claude Desktop review (2026-05-11)
+
+### Amendment 1: `trend_direction()` → split into composable functions
+
+The single `trend_direction()` function with string return values is too vague for deterministic evaluation. Two implementations could classify the same data differently.
+
+**Replace with three composable functions:**
+
+- `trend_slope(measure)` → returns `'up'`, `'down'`, or `'flat'` based on overall direction (first vs last value, with ±5% dead zone for flat)
+- `trend_consistency(measure)` → returns `'steady'`, `'variable'`, or `'volatile'` based on coefficient of variation (CV < 0.15 = steady, 0.15–0.50 = variable, > 0.50 = volatile)
+- `streak(measure)` → returns signed integer (positive = consecutive up periods, negative = consecutive down, zero = flat/mixed). NOT stringly-typed.
+
+**Explicit classification thresholds:**
+```
+trend_slope:
+  total_change_pct = (last - first) / first * 100
+  if abs(total_change_pct) < 5: return "flat"
+  if total_change_pct > 0: return "up"
+  return "down"
+
+trend_consistency:
+  cv = stddev(values) / mean(values)
+  if cv < 0.15: return "steady"
+  if cv < 0.50: return "variable"  
+  return "volatile"
+
+streak:
+  Walk from latest period backwards
+  Count consecutive same-direction changes
+  Return positive for up streak, negative for down streak
+  Minimum 2 periods of data; return 0 if < 2
+```
+
+**Templates compose:** `"CTR has been **{trend_slope(CTR)}** and **{trend_consistency(CTR)}**"` → "CTR has been **up** and **steady**."
+
+### Amendment 2: `format()` spec grammar (complete)
+
+```
+Format spec grammar:
+  [SIGN][SEPARATOR][.PRECISION][TYPE]
+
+Components (all optional):
+  SIGN:       '+' = always show sign for positive numbers
+  SEPARATOR:  ',' = thousands separator (US locale, always comma — no locale switching)
+  PRECISION:  '.N' = N decimal places (round, don't truncate)
+  TYPE:       '%' = multiply by 100, append '%' suffix
+              'f' = fixed-point (default when omitted)
+
+Examples:
+  '.2'    → 1234.567  → "1234.57"
+  ',.2'   → 1234.567  → "1,234.57"
+  '+,.1'  → 1234.567  → "+1,234.6"
+  '+,.1'  → -123.45   → "-123.5"
+  '.2%'   → 0.0146    → "1.46%"
+  ','     → 441263     → "441,263"
+  '.0'    → 233.7     → "234"
+
+Special values:
+  NaN  → "—" (em-dash, not "NaN")
+  +Inf → "∞"
+  -Inf → "−∞"
+  Null → "" (empty string)
+
+Errors:
+  Invalid spec   → MC8001
+  Non-numeric input → MC8002
+```
+
+US locale always. No scientific notation. No accounting-style negative formatting (parentheses). Percentage type multiplies by 100.
+
+### Amendment 3: Null/coercion semantics (binding for all new functions)
+
+```
+Null semantics:
+  Val::Null is the only null. Zero (0.0) is NOT null. Empty string is NOT null.
+
+  When a binding references a nonexistent variable (e.g., campaign_avg.NonExistent):
+    → evaluates to Val::Null (NOT a runtime error)
+
+  concat() with null arguments: skip null args silently
+    concat("a", null, "b") → "ab"
+
+  concat() with numeric arguments: auto-coerce to string (no separator, full precision)
+    concat("Total: ", 441263) → "Total: 441263"
+    For formatted output, use format(): concat("Total: ", format(441263, ','))
+
+  coalesce() semantics:
+    Evaluate args left to right
+    Return first non-Null value
+    Zero is NOT null (coalesce(0, 5) → 0)
+    If arg fails to evaluate → treat as Null, continue (NOT a runtime error)
+    If all args null → return Null
+
+  pct_change() with zero denominator → Null (not error, not Infinity)
+  ratio() with zero denominator → Null (not error, not Infinity)
+```
+
+### Amendment 4: Replace `spend_efficiency()` with `ratio()`
+
+`spend_efficiency(cost, result)` is too specialized — it's just division with a domain-specific name. Replace with:
+
+```yaml
+ratio(numerator, denominator)
+  Returns numerator / denominator
+  If denominator is 0 or Null → returns Null
+  Handles divide-by-zero cleanly without producing NaN or Infinity
+```
+
+Templates write `ratio(sum.Spend, sum.Conversions)` instead of `spend_efficiency(Spend, Conversions)`. More reusable, less vocabulary to learn.
+
+### Amendment 5: `best_period()` / `worst_period()` tie-breaking
+
+On ties (two periods with identical max/min value), return the **earliest** period. This is deterministic and documented.
+
+### Amendment 6: `days_in_campaign` uses ADR-0014 time parser
+
+Don't roll a custom date parser. Use the same time format parsing path as ADR-0014. If the workspace declares `time_format`, use it. If period names can't be parsed as dates, return Null.
+
+### Amendment 7: Diagnostic codes (pre-allocated)
+
+| Code | Fires when |
+|---|---|
+| MC8001 | Invalid format spec in `format()` |
+| MC8002 | Type error (e.g., non-numeric input to `format()`) |
+| MC8003 | Division by zero in `pct_change()` or `ratio()` (returns Null, logs warning) |
+| MC8004 | Insufficient data for trend functions (< 3 periods) |
+
+### Amendment 8: Non-goals (explicit)
+
+NOT being added in this phase:
+- Locale-aware formatting beyond US conventions
+- Scientific notation
+- Regex matching or string manipulation beyond concat
+- Date arithmetic beyond `days_in_campaign`
+- Custom user-defined functions
+- Template-level macros or includes
+
+---
+
 ## Cross-links
 
 - **Evaluator:** `crates/mc-narrative/src/evaluator.rs` (function dispatch at line ~858)
@@ -352,3 +493,4 @@ Items 1-3 are the must-haves. Items 4-5 are what make it Claude-tier.
 - **Templates:** `demo/narratives/display-like.yaml` (consumer of these functions)
 - **Phase 7A.1:** Original narrative engine (established the evaluator pattern)
 - **ADR-0020:** Phase 7A planning document
+- **ADR-0014:** Time representation (for `days_in_campaign` date parsing)
