@@ -59,29 +59,49 @@ struct CubeActor {
 
 **No `Arc<Mutex<Cube>>`** — the actor model is cleaner and avoids async-mutex footguns.
 
+**Tokio runtime guidance:** Cube operations (read, write, eval) are synchronous and potentially CPU-heavy (large cubes, deep rule chains). The per-cube actor task should use `tokio::task::spawn_blocking` for the actual cube operations to avoid starving the tokio worker pool. The actor loop itself is async (receives from channel), but dispatches work to the blocking pool:
+
+```rust
+async fn actor_loop(mut rx: mpsc::Receiver<CubeRequest>, mut cube: Cube) {
+    while let Some(req) = rx.recv().await {
+        // Dispatch to blocking pool — cube ops are sync + CPU-bound
+        let result = tokio::task::spawn_blocking(move || {
+            // Execute the cube operation (read, write, etc.)
+            let r = handle_request(&mut cube, &req);
+            (cube, r)  // Move cube back out
+        }).await.unwrap();
+        cube = result.0;
+        req.reply(result.1);
+    }
+}
+```
+
+This ensures that even CPU-heavy cube evaluations (e.g., consolidation over deep hierarchies) don't block other cubes' actors or the HTTP accept loop.
+
 ### Decision 3: Hot cube cache — load-on-first-request, LRU eviction
 
 Cubes are NOT loaded at startup. They're registered (paths known) but stay cold. First API request targeting a cube triggers cold-load → cache it. Subsequent requests hit warm cache.
 
 **Eviction:** LRU (least-recently-accessed). Configurable budget (default 512MB). When budget exceeded, evict least-recent cube. Never evict during an active request.
 
-**Cache invalidation:** Cube is invalidated (reloaded from disk) when:
-- Tessera import runs (new data → revision bumps)
-- `mc model write` via API (direct cell write → revision bumps)
-- Explicit `mc reload [--cube <name>]`
+**Cache invalidation — two distinct mechanisms:**
+
+1. **Revision invalidation (hot cube stays loaded, stale cells recompute):** After an API write or Tessera import, the cube remains in the actor — its revision bumps, the dependency graph marks affected cells dirty, and subsequent reads recompute only those cells. The cube is NOT reloaded from disk. This is the normal path for data changes.
+
+2. **Reload (evict + cold-load from disk):** Only triggered by explicit `mc reload [--cube <name>]`. This re-reads the model YAML, recompiles, and replaces the actor's cube. Used when the model definition changes (new rules, new dimensions), not when cell data changes.
 
 **No filesystem watcher in Phase 8.** Manual reload only. Auto-reload is Phase 8.1 enhancement.
 
 ### Decision 4: Warm restart — content hashes, opt-in pre-loading
 
-On graceful shutdown, write `.mosaic/cache-manifest.json` recording cube names + **content hash (SHA-256)** of each cube's model YAML (not mtime — mtime is unreliable).
+On graceful shutdown, write `.mosaic/cache-manifest.json` recording **workspace-qualified cube identifiers** + **content hash (SHA-256)** of each cube's model YAML (not mtime — mtime is unreliable). Entries are keyed by `{workspace_path, cube_name, model_path}` to handle org mode where two workspaces may have cubes with the same name.
 
 On restart:
 - Daemon reads manifest but does NOT pre-load cubes by default
 - Cubes stay cold until first request (same lazy behavior as fresh start)
 - The manifest is informational only
 
-**Opt-in pre-loading:** `mc up --preload marketing-finance` or `daemon.toml`: `preload_cubes = ["marketing-finance"]`. On pre-load, verify content hash — if changed, cold-load fresh instead.
+**Opt-in pre-loading:** `mc up --preload marketing-finance` or `daemon.toml`: `preload_cubes = ["marketing-finance"]`. On pre-load, verify content hash — if hash differs, skip pre-load and leave cube cold (see Decision 14). First request will cold-load from current YAML.
 
 ### Decision 5: HTTP API — mirrors CLI verbs
 
@@ -140,37 +160,51 @@ Every write is journaled BEFORE cube mutation. Per-cube sequential access (Decis
 **Sequence numbers:** Each journal entry gets a monotonic sequence number assigned in the actor. On crash recovery, entries are replayed in sequence order regardless of flush ordering. If two pending entries exist for the same cell, the higher sequence number wins.
 
 **Journal format:** `.mosaic/write-journal.jsonl`
+
+Journal entries are **workspace-qualified** — in org mode, two workspaces may have cubes with the same name. The full key is `(workspace_path, cube_name)`:
+
 ```json
-{"seq":1,"ts":"...","cube":"marketing-finance","coord":[...],"value":15000.0,"status":"pending"}
-{"seq":1,"ts":"...","cube":"marketing-finance","coord":[...],"value":15000.0,"status":"committed"}
-{"seq":2,"ts":"...","cube":"marketing-finance","coord":[...],"value":8200.0,"status":"pending"}
+{"seq":1,"ts":"...","workspace":"./","cube":"marketing-finance","coord":[...],"value":15000.0,"status":"pending"}
+{"seq":1,"ts":"...","workspace":"./","cube":"marketing-finance","coord":[...],"value":15000.0,"status":"committed"}
+{"seq":2,"ts":"...","workspace":"workspaces/client-a","cube":"plan","coord":[...],"value":8200.0,"status":"pending"}
 ```
 
-**On crash restart:** Replay entries with "pending" but no "committed," in sequence order. If two pending entries target the same cell, higher `seq` wins. Ignore truncated last line (write never acknowledged to client → client retries).
+**Durability handoff to the four-source model (critical — GPT P0 #1):** The daemon journal is crash recovery, NOT long-term persistence. After a write is applied to the cube, the daemon ALSO appends it to `.tessera/writes.jsonl` (the existing post-hoc write log that is source #3 in the four-source model: compiled YAML, canonical inputs, Tessera imports, post-hoc writes). The acknowledgment to the client happens only after BOTH the journal "committed" entry AND the `.tessera/writes.jsonl` append succeed. This ensures that the four-source model remains the authoritative persistence story. The daemon journal exists only for crash recovery of in-flight writes — not as a new fifth source of truth.
+
+**On crash restart:** Replay entries with "pending" but no "committed," in sequence order. If two pending entries target the same cell, higher `seq` wins. Ignore truncated last line (write never acknowledged to client → client retries). Replayed writes are also appended to `.tessera/writes.jsonl` during replay.
 
 **Rotation:** At 10MB, rotate to `write-journal-{timestamp}.jsonl`. Old segments deleted on next graceful shutdown.
 
-**Tessera bulk writes (Decision 8a):** Tessera imports produce potentially thousands of cell updates. Writing each individually to the journal would produce enormous journal volume and unacceptable latency. Instead, Tessera imports use a **batch protocol**:
+**Tessera bulk writes (Decision 8a — Phase 8.1 scope):** Tessera imports produce potentially thousands of cell updates. Writing each individually to the journal would produce enormous journal volume and unacceptable latency. Instead, Tessera imports use a **batch protocol**:
 
 ```json
-{"seq":100,"ts":"...","cube":"marketing-finance","type":"batch_begin","import_id":"imp_abc","row_count":5000}
-... (no per-cell journal entries during batch) ...
-{"seq":100,"ts":"...","cube":"marketing-finance","type":"batch_commit","import_id":"imp_abc"}
+{"seq":100,"ts":"...","workspace":"./","cube":"marketing-finance","type":"batch_begin","import_id":"imp_abc","row_count":5000,"sidecar":".tessera/imports/imp_abc.cells.jsonl"}
+... (no per-cell journal entries during batch — cells written to sidecar) ...
+{"seq":100,"ts":"...","workspace":"./","cube":"marketing-finance","type":"batch_commit","import_id":"imp_abc","content_hash":"sha256:abc123"}
 ```
 
-- `batch_begin` + `batch_commit` bracket the import. The cube actor applies all cells in memory during the batch.
-- If crashed mid-batch (no `batch_commit`): on restart, the entire batch is discarded. The Tessera audit log tracks what was partially applied; re-run the import.
-- This is the same crash-recovery semantic as Tessera's existing snapshot-before-commit pattern — the pre-import snapshot is the recovery point.
-- Single-cell API writes (`POST /api/v1/write`) continue to use per-write journaling.
+- `batch_begin` records the import_id and the sidecar file path (`.tessera/imports/<id>.cells.jsonl`)
+- The actual cell data is written to the sidecar file (existing Tessera convention), NOT to the journal
+- `batch_commit` includes the content_hash of the sidecar — verifiable on recovery
+- `batch_begin` + sidecar write + sidecar fsync + `batch_commit` is the ordering
+- If crashed mid-batch (no `batch_commit`): sidecar exists but is unverified. On restart, delete the incomplete sidecar and re-run the import via the Tessera schedule retry mechanism.
+- If `batch_commit` exists: sidecar is authoritative; the batch was fully applied. No replay needed (Tessera's own audit log confirms).
+- This ties into the existing `.tessera/imports/`, `.tessera/audit.jsonl`, and `.tessera/active-imports.json` infrastructure — no new persistence concepts.
+
+**Phase 8.0 MVP scope:** Single-cell writes only (per-write journaling). Tessera batch protocol ships in Phase 8.1 alongside Tessera schedule integration. Phase 8.0 acceptance criteria do NOT include batch recovery.
 
 ### Decision 9: Tessera integration — subsumes existing daemon
 
 The Phase 8 daemon runs Tessera schedules internally. No separate `mc tessera daemon` process needed.
 
-**Transition:**
-- `mc up` checks `.tessera/daemon.pid` — refuses to start if tessera daemon running
-- Same `schedules.json` format, same schedule IDs, same behavior
-- `mc tessera daemon` remains as standalone fallback (prints deprecation warning in Phase 9)
+**Transition path for existing users:**
+1. `mc tessera daemon --stop` (stop existing tessera daemon)
+2. `mc up` (start service daemon — schedules now run inside it)
+3. Existing schedules work immediately (same `schedules.json` format, same schedule IDs)
+
+**Guard:** `mc up` checks `.tessera/daemon.pid` — refuses to start if tessera daemon running, with message: "Stop tessera daemon first: `mc tessera daemon --stop`"
+
+**Compatibility:** `mc tessera daemon` remains as standalone fallback for Phase 8. Phase 9 prints deprecation warning. Phase 10 removes it.
 
 ### Decision 10: Workspace and org discovery
 
@@ -206,7 +240,10 @@ narrate_ms = 90000
 
 [api]
 max_request_body_mb = 10
-cors_origins = ["http://localhost:*"]
+# CORS: auto-computed from host binding
+# localhost → ["http://localhost:*", "http://127.0.0.1:*"]
+# non-localhost with api_key → [] (must be explicitly configured)
+cors_origins = "auto"
 ```
 
 ### Decision 12: Error handling
@@ -240,17 +277,27 @@ level = "info"    # debug | info | warn | error
 - `warn`: slow queries (>5s), cache budget pressure, Tessera schedule failure, truncated journal entry on recovery
 - `error`: cube load failure, write journal I/O error, unrecoverable state
 
-**Health endpoint (`GET /api/v1/health`) returns:**
+**Health endpoint (`GET /api/v1/health`) — auth-exempt, minimal payload:**
 ```json
 {
   "status": "healthy",          // healthy | degraded | unhealthy
+  "uptime_seconds": 3600
+}
+```
+
+Minimal by design — unauthenticated callers learn only whether the service is up, not internal state. Cube counts, cache usage, journal state, and degraded cube names are sensitive operational data.
+
+**Status endpoint (`GET /api/v1/status`) — requires auth, full diagnostics:**
+```json
+{
+  "status": "healthy",
   "uptime_seconds": 3600,
   "cubes_registered": 5,
   "cubes_warm": 3,
   "cache_bytes_used": 134217728,
   "cache_budget_bytes": 536870912,
   "pending_journal_entries": 0,
-  "degraded_cubes": []          // list of cube names that failed to load
+  "degraded_cubes": []
 }
 ```
 
@@ -310,8 +357,8 @@ No surprises. Pre-loading only accelerates cubes whose models haven't changed.
 7. Cubes load on first request (not at startup)
 8. LRU eviction works when cache budget exceeded
 9. `--api-key` enables auth; without it, daemon refuses non-localhost bind (including specific IPs and IPv6 non-loopback)
-10. Crash + restart replays uncommitted journal entries correctly (including batch begin/commit for Tessera)
-11. `GET /api/v1/health` always responds (even without auth) with structured JSON
+10. Crash + restart replays uncommitted single-cell journal entries correctly (Tessera batch protocol is Phase 8.1)
+11. `GET /api/v1/health` responds without auth with minimal payload (status + uptime only); `GET /api/v1/status` requires auth for full diagnostics
 12. Ctrl+C triggers graceful shutdown; double Ctrl+C forces exit
 13. All existing tests pass unchanged
 14. `cargo test --workspace` passes
