@@ -350,6 +350,182 @@ templates:
       best_ctr: "max_by.Creative.CTR.value"
       best_impressions: "max_by.Creative.Impressions.value"
 
+  # ─── Video-specific templates (YouTube, STV, Video) ─────────
+  #
+  # These fire when VCR (Video Completion Rate) exists.
+  # YouTube and STV don't have CTR — they have VCR, VideoViews,
+  # and completion quartiles. These templates replace CTR-based
+  # analysis for video tactics.
+
+  - id: video_overview
+    family: [video-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    sort_order: -15
+    deduplicate: true
+    when: "sum.VCR > 0"
+    template: >
+      **{period_count} months** of video campaign data —
+      **{total_impressions:,.0f}** impressions with
+      **{avg_vcr:.1f}%** average completion rate{completions_note}.
+    bindings:
+      total_impressions: "sum.Impressions"
+      avg_vcr: "campaign_avg.VCR"
+      completions_note: >
+        if(sum.Completions > 0,
+          concat(' and **', format(sum.Completions, ',.0f'), '** full completions'),
+          '')
+
+  - id: vcr_trend
+    family: [video-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: "period_count >= 2 AND sum.VCR > 0"
+    template: >
+      Video completion rate {direction} from **{prev_vcr:.1f}%** to
+      **{current_vcr:.1f}%** ({change:+.1f} points).
+    bindings:
+      direction: "if(current.VCR >= prev.VCR, 'improved', 'declined')"
+      prev_vcr: "prev.VCR"
+      current_vcr: "current.VCR"
+      change: "current.VCR - prev.VCR"
+
+  - id: vcr_full_campaign_trend
+    family: [video-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: "period_count >= 3 AND sum.VCR > 0"
+    template: >
+      Over the full **{period_count}-month** campaign, VCR moved from
+      **{first_vcr:.1f}%** to **{last_vcr:.1f}%**{assessment}.
+    bindings:
+      first_vcr: "first.VCR"
+      last_vcr: "current.VCR"
+      assessment: >
+        if(current.VCR > first.VCR + 5,
+          ' — completion rates are improving, indicating stronger creative hold',
+          if(current.VCR < first.VCR - 5,
+            ' — completion rates are declining, consider creative refresh',
+            ' — completion rates are holding steady'))
+
+  - id: vcr_benchmark
+    family: [video-like]
+    severity: info
+    table_types: ["Monthly Performance", "Campaign Performance"]
+    when: "sum.VCR > 0"
+    template: >
+      Campaign VCR of **{avg_vcr:.1f}%** is {assessment} the **50%** industry
+      benchmark for video ads.
+    bindings:
+      avg_vcr: "campaign_avg.VCR"
+      assessment: >
+        if(campaign_avg.VCR > 70,
+          'significantly above',
+          if(campaign_avg.VCR > 50,
+            'above',
+            if(campaign_avg.VCR > 35,
+              'near',
+              'below')))
+
+  - id: video_device_ranking
+    family: [video-like]
+    severity: info
+    table_types: ["Device Performance"]
+    when: "element_count(Device) >= 2 AND sum.VCR > 0"
+    template: >
+      **{best_device}** led with **{best_vcr:.1f}%** VCR.
+      **{worst_device}** had the lowest at **{worst_vcr:.1f}%** VCR.
+    bindings:
+      best_device: "max_by.Device.VCR.name"
+      best_vcr: "max_by.Device.VCR.value"
+      worst_device: "min_by.Device.VCR.name"
+      worst_vcr: "min_by.Device.VCR.value"
+
+  - id: video_run_rate
+    family: [video-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: "period_count >= 2 AND sum.VCR > 0"
+    template: >
+      Average monthly delivery: **{avg_impressions:,.0f}** video impressions
+      with **{avg_vcr:.1f}%** completion rate per month.
+    bindings:
+      avg_impressions: "sum.Impressions / period_count"
+      avg_vcr: "campaign_avg.VCR"
+
+  - id: video_forecast
+    family: [video-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: "period_count >= 3 AND sum.VCR > 0"
+    template: >
+      At current run rate, the next **90 days** would deliver approximately
+      **{proj_impressions:,.0f}** video impressions with an estimated
+      **{proj_completions:,.0f}** full views.
+    bindings:
+      proj_impressions: "sum.Impressions / period_count * 3"
+      proj_completions: >
+        if(sum.Completions > 0,
+          sum.Completions / period_count * 3,
+          sum.Impressions / period_count * 3 * campaign_avg.VCR / 100)
+
+  # ─── Social-specific templates (Meta) ───────────────────────
+
+  - id: social_engagement_overview
+    family: [social-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    sort_order: -14
+    deduplicate: true
+    when: "sum.Engagements > 0"
+    template: >
+      **{total_engagements:,.0f}** post engagements across
+      **{total_impressions:,.0f}** impressions
+      (**{engagement_rate:.2f}%** engagement rate){leads_note}.
+    bindings:
+      total_engagements: "sum.Engagements"
+      total_impressions: "sum.Impressions"
+      engagement_rate: "sum.Engagements / sum.Impressions * 100"
+      leads_note: >
+        if(sum.Leads > 0,
+          concat(', generating **', format(sum.Leads, ',.0f'), '** leads'),
+          '')
+
+  - id: social_engagement_trend
+    family: [social-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: "period_count >= 2 AND sum.Engagements > 0 AND abs((current.Engagements - prev.Engagements) / prev.Engagements) > 0.10"
+    template: >
+      Engagements {direction} **{abs_pct:.0f}%** month-over-month
+      (**{prev_value:,.0f}** → **{current_value:,.0f}**).
+    bindings:
+      direction: "if(current.Engagements >= prev.Engagements, 'grew', 'declined')"
+      abs_pct: "abs((current.Engagements - prev.Engagements) / prev.Engagements * 100)"
+      prev_value: "prev.Engagements"
+      current_value: "current.Engagements"
+
+  - id: lead_performance
+    family: [social-like, search-like]
+    severity: info
+    table_types: ["Monthly Performance"]
+    when: "sum.Leads > 0 AND period_count >= 2"
+    template: >
+      **{total_leads:,.0f}** total leads across **{period_count}** months
+      (**{avg_leads:.0f}** leads/month).
+      {trend_note}
+    bindings:
+      total_leads: "sum.Leads"
+      avg_leads: "sum.Leads / period_count"
+      trend_note: >
+        if(current.Leads > prev.Leads,
+          concat('Lead volume **increased** from **', format(prev.Leads, ',.0f'),
+            '** to **', format(current.Leads, ',.0f'), '** in the latest period.'),
+          if(current.Leads < prev.Leads,
+            concat('Lead volume **decreased** from **', format(prev.Leads, ',.0f'),
+              '** to **', format(current.Leads, ',.0f'), '** in the latest period.'),
+            'Lead volume held steady.'))
+
   # ─── Conversion tracking ────────────────────────────────────
 
   - id: conversion_alarm
