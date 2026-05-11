@@ -124,24 +124,44 @@ mosaic.status         mosaic.reload
 Phase 8 ships with optional bearer-token auth:
 
 - `mc up --api-key <key>` enables authentication
-- **Without `--api-key`, daemon refuses to bind to non-localhost.** If `--host 0.0.0.0` without `--api-key` → error and exit.
+- **Without `--api-key`, daemon refuses to bind to non-localhost.** The check covers: any `--host` value other than `127.0.0.1`, `localhost`, or `::1` (IPv6 localhost) requires `--api-key`. This includes `0.0.0.0`, specific LAN IPs (`192.168.x.x`), and any other non-loopback address.
 - With `--api-key`, all requests require `Authorization: Bearer <key>`. Missing → 401.
-- Health endpoint (`/api/v1/health`) exempt from auth
+- Health endpoint (`/api/v1/health`) exempt from auth (needed for monitoring/healthchecks)
 - This is a shared secret, not real auth — Phase 9 adds users/sessions/RBAC
+
+**Why HTTP writes are always enabled but MCP writes are gated (Decision 6):** HTTP clients are explicitly invoked by humans or scripts with visible intent. MCP agents may operate without human review. The asymmetry is intentional — gate the path where unreviewed writes are most likely.
 
 ### Decision 8: Write-ahead journal — crash recovery
 
 Every write is journaled BEFORE cube mutation. Per-cube sequential access (Decision 2) makes ordering natural — queries never see partially-applied writes.
 
+**Journal writes happen inside the actor task (Option A).** The actor receives a write request, journals it with a monotonic sequence number, applies it to the cube, marks it committed. This keeps journal ordering and cube state in lockstep within the same task — no cross-task coordination needed. Journal latency is in the cube's critical path but SSD writes are <1ms; this is acceptable for Phase 8's single-user target.
+
+**Sequence numbers:** Each journal entry gets a monotonic sequence number assigned in the actor. On crash recovery, entries are replayed in sequence order regardless of flush ordering. If two pending entries exist for the same cell, the higher sequence number wins.
+
 **Journal format:** `.mosaic/write-journal.jsonl`
 ```json
-{"ts":"...","cube":"marketing-finance","coord":[...],"value":15000.0,"status":"pending"}
-{"ts":"...","cube":"marketing-finance","coord":[...],"value":15000.0,"status":"committed"}
+{"seq":1,"ts":"...","cube":"marketing-finance","coord":[...],"value":15000.0,"status":"pending"}
+{"seq":1,"ts":"...","cube":"marketing-finance","coord":[...],"value":15000.0,"status":"committed"}
+{"seq":2,"ts":"...","cube":"marketing-finance","coord":[...],"value":8200.0,"status":"pending"}
 ```
 
-**On crash restart:** Replay entries with "pending" but no "committed." Ignore truncated last line (write never acknowledged to client → client retries).
+**On crash restart:** Replay entries with "pending" but no "committed," in sequence order. If two pending entries target the same cell, higher `seq` wins. Ignore truncated last line (write never acknowledged to client → client retries).
 
 **Rotation:** At 10MB, rotate to `write-journal-{timestamp}.jsonl`. Old segments deleted on next graceful shutdown.
+
+**Tessera bulk writes (Decision 8a):** Tessera imports produce potentially thousands of cell updates. Writing each individually to the journal would produce enormous journal volume and unacceptable latency. Instead, Tessera imports use a **batch protocol**:
+
+```json
+{"seq":100,"ts":"...","cube":"marketing-finance","type":"batch_begin","import_id":"imp_abc","row_count":5000}
+... (no per-cell journal entries during batch) ...
+{"seq":100,"ts":"...","cube":"marketing-finance","type":"batch_commit","import_id":"imp_abc"}
+```
+
+- `batch_begin` + `batch_commit` bracket the import. The cube actor applies all cells in memory during the batch.
+- If crashed mid-batch (no `batch_commit`): on restart, the entire batch is discarded. The Tessera audit log tracks what was partially applied; re-run the import.
+- This is the same crash-recovery semantic as Tessera's existing snapshot-before-commit pattern — the pre-import snapshot is the recovery point.
+- Single-cell API writes (`POST /api/v1/write`) continue to use per-write journaling.
 
 ### Decision 9: Tessera integration — subsumes existing daemon
 
@@ -197,6 +217,52 @@ cors_origins = ["http://localhost:*"]
 | Write fails after journal | Entry stays "pending." Replayed on restart. Client gets error; can retry. |
 | Tessera recipe malformed | Error logged. Schedule failure_count++. After 2 consecutive failures, schedule paused. |
 | Out of cache budget | Evict LRU cube before loading new one. |
+| `mc reload --cube X` with in-flight queries | Drain: let queued requests in X's actor channel complete, then reload. New requests queue behind the reload. |
+| `mc reload` during active Tessera import | Block reload until import completes. Log warning. |
+| Ctrl+C (SIGINT) | Graceful shutdown identical to `mc down`. Set shutdown flag, drain in-flight, flush journal, exit 0. |
+| Ctrl+C twice in rapid succession | First = graceful (30s timeout). Second within 5s = forced exit (no drain, exit 1). |
+| stdin closed (SSH disconnect) | Daemon continues running (foreground process ignores SIGHUP unless `--detach`). Use `mc down` from another session to stop. |
+
+### Decision 13: Logging and observability
+
+**Log format:** Structured (JSON lines) when `--detach`; human-readable when foreground. Configurable in `daemon.toml`:
+```toml
+[logging]
+format = "auto"   # auto | json | pretty
+level = "info"    # debug | info | warn | error
+```
+
+`auto` = JSON when detached, pretty when foreground (TTY detection).
+
+**What gets logged at each level:**
+- `debug`: every request received, cache hits/misses, actor channel depth
+- `info`: startup/shutdown, cube load/evict, Tessera import completion, reload
+- `warn`: slow queries (>5s), cache budget pressure, Tessera schedule failure, truncated journal entry on recovery
+- `error`: cube load failure, write journal I/O error, unrecoverable state
+
+**Health endpoint (`GET /api/v1/health`) returns:**
+```json
+{
+  "status": "healthy",          // healthy | degraded | unhealthy
+  "uptime_seconds": 3600,
+  "cubes_registered": 5,
+  "cubes_warm": 3,
+  "cache_bytes_used": 134217728,
+  "cache_budget_bytes": 536870912,
+  "pending_journal_entries": 0,
+  "degraded_cubes": []          // list of cube names that failed to load
+}
+```
+
+### Decision 14: Warm restart hash-mismatch behavior
+
+When `daemon.toml` specifies `preload_cubes` or `mc up --preload` is used:
+- Daemon reads `.mosaic/cache-manifest.json` for stored content hashes
+- If content hash matches current file → pre-load (fast, uses cached compilation if available)
+- **If content hash differs → skip pre-load, leave cube cold.** Log: `"Cube 'X' model changed since last run; skipping pre-load (will cold-load on first request)."`
+- If manifest doesn't exist (first run) → skip pre-load for all cubes
+
+No surprises. Pre-loading only accelerates cubes whose models haven't changed.
 
 ---
 
@@ -234,6 +300,7 @@ cors_origins = ["http://localhost:*"]
 
 ## Acceptance criteria (Phase 8.0 MVP)
 
+**Functional:**
 1. `mc up` starts daemon, binds HTTP on configured port, prints banner
 2. `mc down` gracefully shuts down (flush writes, remove PID)
 3. `mc status` reports health when running; "not running" when not
@@ -242,13 +309,20 @@ cors_origins = ["http://localhost:*"]
 6. `POST /api/v1/trace` returns computation trace
 7. Cubes load on first request (not at startup)
 8. LRU eviction works when cache budget exceeded
-9. `--api-key` enables auth; without it, daemon refuses non-localhost bind
-10. Crash + restart replays uncommitted journal entries correctly
-11. `GET /api/v1/health` always responds (even without auth)
-12. All existing tests pass unchanged
-13. `cargo test --workspace` passes
-14. `cargo clippy --all-targets --workspace -- -D warnings` passes
-15. No changes to `mc-core`
+9. `--api-key` enables auth; without it, daemon refuses non-localhost bind (including specific IPs and IPv6 non-loopback)
+10. Crash + restart replays uncommitted journal entries correctly (including batch begin/commit for Tessera)
+11. `GET /api/v1/health` always responds (even without auth) with structured JSON
+12. Ctrl+C triggers graceful shutdown; double Ctrl+C forces exit
+13. All existing tests pass unchanged
+14. `cargo test --workspace` passes
+15. `cargo clippy --all-targets --workspace -- -D warnings` passes
+16. No changes to `mc-core`
+
+**Performance baselines (measured, not just "it works"):**
+17. Cold-load latency (first query to Acme cube): < 2 seconds
+18. Warm-query latency (single-cell read on warm cube): < 10ms p99
+19. Write throughput (sustained single-cell writes): > 500 writes/second
+20. Cache budget enforcement: memory stays within configured budget under load
 
 ---
 
