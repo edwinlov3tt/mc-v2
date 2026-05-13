@@ -681,3 +681,19 @@ Phase 8 daemon is NOT:
 ---
 
 **End of research note. When Phase 8 ADR drafts, this note is the starting point. The binding decisions live in the ADR; this note captures design intent, resolved questions, and the amendments from Claude Desktop review.**
+
+---
+
+## Part 17: ConnectRPC evaluation note (2026-05-11)
+
+**Repo:** `anthropics/connect-rust` (Apache 2.0, v0.4.2, 345 stars)
+
+Anthropic's official Tower-based Rust implementation of the ConnectRPC protocol. Serves Connect, gRPC, and gRPC-Web clients over HTTP. 1.95x faster than tonic on unary latency. Native axum integration. Bidirectional streaming.
+
+**Relevance to Mosaic:** Potential transport layer upgrade for the daemon's API surface in Phase 9 (cloud/multi-tenant). Would replace REST/JSON endpoints with typed RPC — better performance, streaming, and multi-protocol support (curl-friendly Connect + performance gRPC + browser gRPC-Web from the same service).
+
+**Blocker:** MSRV 1.88+. Mosaic is pinned to Rust 1.78. Cannot adopt until toolchain bumps.
+
+**When to evaluate:** Phase 9 cloud service ADR. If multi-tenant daemon needs service-to-service communication, streaming tool execution, or browser-based agent access, ConnectRPC is the natural transport. Until then, REST/JSON via axum is sufficient for Phase 8's single-user daemon.
+
+**Not relevant for:** MCP server (MCP is its own protocol over stdio JSON-RPC), CLI commands (HTTP is simpler to debug), Phase 8.0 MVP (REST is fine for personal use).
