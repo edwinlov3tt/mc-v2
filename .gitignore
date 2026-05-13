@@ -11,3 +11,4 @@ demo/frontend/node_modules/
 demo/frontend/dist/
 demo/sample-data/*.zip
 .mosaic/
+docs/.demo-data/
