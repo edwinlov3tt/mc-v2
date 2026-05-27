@@ -1,7 +1,9 @@
 # ADR-0033: Phase 10A — Evaluation Metrics Library
 
-**Status:** Proposed
+**Status:** Accepted (with 7 acceptance amendments — see bottom; binding for implementation)
 **Date:** 2026-05-27
+**Accepted:** 2026-05-27 (project owner approved after dual external review pass)
+**Last amended:** 2026-05-27 — Claude Desktop + GPT-5.1 review feedback folded in; `_over` semantics clarified, variance default flipped to sample (ddof=1)
 **Deciders:** project owner
 **Phase:** 10A (first phase of the evaluation-primitives track; foundational for 10B-F)
 **Crate(s) touched:** `mc-model` (parser) + `mc-core` (evaluator); no daemon, no kernel-interface changes
@@ -626,3 +628,262 @@ After this ADR ships, run preflight on consumer demand:
 - If parameter sweeps across the holdout → Phase 10C (`mc model backtest`)
 
 The metrics library makes any of those a focused 2-3 session phase.
+
+---
+
+## Acceptance amendments
+
+Filed 2026-05-27 after dual external review (Claude Desktop + GPT-5.1, high-effort thinking). Both reviewers independently converged on the same substantive issues. All seven amendments are **binding** for implementation and override the body of this ADR where they conflict. Each amendment was independently verified against the codebase before adoption.
+
+### Amendment 1: `_over` family accepts BARE MEASURES ONLY, not arbitrary expressions (CRITICAL — fixes cookbook)
+
+**Problem.** GPT flagged that the cookbook examples (`avg_over(holdout_games, if(predicted == actual, 1, 0))`, `avg_over(holdout_games, pow(predicted_prob - outcome, 2))`) require the `_over` aggregations to accept arbitrary expressions as their second argument. Existing implementation does NOT.
+
+**Verification (binding).** `crates/mc-model/src/formula.rs` `sum_over` handler uses `parse_bare_identifier`, not `parse_or_expression`:
+
+```rust
+"sum_over" => {
+    let dimension = self.parse_bare_identifier("sum_over", call_start)?;
+    let measure = self.parse_bare_identifier("sum_over", call_start)?;
+    ...
+}
+```
+
+The same pattern applies to `avg_over`, `min_over`, `max_over`, and `wavg_over`. **All `_over` functions accept exactly two bare identifiers: a dimension name and a measure name.**
+
+**Amendment.** Two binding consequences:
+
+(a) **The new primitives (`std_over`, `var_over`, `count_over`) inherit the bare-measure constraint.** Their parse handlers use `parse_bare_identifier` for both arguments, matching `sum_over` verbatim. Do NOT extend any `_over` function to accept expressions in this phase — that's a formula-evaluator semantics change with its own scope and complexity (deferred to a future phase if/when demand surfaces).
+
+(b) **The cookbook is rewritten.** Every compositional metric requires an intermediate derived measure. The "one-line YAML" claim from Decision 5 is replaced with "compositional via 1-3 intermediate measures." Example rewrite:
+
+Before (WRONG — won't parse):
+```yaml
+- name: direction_accuracy
+  body: 'avg_over(holdout_games, if(predicted_direction == actual_direction, 1.0, 0.0))'
+```
+
+After (correct):
+```yaml
+- name: direction_correct
+  body: 'if(predicted_direction == actual_direction, 1.0, 0.0)'
+  scope: Leaf
+
+- name: direction_accuracy
+  body: 'avg_over(holdout_games, direction_correct)'
+```
+
+Similar rewrites required for `brier`, `roi`, and `sharpe_ratio` in the cookbook. All examples must use intermediate measures.
+
+**Why not extend `_over`?** GPT's analysis: extending `avg_over(dim, expr)` to accept expressions turns this from a metrics phase into a formula-evaluator semantics phase. Implementation requires scope-correct expression evaluation per leaf, dependency tracking through the expression, and probably new cache invariants. Out of scope for 10A. The intermediate-measure pattern is verbose but correct, and the dependency graph already handles it well.
+
+### Amendment 2: `count_over` semantics — explicit evaluation per leaf
+
+**Problem.** Both reviewers flagged ambiguity in `count_over`'s implementation sketch. The `&[ScalarValue]` shown in the body suggests counting already-materialized cells, which would interact badly with lazy evaluation (CLAUDE.md §2.15).
+
+**Amendment.** Lock the semantics:
+
+```
+count_over(dim, measure) evaluates `measure` at every leaf under `dim`,
+holding all OTHER coordinates constant. Returns the count of leaves
+whose evaluated value is not Null.
+
+This is the same evaluation semantic as sum_over and avg_over.
+Performance is O(N_leaves_in_dim × eval_cost_of_measure). Input
+measures may use a fast path (skip the eval call) only if the
+semantics remain identical.
+
+count_over does NOT:
+- Count cells from the store without evaluation
+- Count all leaves regardless of measure state
+- Trigger side effects beyond the standard lazy graph population
+```
+
+**Implementation note.** The compute helper signature changes:
+```rust
+// WRONG (original sketch):
+fn count_compute(values: &[ScalarValue]) -> Option<f64> { ... }
+
+// RIGHT (Amendment 2):
+// Receives the dimension and measure refs; performs the per-leaf eval
+// the same way sum_over and avg_over do. Mirror their compute path
+// exactly, with the count operation replacing the sum/avg accumulation.
+```
+
+The implementer mirrors `sum_over`'s eval-dispatch path; only the accumulator differs. Count returns `Some(0.0)` for empty scope (zero is information per Decision 3); `Some(k)` for scope with `k` non-null evaluated values.
+
+### Amendment 3: Sample variance default (ddof=1) — not population variance
+
+**Problem.** Decision 2 + Alt 4 defended population variance (divide by n). Both reviewers pushed back: for the actual primary use case (walk-forward backtesting), past returns ARE a sample drawn from the underlying return distribution. Sample variance (ddof=1) is the correct statistic. Population variance is misleading for inferential workflows like Sharpe ratio computation.
+
+**Amendment.** `std_over` and `var_over` use **sample variance, ddof=1**. This matches numpy, statsmodels, pandas, and scipy defaults — what consumers expect.
+
+**Welford algorithm modification:**
+
+```rust
+fn var_compute(values: &[f64]) -> Option<f64> {
+    // ... Welford accumulation as before ...
+    if k < 2.0 { return None; }    // need ≥ 2 samples for variance (unchanged)
+    Some(m2 / (k - 1.0))            // CHANGED: divide by n-1, not n
+}
+```
+
+The `k < 2.0` guard is unchanged — sample variance is undefined for n=1 (would divide by zero).
+
+**`std_pop_over` and `var_pop_over` are NOT shipped in this phase.** Demand-driven principle: if a consumer needs population variance later, add them as additive variants in a follow-up. The Phase 11+ Bayesian track may need them; that's the right time to allocate.
+
+**Acceptance test update.** Fixture values in `metrics_fixtures.py` change. The Python script becomes:
+
+```python
+import numpy as np
+print(f"  vals={vals}: mean={arr.mean():.9f} std={arr.std(ddof=1):.9f} var={arr.var(ddof=1):.9f}")
+```
+
+(`ddof=1` everywhere.) Re-run the script after Amendment 3 lands; paste new values into the test file.
+
+### Amendment 4: `Null * 0 = Null` confirmed; Sharpe composition is correct as written
+
+**Verification.** `crates/mc-core/src/rule.rs:1943` documents the Null propagation invariant:
+
+> "Null poisons multiplication on either side, including Null * Null."
+> `(ScalarValue::F64(x), ScalarValue::F64(y)) => finite_or_null(x * y)`
+
+Lines 2294, 2302, 2361 reinforce: `Mul: Null * 5 = Null`, `Mul: 5 * Null = Null`.
+
+**Amendment.** No code change. The cookbook's Sharpe composition propagates Null correctly when scope is empty (avg_over→Null) or n=1 (std_over→Null). No guard pattern is required for correctness.
+
+**Cookbook clarification.** Still SHOW the explicit guard pattern for clarity:
+
+```yaml
+# Concise — relies on Null propagation
+- name: sharpe_ratio
+  body: 'avg_over(holdout_games, returns) / std_over(holdout_games, returns) * sqrt(count_over(holdout_games, returns))'
+
+# Explicit — same behavior, but the intent is visible
+- name: sharpe_ratio_guarded
+  body: 'if(count_over(holdout_games, returns) >= 2, avg_over(holdout_games, returns) / std_over(holdout_games, returns) * sqrt(count_over(holdout_games, returns)), Null)'
+```
+
+Both produce identical output. Authors choose based on style preference; the cookbook documents both.
+
+### Amendment 5: Wilson CI cookbook guardrails — proportion-only + trial-count `n`
+
+**Problem.** Both reviewers flagged that Wilson CI looks general (it's a "confidence interval") but is specifically for binomial proportions. Authors passing ROI, Sharpe, or any non-proportion get silent Null returns. Additionally, the `n` argument must be total trials, not successes — a subtle modeling mistake that's easy to make.
+
+**Amendment.** Add to the cookbook (binding for the deliverable):
+
+```markdown
+### Wilson CI: ONLY for binomial proportions
+
+`wilson_ci_lower(p, n)` and `wilson_ci_upper(p, n)` apply specifically
+to observed binomial proportions — k successes out of n independent
+trials with `p = k/n`.
+
+USE for:
+- Win rate (direction accuracy)
+- Conversion rate
+- Hit rate
+- Any rate that's k/n where k ∈ {0, ..., n}
+
+DO NOT USE for:
+- ROI (could be negative or > 1)
+- Sharpe ratio
+- Mean residual
+- Expected value
+- PnL or other dollar quantities
+
+If p falls outside [0, 1], Wilson returns Null (silent — no error).
+For arbitrary-bound CIs, bootstrap CI primitives are deferred to a
+future phase.
+```
+
+**The `n` argument trap (safer cookbook pattern):**
+
+```yaml
+# WRONG: counts only successes (k), not trials (n)
+- name: direction_correct
+  body: 'if(predicted_direction == actual_direction, 1.0, Null)'  # Null for incorrect
+
+- name: direction_accuracy_lower_95_WRONG
+  body: 'wilson_ci_lower(direction_accuracy, count_over(holdout_games, direction_correct))'
+  # count_over counts non-null values → only successes are non-null → wrong n!
+
+# RIGHT: count trials separately from successes
+- name: direction_correct
+  body: 'if(predicted_direction == actual_direction, 1.0, 0.0)'  # 1 or 0, never Null
+  # All games get a value (1 for correct, 0 for incorrect); count_over counts all games
+
+- name: direction_accuracy
+  body: 'avg_over(holdout_games, direction_correct)'
+
+- name: direction_accuracy_lower_95
+  body: 'wilson_ci_lower(direction_accuracy, count_over(holdout_games, direction_correct))'
+  # count_over counts non-null direction_correct values → all games → correct n
+```
+
+**Convention to document:** "For Wilson CI, ensure your indicator measure (direction_correct, hit, conversion, etc.) returns 1 for success and 0 for failure — NEVER Null for failure. Otherwise `count_over` gives you k, not n."
+
+### Amendment 6: MC1008 reuse confirmed; message includes function name
+
+**Verification.** `crates/mc-model/src/formula.rs` sum_over handler emits:
+
+```rust
+return Err(FormulaError::wrong_arg_count(
+    call_start,
+    "sum_over expects 2 arguments: sum_over(dimension, measure)".into(),
+));
+```
+
+The function name is in the message text. Reusing MC1008 for `std_over`, `var_over`, `count_over`, `wilson_ci_lower`, `wilson_ci_upper` will produce messages like "std_over expects 2 arguments..." — disambiguation works without per-function MC codes.
+
+**Amendment.** No code change. Implementer reuses MC1008 via the shared `FormulaError::wrong_arg_count` helper. Record the decision in the completion report under "Diagnostic code allocations: reused MC1008 for all 5 primitives per ADR-0031 Amendment 3 + 7 discovery."
+
+### Amendment 7: Wilson MLB headline test tolerance is 0.001 (not 1e-6)
+
+**Problem.** Acceptance criterion 7 references the "Wilson LB 57.18%" claim from claw-core's integration test report. That claim is reported to 4 significant figures (rounded). Asserting 1e-6 precision against a 0.5718 (4-sig-fig) target will fail spuriously.
+
+**Amendment.** Acceptance criterion 7 explicitly uses 1e-3 tolerance (~0.001):
+
+> AC #7 (revised): `wilson_ci_lower(0.5968, 1508)` returns 0.5718 ± 0.001 — matching the rounded headline claim from claw-core's integration test report. Other Wilson fixtures (AC #4, AC #5) use 1e-6 tolerance against scipy values; only the headline-parity test uses 1e-3 because the reference is a rounded human-readable value.
+
+Test code:
+```rust
+#[test] fn t_wilson_ci_mlb_walk_forward() {
+    let lo = wilson_ci_lower_compute(0.5968, 1508.0).unwrap();
+    // 0.5718 is the published Wilson LB; 1e-3 tolerance matches its precision
+    assert!((lo - 0.5718).abs() < 0.001,
+        "Wilson LB 57.18% headline parity failed: got {lo}");
+}
+```
+
+---
+
+## Additional binding notes (Desktop's strategic determinism observation)
+
+Wilson CIs are deterministic confidence intervals — same input, same output, every time, verifiable. This contributes to Mosaic's strategic positioning around deterministic interpretation with cryptographic provenance (Grout research note + ADR-0009 LNM substrate vision). When the interpretation ledger (Phase 7A.2) logs evaluation runs, every "we beat the market" claim can be bounded by a Wilson CI from the same trained model + same holdout data, producing a reproducible audit trail.
+
+This isn't binding on the implementation — it's context for why this primitive matters beyond the immediate experiment-replacement story.
+
+---
+
+## Acceptance criteria revisions (consolidated)
+
+The following original ACs are superseded:
+
+- **AC #1, #2, #3** (parsing): unchanged
+- **AC #4, #5, #6** (Wilson fixtures + complementary invariant): unchanged, 1e-6 tolerance
+- **AC #7 (Wilson MLB headline)**: 1e-3 tolerance per Amendment 7
+- **AC #8, #9, #10** (Null semantics): unchanged
+- **AC #11** (cookbook covers 5 primitives): EXPANDED — cookbook must include the safer Wilson CI pattern (Amendment 5) and use intermediate derived measures for compositional metrics (Amendment 1)
+- **AC #12-20**: unchanged
+- **AC #21** (demo proof): EXPANDED — cookbook must include a worked claw-core MLB example showing the safer pattern for `direction_accuracy_lower_95`
+
+**New AC #22 (Amendment 3):** `std_over` and `var_over` use sample variance (ddof=1). Test against numpy/statsmodels with `ddof=1`, NOT `ddof=0`.
+
+**New AC #23 (Amendment 2):** `count_over` evaluates the measure at every leaf via the same dispatch path as `sum_over`/`avg_over`. Verified by a test that constructs a cube with a derived measure (not pre-materialized) and confirms `count_over` returns the correct count after triggering eval.
+
+**New AC #24 (Amendment 1):** All cookbook examples for compositional metrics use intermediate derived measures, NOT inline expressions in `_over` calls. Verified by reading the cookbook against the parse rules.
+
+---
+
+*End of amendments. Body of ADR above is preserved for audit-trail purposes; amendments win on conflicts.*
