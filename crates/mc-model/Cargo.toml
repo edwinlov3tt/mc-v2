@@ -21,8 +21,21 @@ serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9.34"
 thiserror = { workspace = true }
 mc-diagnostics = { path = "../mc-diagnostics" }
+# Phase 3K (ADR-0030 Amendment 3): exact pin — schemars output formatting
+# is not guaranteed stable across minor versions; CI drift check depends
+# on byte-for-byte reproducible output. 0.8.21 compiles cleanly on Rust 1.78.
+schemars = "=0.8.21"
+# Schemars depends on serde_json transitively; declared explicitly so the
+# mc-model-schema binary can serialize the schema_for!() output.
+serde_json = "1"
 
 [dev-dependencies]
 # Per ADR-0004 Decision 3 + Decision 7: structural-equivalence + golden tests
 # diff YAML-loaded Acme against the canonical Rust fixture. Dev-only.
 mc-fixtures = { path = "../mc-fixtures" }
+
+# Phase 3K (ADR-0030 Decision 2): binary that emits the JSON schema for
+# editor autocomplete + CI drift check.
+[[bin]]
+name = "mc-model-schema"
+path = "src/bin/mc-model-schema.rs"

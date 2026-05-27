@@ -56,8 +56,8 @@ pub use diagnostic::{
 pub use error::{Error, ParseError, ParseErrorKind, Span, ValidationError};
 pub use formula::parse_expression;
 pub use inputs::{
-    apply_canonical_inputs, apply_fixture, resolve_inputs, ResolvedFixture, ResolvedInputSet,
-    ResolvedInputs, ResolvedRow, VALUE_COLUMN,
+    apply_canonical_inputs, apply_fixture, auto_populate_dimensions, resolve_inputs,
+    ResolvedFixture, ResolvedInputSet, ResolvedInputs, ResolvedRow, VALUE_COLUMN,
 };
 pub use inspect::{inspect_json, inspect_text, inspect_text_with_diagnostics, ModelSummary};
 pub use lint::{lint, lint_with_file};
@@ -111,7 +111,15 @@ pub fn load(path: impl AsRef<Path>) -> Result<CompiledCube, Vec<Error>> {
         parse(&bytes, Some(path_ref.display().to_string())).map_err(|e| vec![Error::Parse(e)])?;
     // Phase 3D: validate now returns Vec<Error> (mixing ParseError from
     // formula bodies with ValidationError from semantic checks).
-    let validated = validate(parsed)?;
+    let mut validated = validate(parsed)?;
+    // Phase 3K (ADR-0030): auto-populate empty Standard/Time dimensions
+    // from canonical_inputs columns. Info-severity MC1015/16/17 are
+    // discarded here (load() returns no diagnostic stream); the CLI's
+    // `load_validated` path surfaces them. Case-mismatch errors (MC2026)
+    // are surfaced as validation errors.
+    if let Err(errs) = auto_populate_dimensions(&mut validated, path_ref.parent()) {
+        return Err(errs.into_iter().map(Error::Validation).collect());
+    }
     // Phase 3C resolve-inputs stage. We discard the resolved data here
     // (load() doesn't apply inputs to the cube); only the validation
     // side-effects matter at this layer.
@@ -132,7 +140,13 @@ pub fn load(path: impl AsRef<Path>) -> Result<CompiledCube, Vec<Error>> {
 pub fn load_str(yaml: &str, source_label: Option<String>) -> Result<CompiledCube, Vec<Error>> {
     let parsed = parse(yaml, source_label).map_err(|e| vec![Error::Parse(e)])?;
     // Phase 3D: validate returns Vec<Error> directly.
-    let validated = validate(parsed)?;
+    let mut validated = validate(parsed)?;
+    // Phase 3K (ADR-0030): auto-populate empty Standard/Time dimensions
+    // from canonical_inputs. With no model_dir, only inline canonical_inputs
+    // can populate; sibling-CSV sources fail at resolve_inputs (MC2022).
+    if let Err(errs) = auto_populate_dimensions(&mut validated, None) {
+        return Err(errs.into_iter().map(Error::Validation).collect());
+    }
     if let Err(errs) = resolve_inputs(&validated, None) {
         return Err(errs.into_iter().map(Error::Validation).collect());
     }

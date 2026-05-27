@@ -303,6 +303,7 @@ impl std::fmt::Display for ParseErrorKind {
 /// | MC2023 | `FixtureCsvRowColumnCountMismatch` (Phase 3C) |
 /// | MC2024 | `FixtureCsvHeaderMismatch` (Phase 3C)   |
 /// | MC2025 | `FixtureDuplicateCoordinate` (Phase 3C) |
+/// | MC2026 | `DimensionEmptyCaseMismatchHint` (Phase 3K) |
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ValidationError {
@@ -527,6 +528,21 @@ pub enum ValidationError {
         first_row: usize,
         second_row: usize,
     },
+
+    /// **MC2026** — Phase 3K (ADR-0030 Amendment 1): A `Standard`/`Time`
+    /// dimension with empty `elements:` was eligible for auto-population
+    /// from `canonical_inputs`, but the dimension name and the CSV column
+    /// name differ only in case. Auto-population requires an exact-case
+    /// match (no surprise when both `Game` and `game` are present); this
+    /// diagnostic surfaces the mismatch so the author can either rename
+    /// the dimension, rename the column, or declare elements explicitly.
+    #[error(
+        "dimension {dim:?} has no elements declared. Hint: canonical_inputs has column \
+         {actual_column:?} (case differs from dimension {dim:?}). Auto-population requires \
+         exact case match. Either rename the dimension to {actual_column:?}, rename the CSV \
+         column to {dim:?}, or declare elements explicitly."
+    )]
+    DimensionEmptyCaseMismatchHint { dim: String, actual_column: String },
 }
 
 impl ValidationError {
@@ -560,6 +576,7 @@ impl ValidationError {
             ValidationError::FixtureCsvRowColumnCountMismatch { .. } => "MC2023",
             ValidationError::FixtureCsvHeaderMismatch { .. } => "MC2024",
             ValidationError::FixtureDuplicateCoordinate { .. } => "MC2025",
+            ValidationError::DimensionEmptyCaseMismatchHint { .. } => "MC2026",
         }
     }
 }
