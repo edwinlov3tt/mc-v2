@@ -49,9 +49,14 @@ measures:
   - { name: Hidden_Factor,  description: "Unobservables proxy (lineup health, ump, motivation). Default 0; sweep ±2 to test prediction robustness.", role: Input, data_type: F64, aggregation: Sum }
 
   # Derived: predictions (one per scenario via switching)
-  - { name: Predicted_Total,    description: "Model-predicted total runs",                role: Derived, data_type: F64, aggregation: Sum }
+  - { name: Predicted_Total,    description: "Base model prediction (no noise)",          role: Derived, data_type: F64, aggregation: Sum }
   - { name: Residual,           description: "Actual - Predicted",                        role: Derived, data_type: F64, aggregation: Sum }
   - { name: Abs_Error,          description: "Absolute prediction error",                 role: Derived, data_type: F64, aggregation: Sum }
+
+  # Derived: noise-aware predictions (Phase 2 — game-specific sensitivity)
+  - { name: Noise_Multiplier,   description: "Game-specific noise amplification: wind ↑, dome ↓, day ↑", role: Derived, data_type: F64, aggregation: Sum }
+  - { name: Scenario_Noise_Wt,  description: "Per-scenario global noise sensitivity",     role: Derived, data_type: F64, aggregation: Sum }
+  - { name: Adjusted_Prediction, description: "Predicted_Total + Hidden_Factor × Noise_Multiplier × Scenario_Noise_Wt", role: Derived, data_type: F64, aggregation: Sum }
 
   # Derived: probability + calibration
   - { name: P_Over,             description: "Raw probability total > 8.5 (norm_cdf)",    role: Derived, data_type: F64, aggregation: Sum }
@@ -59,17 +64,19 @@ measures:
   - { name: Over_8_5_Actual,    description: "1 if actual went over 8.5, else 0",        role: Derived, data_type: F64, aggregation: Sum }
 
 rules:
-  # Pick the right fitted model based on Scenario element via nested if + is_element
+  # Pick the right fitted model based on Scenario element via nested if + is_element.
+  # NOTE: Hidden_Factor is NOT included here — Predicted_Total is the BASE prediction
+  # without noise. Adjusted_Prediction layers noise on top with game-specific multipliers.
   - name: predict_total
     target_measure: Predicted_Total
     body: >
       if(is_element(Scenario, "weather_heavy"),
-        predict("weather_heavy_model", Weather_Temp, Wind_MPH, Is_Day_Game, Is_Dome, Elevation_Ft, Hidden_Factor),
+        predict("weather_heavy_model", Weather_Temp, Wind_MPH, Is_Day_Game, Is_Dome, Elevation_Ft),
         if(is_element(Scenario, "venue_heavy"),
-          predict("venue_heavy_model", Weather_Temp, Wind_MPH, Is_Day_Game, Is_Dome, Elevation_Ft, Hidden_Factor),
-          predict("balanced_model", Weather_Temp, Wind_MPH, Is_Day_Game, Is_Dome, Elevation_Ft, Hidden_Factor)))
+          predict("venue_heavy_model", Weather_Temp, Wind_MPH, Is_Day_Game, Is_Dome, Elevation_Ft),
+          predict("balanced_model", Weather_Temp, Wind_MPH, Is_Day_Game, Is_Dome, Elevation_Ft)))
     scope: AllLeaves
-    declared_dependencies: [Weather_Temp, Wind_MPH, Is_Day_Game, Is_Dome, Elevation_Ft, Hidden_Factor]
+    declared_dependencies: [Weather_Temp, Wind_MPH, Is_Day_Game, Is_Dome, Elevation_Ft]
 
   - name: calc_residual
     target_measure: Residual
@@ -82,6 +89,44 @@ rules:
     body: "abs(Total_Score - Predicted_Total)"
     scope: AllLeaves
     declared_dependencies: [Total_Score, Predicted_Total]
+
+  # ─── Noise-aware rules (game-specific sensitivity) ───
+  #
+  # Noise_Multiplier expresses how much unobservable factors swing
+  # this specific game's prediction. Heuristic:
+  #   base 1.0
+  #   + 0.04 × Wind_MPH      (wind compounds variance)
+  #   + 0.30 × Is_Day_Game   (day games have more variance — heat fatigue, lighting)
+  #   - 0.50 × Is_Dome       (controlled environment dampens variance)
+  #
+  # Examples:
+  #   Calm dome night (0,0,1):    1 + 0 + 0 - 0.5 = 0.50  → very robust
+  #   Mild open night (5,0,0):    1 + 0.2 + 0 - 0 = 1.20
+  #   Windy open day (20,1,0):    1 + 0.8 + 0.3 - 0 = 2.10  → very fragile
+  - name: calc_noise_multiplier
+    target_measure: Noise_Multiplier
+    body: "1 + 0.04 * Wind_MPH + 0.30 * Is_Day_Game - 0.50 * Is_Dome"
+    scope: AllLeaves
+    declared_dependencies: [Wind_MPH, Is_Day_Game, Is_Dome]
+
+  # Scenario-specific global noise sensitivity (how much each model
+  # variant amplifies unobservables on top of the game-specific multiplier).
+  - name: calc_scenario_noise_weight
+    target_measure: Scenario_Noise_Wt
+    body: >
+      if(is_element(Scenario, "weather_heavy"), 1.2,
+        if(is_element(Scenario, "venue_heavy"), 0.8, 1.0))
+    scope: AllLeaves
+    declared_dependencies: []
+
+  # Noise-injected prediction:
+  #   Adjusted = Predicted_Total + Hidden_Factor × Noise_Multiplier × Scenario_Noise_Wt
+  # Sweep Hidden_Factor ±2 to see realistic uncertainty range per game.
+  - name: calc_adjusted_prediction
+    target_measure: Adjusted_Prediction
+    body: "Predicted_Total + Hidden_Factor * Noise_Multiplier * Scenario_Noise_Wt"
+    scope: AllLeaves
+    declared_dependencies: [Predicted_Total, Hidden_Factor, Noise_Multiplier, Scenario_Noise_Wt]
 
   # Raw probability: P(total > 8.5) = 1 - Φ((8.5 - predicted) / σ)
   # Using σ = 3.5 (residual std on training set)
@@ -115,7 +160,6 @@ fitted_models:
       - { feature: Is_Day_Game,   weight: -0.15 }
       - { feature: Is_Dome,       weight: -0.4 }
       - { feature: Elevation_Ft,  weight: 0.0003 }
-      - { feature: Hidden_Factor, weight: 1.0 }   # 1 unit of noise = 1 run swing
     residual_std: 3.5
 
   # Scenario 2: weather_heavy — temperature + wind drive scoring
@@ -128,7 +172,6 @@ fitted_models:
       - { feature: Is_Day_Game,   weight: -0.15 }
       - { feature: Is_Dome,       weight: -0.2 }     # de-emphasized
       - { feature: Elevation_Ft,  weight: 0.0001 }   # de-emphasized
-      - { feature: Hidden_Factor, weight: 1.2 }   # weather scenario more noise-sensitive
     residual_std: 3.6
 
   # Scenario 3: venue_heavy — dome + elevation drive scoring
@@ -141,7 +184,6 @@ fitted_models:
       - { feature: Is_Day_Game,   weight: -0.15 }
       - { feature: Is_Dome,       weight: -0.8 }     # 2x balanced
       - { feature: Elevation_Ft,  weight: 0.0006 }   # 2x balanced
-      - { feature: Hidden_Factor, weight: 0.8 }   # venue scenario less noise-sensitive
     residual_std: 3.5
 
 # PAVA-style calibration map for P_Over(8.5).
