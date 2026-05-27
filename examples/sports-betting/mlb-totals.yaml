@@ -46,6 +46,7 @@ measures:
   - { name: Is_Day_Game,    description: "1=day 0=night",             role: Input, data_type: F64, aggregation: Sum }
   - { name: Is_Dome,        description: "1=dome 0=open",             role: Input, data_type: F64, aggregation: Sum }
   - { name: Elevation_Ft,   description: "Venue elevation ft",        role: Input, data_type: F64, aggregation: Sum }
+  - { name: Hidden_Factor,  description: "Unobservables proxy (lineup health, ump, motivation). Default 0; sweep ±2 to test prediction robustness.", role: Input, data_type: F64, aggregation: Sum }
 
   # Derived: predictions (one per scenario via switching)
   - { name: Predicted_Total,    description: "Model-predicted total runs",                role: Derived, data_type: F64, aggregation: Sum }
@@ -63,12 +64,12 @@ rules:
     target_measure: Predicted_Total
     body: >
       if(is_element(Scenario, "weather_heavy"),
-        predict("weather_heavy_model", Weather_Temp, Wind_MPH, Is_Day_Game, Is_Dome, Elevation_Ft),
+        predict("weather_heavy_model", Weather_Temp, Wind_MPH, Is_Day_Game, Is_Dome, Elevation_Ft, Hidden_Factor),
         if(is_element(Scenario, "venue_heavy"),
-          predict("venue_heavy_model", Weather_Temp, Wind_MPH, Is_Day_Game, Is_Dome, Elevation_Ft),
-          predict("balanced_model", Weather_Temp, Wind_MPH, Is_Day_Game, Is_Dome, Elevation_Ft)))
+          predict("venue_heavy_model", Weather_Temp, Wind_MPH, Is_Day_Game, Is_Dome, Elevation_Ft, Hidden_Factor),
+          predict("balanced_model", Weather_Temp, Wind_MPH, Is_Day_Game, Is_Dome, Elevation_Ft, Hidden_Factor)))
     scope: AllLeaves
-    declared_dependencies: [Weather_Temp, Wind_MPH, Is_Day_Game, Is_Dome, Elevation_Ft]
+    declared_dependencies: [Weather_Temp, Wind_MPH, Is_Day_Game, Is_Dome, Elevation_Ft, Hidden_Factor]
 
   - name: calc_residual
     target_measure: Residual
@@ -114,6 +115,7 @@ fitted_models:
       - { feature: Is_Day_Game,   weight: -0.15 }
       - { feature: Is_Dome,       weight: -0.4 }
       - { feature: Elevation_Ft,  weight: 0.0003 }
+      - { feature: Hidden_Factor, weight: 1.0 }   # 1 unit of noise = 1 run swing
     residual_std: 3.5
 
   # Scenario 2: weather_heavy — temperature + wind drive scoring
@@ -126,6 +128,7 @@ fitted_models:
       - { feature: Is_Day_Game,   weight: -0.15 }
       - { feature: Is_Dome,       weight: -0.2 }     # de-emphasized
       - { feature: Elevation_Ft,  weight: 0.0001 }   # de-emphasized
+      - { feature: Hidden_Factor, weight: 1.2 }   # weather scenario more noise-sensitive
     residual_std: 3.6
 
   # Scenario 3: venue_heavy — dome + elevation drive scoring
@@ -138,6 +141,7 @@ fitted_models:
       - { feature: Is_Day_Game,   weight: -0.15 }
       - { feature: Is_Dome,       weight: -0.8 }     # 2x balanced
       - { feature: Elevation_Ft,  weight: 0.0006 }   # 2x balanced
+      - { feature: Hidden_Factor, weight: 0.8 }   # venue scenario less noise-sensitive
     residual_std: 3.5
 
 # PAVA-style calibration map for P_Over(8.5).
