@@ -420,6 +420,12 @@ fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
             collect_body_refs(&b.mu, out);
             collect_body_refs(&b.sigma, out);
         }
+        // Phase 3L: nbinom_sf / nbinom_cdf — collect refs from k, mu, alpha.
+        ParsedRuleBody::NbinomSf(b) | ParsedRuleBody::NbinomCdf(b) => {
+            collect_body_refs(&b.k, out);
+            collect_body_refs(&b.mu, out);
+            collect_body_refs(&b.alpha, out);
+        }
         // Phase 3I
         ParsedRuleBody::Pow(b) => {
             collect_body_refs(&b.base, out);

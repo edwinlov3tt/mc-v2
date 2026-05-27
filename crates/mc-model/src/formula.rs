@@ -27,10 +27,10 @@ use crate::schema::{
     ParsedActualRefBody, ParsedAddBody, ParsedBenchmarkRefBody, ParsedBinopBody, ParsedBucketBody,
     ParsedCalibrateBody, ParsedClampBody, ParsedConstBody, ParsedCurrentElementBody, ParsedDivBody,
     ParsedIfBody, ParsedIfNullBody, ParsedIsElementBody, ParsedLagBody, ParsedLookupRefBody,
-    ParsedMeasureRefBody, ParsedModBody, ParsedMulBody, ParsedNormCdfBody, ParsedNormInvBody,
-    ParsedParamRefBody, ParsedPowBody, ParsedPredictBody, ParsedRefBody, ParsedRollingAvgBody,
-    ParsedRuleBody, ParsedSafeDivBody, ParsedScalar, ParsedScenarioRefBody, ParsedStrLiteralBody,
-    ParsedSubBody, ParsedSumOverBody, ParsedUnaryBody, ParsedVarargBody,
+    ParsedMeasureRefBody, ParsedModBody, ParsedMulBody, ParsedNbinomBody, ParsedNormCdfBody,
+    ParsedNormInvBody, ParsedParamRefBody, ParsedPowBody, ParsedPredictBody, ParsedRefBody,
+    ParsedRollingAvgBody, ParsedRuleBody, ParsedSafeDivBody, ParsedScalar, ParsedScenarioRefBody,
+    ParsedStrLiteralBody, ParsedSubBody, ParsedSumOverBody, ParsedUnaryBody, ParsedVarargBody,
 };
 
 // ---------------------------------------------------------------------------
@@ -946,6 +946,43 @@ impl<'a> Parser<'a> {
                         sigma: Box::new(sigma),
                     }))
                 }
+                // Per docs/decisions/0031-nbinom-sf-formula-function.md §3
+                // (Decision 1): nbinom_sf takes 3 args (k, mu, alpha) in
+                // mean-dispersion parametrization. Per Amendment 3 the
+                // wrong-arg-count surfaces through the shared MC1008 helper
+                // — matches the norm_cdf precedent above.
+                "nbinom_sf" => {
+                    let args = self.parse_arg_list()?;
+                    self.expect_close_paren("nbinom_sf")?;
+                    if args.len() != 3 {
+                        return Err(FormulaError::wrong_arg_count(
+                            call_start,
+                            format!("nbinom_sf expects exactly 3 arguments, got {}", args.len()),
+                        ));
+                    }
+                    let [k, mu, alpha] = take3(args);
+                    Ok(ParsedRuleBody::NbinomSf(ParsedNbinomBody {
+                        k: Box::new(k),
+                        mu: Box::new(mu),
+                        alpha: Box::new(alpha),
+                    }))
+                }
+                "nbinom_cdf" => {
+                    let args = self.parse_arg_list()?;
+                    self.expect_close_paren("nbinom_cdf")?;
+                    if args.len() != 3 {
+                        return Err(FormulaError::wrong_arg_count(
+                            call_start,
+                            format!("nbinom_cdf expects exactly 3 arguments, got {}", args.len()),
+                        ));
+                    }
+                    let [k, mu, alpha] = take3(args);
+                    Ok(ParsedRuleBody::NbinomCdf(ParsedNbinomBody {
+                        k: Box::new(k),
+                        mu: Box::new(mu),
+                        alpha: Box::new(alpha),
+                    }))
+                }
                 // -- Phase 3I: math primitives --
                 "pow" => {
                     let args = self.parse_arg_list()?;
@@ -1612,6 +1649,8 @@ fn prec(body: &ParsedRuleBody) -> u8 {
         | ParsedRuleBody::Calibrate(_)
         | ParsedRuleBody::Exp(_)
         | ParsedRuleBody::NormCdf(_)
+        | ParsedRuleBody::NbinomSf(_)
+        | ParsedRuleBody::NbinomCdf(_)
         | ParsedRuleBody::Pow(_)
         | ParsedRuleBody::Sqrt(_)
         | ParsedRuleBody::Ln(_)
@@ -1876,6 +1915,24 @@ fn write_node_bare(out: &mut String, body: &ParsedRuleBody) {
             write_node(out, &b.sigma, 0, false);
             out.push(')');
         }
+        ParsedRuleBody::NbinomSf(b) => {
+            out.push_str("nbinom_sf(");
+            write_node(out, &b.k, 0, false);
+            out.push_str(", ");
+            write_node(out, &b.mu, 0, false);
+            out.push_str(", ");
+            write_node(out, &b.alpha, 0, false);
+            out.push(')');
+        }
+        ParsedRuleBody::NbinomCdf(b) => {
+            out.push_str("nbinom_cdf(");
+            write_node(out, &b.k, 0, false);
+            out.push_str(", ");
+            write_node(out, &b.mu, 0, false);
+            out.push_str(", ");
+            write_node(out, &b.alpha, 0, false);
+            out.push(')');
+        }
         // Phase 3I: math primitives
         ParsedRuleBody::Pow(b) => {
             out.push_str("pow(");
@@ -2115,6 +2172,13 @@ pub fn contains_cross_coord(body: &ParsedRuleBody) -> bool {
             contains_cross_coord(&b.x)
                 || contains_cross_coord(&b.mu)
                 || contains_cross_coord(&b.sigma)
+        }
+        // Phase 3L: nbinom_* are pure functions like norm_cdf; cross-coord can
+        // only enter through their argument sub-expressions.
+        ParsedRuleBody::NbinomSf(b) | ParsedRuleBody::NbinomCdf(b) => {
+            contains_cross_coord(&b.k)
+                || contains_cross_coord(&b.mu)
+                || contains_cross_coord(&b.alpha)
         }
         // Phase 3I: math primitives are local — no cross-coord on their own.
         ParsedRuleBody::Pow(b) => {
@@ -2581,6 +2645,44 @@ mod tests {
     fn parse_norm_cdf_arity_fires_mc1008() {
         let err = parse("norm_cdf(x, y)").unwrap_err();
         assert_eq!(err.code, "MC1008");
+    }
+
+    // -- Phase 3L: nbinom_sf / nbinom_cdf parser tests --
+
+    #[test]
+    fn parse_nbinom_sf() {
+        let b = parse("nbinom_sf(Line, Pred, 0.13)").unwrap();
+        assert!(matches!(b, ParsedRuleBody::NbinomSf(_)));
+    }
+
+    #[test]
+    fn parse_nbinom_cdf() {
+        let b = parse("nbinom_cdf(8.5, 8.5, 0.13)").unwrap();
+        assert!(matches!(b, ParsedRuleBody::NbinomCdf(_)));
+    }
+
+    #[test]
+    fn parse_nbinom_sf_arity_fires_mc1008() {
+        let err = parse("nbinom_sf(k, mu)").unwrap_err();
+        assert_eq!(err.code, "MC1008");
+        let err4 = parse("nbinom_sf(a, b, c, d)").unwrap_err();
+        assert_eq!(err4.code, "MC1008");
+    }
+
+    #[test]
+    fn parse_nbinom_cdf_arity_fires_mc1008() {
+        let err = parse("nbinom_cdf(k)").unwrap_err();
+        assert_eq!(err.code, "MC1008");
+    }
+
+    #[test]
+    fn round_trip_nbinom_sf() {
+        assert_round_trip_exact(
+            "nbinom_sf(Market_Line, Predicted_Mean, 0.13)",
+            "nbinom_sf(Market_Line, Predicted_Mean, 0.13)",
+        );
+        assert_round_trip("nbinom_cdf(8.5, 8.5, 0.13)");
+        assert_round_trip("1 - nbinom_sf(Line, Predicted, Dispersion_Alpha)");
     }
 
     #[test]

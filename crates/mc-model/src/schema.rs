@@ -400,6 +400,16 @@ pub enum ParsedRuleBody {
     /// `norm_cdf(x, mu, sigma)` — normal distribution CDF
     NormCdf(ParsedNormCdfBody),
 
+    // -- Phase 3L: Negative-Binomial distributional primitives (2) --
+    // Per docs/decisions/0031-nbinom-sf-formula-function.md §3 (Decision 1):
+    // both functions take (k, mu, alpha) in mean-dispersion form. Invalid
+    // domain inputs return Null per Amendment 2.
+    /// `nbinom_sf(k, mu, alpha)` — Negative Binomial survival function
+    /// `P(X > floor(k))` in mean-dispersion parametrization.
+    NbinomSf(ParsedNbinomBody),
+    /// `nbinom_cdf(k, mu, alpha)` — Negative Binomial CDF `P(X ≤ floor(k))`.
+    NbinomCdf(ParsedNbinomBody),
+
     // -- Phase 3I: Math primitives (9) --
     /// `pow(base, exp)`
     Pow(ParsedPowBody),
@@ -690,6 +700,16 @@ pub struct ParsedNormCdfBody {
     pub x: Box<ParsedRuleBody>,
     pub mu: Box<ParsedRuleBody>,
     pub sigma: Box<ParsedRuleBody>,
+}
+
+/// `nbinom_sf(k, mu, alpha)` / `nbinom_cdf(k, mu, alpha)` — Negative Binomial
+/// survival function and CDF in mean-dispersion parametrization. Shared body
+/// shape per docs/decisions/0031-nbinom-sf-formula-function.md §3 (Decision 1).
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+pub struct ParsedNbinomBody {
+    pub k: Box<ParsedRuleBody>,
+    pub mu: Box<ParsedRuleBody>,
+    pub alpha: Box<ParsedRuleBody>,
 }
 
 // ---------------------------------------------------------------------------

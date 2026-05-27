@@ -133,6 +133,17 @@ pub enum Expr {
     /// `norm_cdf(x, mu, sigma)` — normal distribution CDF
     NormCdf(Box<Expr>, Box<Expr>, Box<Expr>),
 
+    // -- Phase 3L: Negative-Binomial distributional primitives --
+    // Per docs/decisions/0031-nbinom-sf-formula-function.md §3 (Decision 1):
+    // both functions take (k, mu, alpha) in mean-dispersion parametrization.
+    /// `nbinom_sf(k, mu, alpha)` — Negative Binomial survival function
+    /// `P(X > floor(k))` in mean-dispersion form. Returns Null for invalid
+    /// inputs (mu ≤ 0, alpha ≤ 0, or any NaN) per Amendment 2.
+    NbinomSf(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// `nbinom_cdf(k, mu, alpha)` — Negative Binomial CDF `P(X ≤ floor(k))`.
+    /// Companion to `nbinom_sf`; shares the same Null semantics.
+    NbinomCdf(Box<Expr>, Box<Expr>, Box<Expr>),
+
     // -- Phase 3I: Math primitives --
     /// `pow(base, exponent)`
     Pow(Box<Expr>, Box<Expr>),
@@ -461,6 +472,11 @@ fn collect_self_refs(expr: &Expr) -> AHashSet<ElementId> {
                 walk(mu, out);
                 walk(sigma, out);
             }
+            Expr::NbinomSf(k, mu, alpha) | Expr::NbinomCdf(k, mu, alpha) => {
+                walk(k, out);
+                walk(mu, out);
+                walk(alpha, out);
+            }
             // Phase 3I: math primitives
             Expr::Pow(a, b) | Expr::Mod(a, b) => {
                 walk(a, out);
@@ -553,6 +569,9 @@ pub fn expr_depth(expr: &Expr) -> u32 {
         Expr::Predict(_, features) => 1 + features.iter().map(|f| expr_depth(f)).max().unwrap_or(0),
         Expr::Calibrate(v, _) | Expr::Exp(v) => 1 + expr_depth(v),
         Expr::NormCdf(x, mu, sigma) => 1 + expr_depth(x).max(expr_depth(mu)).max(expr_depth(sigma)),
+        Expr::NbinomSf(k, mu, alpha) | Expr::NbinomCdf(k, mu, alpha) => {
+            1 + expr_depth(k).max(expr_depth(mu)).max(expr_depth(alpha))
+        }
         // Phase 3I
         Expr::Pow(a, b) | Expr::Mod(a, b) => 1 + expr_depth(a).max(expr_depth(b)),
         Expr::Sqrt(a)
@@ -958,6 +977,33 @@ where
                 _ => Ok(ScalarValue::Null),
             }
         }
+        // Per docs/decisions/0031-nbinom-sf-formula-function.md Amendment 2 + 5:
+        // None from the compute helper (invalid domain or NaN) maps to Null;
+        // Some(x) maps to a finite f64. No runtime error path.
+        Expr::NbinomSf(k_expr, mu_expr, alpha_expr) => {
+            let kv = eval_expr(k_expr, lookup_self, lookup_cross)?;
+            let muv = eval_expr(mu_expr, lookup_self, lookup_cross)?;
+            let av = eval_expr(alpha_expr, lookup_self, lookup_cross)?;
+            match (to_f64_opt(&kv), to_f64_opt(&muv), to_f64_opt(&av)) {
+                (Some(k), Some(mu), Some(alpha)) => match nbinom_sf_compute(k, mu, alpha) {
+                    Some(v) => Ok(ScalarValue::F64(v)),
+                    None => Ok(ScalarValue::Null),
+                },
+                _ => Ok(ScalarValue::Null),
+            }
+        }
+        Expr::NbinomCdf(k_expr, mu_expr, alpha_expr) => {
+            let kv = eval_expr(k_expr, lookup_self, lookup_cross)?;
+            let muv = eval_expr(mu_expr, lookup_self, lookup_cross)?;
+            let av = eval_expr(alpha_expr, lookup_self, lookup_cross)?;
+            match (to_f64_opt(&kv), to_f64_opt(&muv), to_f64_opt(&av)) {
+                (Some(k), Some(mu), Some(alpha)) => match nbinom_cdf_compute(k, mu, alpha) {
+                    Some(v) => Ok(ScalarValue::F64(v)),
+                    None => Ok(ScalarValue::Null),
+                },
+                _ => Ok(ScalarValue::Null),
+            }
+        }
         // -- Phase 3I: math primitives --
         Expr::Pow(base_expr, exp_expr) => {
             let bv = eval_expr(base_expr, lookup_self, lookup_cross)?;
@@ -1221,6 +1267,65 @@ fn norm_cdf_compute(x: f64, mu: f64, sigma: f64) -> f64 {
     } else {
         p
     }
+}
+
+/// Negative Binomial CDF in mean-dispersion parametrization.
+///
+/// Per docs/decisions/0031-nbinom-sf-formula-function.md §6 (floor convention)
+/// and Amendment 2 (Null semantics) + Amendment 5 (shared-helper architecture):
+///
+/// - Returns `Some(cdf)` ∈ `[0.0, 1.0]` for valid finite inputs.
+/// - Returns `None` when any input is NaN, `mu <= 0`, or `alpha <= 0`. The
+///   dispatch site maps `None` to `ScalarValue::Null` — never NaN, never an
+///   error — preventing NaN poisoning of downstream calibration/Kelly math.
+/// - Floors non-integer `k` before summing the PMF (`P(X ≤ floor(k))`).
+/// - `k < 0` returns `Some(0.0)` (`X` is non-negative; the CDF below zero
+///   is zero, so the complementary `sf` is 1.0).
+///
+/// Per Amendment 4: this implementation is **validated against
+/// `scipy.stats.nbinom.cdf` within `1e-6` absolute tolerance** across the
+/// declared MLB operating range (`k ∈ [0, 50]`, `α ∈ [0.05, 1.0]`,
+/// `μ ∈ [0.5, 50]`). Outside this range precision may degrade — see
+/// Decision 7 for future-work options (log-space PMF, incomplete-beta).
+pub fn nbinom_cdf_compute(k: f64, mu: f64, alpha: f64) -> Option<f64> {
+    if k.is_nan() || mu.is_nan() || alpha.is_nan() {
+        return None;
+    }
+    if mu <= 0.0 || alpha <= 0.0 {
+        return None;
+    }
+    let k_int = k.floor() as i64;
+    if k_int < 0 {
+        return Some(0.0);
+    }
+
+    let r = 1.0 / alpha;
+    let p = 1.0 / (1.0 + alpha * mu);
+
+    let mut cdf = p.powf(r);
+    let mut pmf_i = cdf;
+    for i in 1..=k_int {
+        // Ratio recursion for stability:
+        // pmf(i) / pmf(i-1) = (r + i - 1) / i * (1 - p)
+        pmf_i *= (r + (i as f64) - 1.0) / (i as f64) * (1.0 - p);
+        cdf += pmf_i;
+    }
+    Some(cdf.clamp(0.0, 1.0))
+}
+
+/// Negative Binomial survival function `P(X > floor(k))` in mean-dispersion form.
+///
+/// Per docs/decisions/0031-nbinom-sf-formula-function.md Amendment 5: derived
+/// from `nbinom_cdf_compute` through a single shared PMF accumulation loop to
+/// prevent drift between the two functions across future maintenance.
+///
+/// Returns `Some(1.0)` for `k < 0` (since `cdf(-) = 0` ⇒ `sf = 1.0`), matching
+/// the Decision 4 rule that a threshold below zero is always exceeded.
+///
+/// See [`nbinom_cdf_compute`] for the full validity-range and Null-semantics
+/// contract.
+pub fn nbinom_sf_compute(k: f64, mu: f64, alpha: f64) -> Option<f64> {
+    nbinom_cdf_compute(k, mu, alpha).map(|cdf| (1.0 - cdf).clamp(0.0, 1.0))
 }
 
 /// Cross-coordinate read specification, passed to the `lookup_cross` closure.
@@ -1651,6 +1756,32 @@ where
                 (Some(x), Some(mu), Some(sigma)) if sigma > 0.0 => {
                     Ok(ScalarValue::F64(norm_cdf_compute(x, mu, sigma)))
                 }
+                _ => Ok(ScalarValue::Null),
+            }
+        }
+        // Per docs/decisions/0031-nbinom-sf-formula-function.md Amendment 2 + 5:
+        // None from the compute helper maps to Null in this dispatch path.
+        Expr::NbinomSf(k_expr, mu_expr, alpha_expr) => {
+            let kv = eval_expr_unified_inner(k_expr, handler)?;
+            let muv = eval_expr_unified_inner(mu_expr, handler)?;
+            let av = eval_expr_unified_inner(alpha_expr, handler)?;
+            match (to_f64_opt(&kv), to_f64_opt(&muv), to_f64_opt(&av)) {
+                (Some(k), Some(mu), Some(alpha)) => match nbinom_sf_compute(k, mu, alpha) {
+                    Some(v) => Ok(ScalarValue::F64(v)),
+                    None => Ok(ScalarValue::Null),
+                },
+                _ => Ok(ScalarValue::Null),
+            }
+        }
+        Expr::NbinomCdf(k_expr, mu_expr, alpha_expr) => {
+            let kv = eval_expr_unified_inner(k_expr, handler)?;
+            let muv = eval_expr_unified_inner(mu_expr, handler)?;
+            let av = eval_expr_unified_inner(alpha_expr, handler)?;
+            match (to_f64_opt(&kv), to_f64_opt(&muv), to_f64_opt(&av)) {
+                (Some(k), Some(mu), Some(alpha)) => match nbinom_cdf_compute(k, mu, alpha) {
+                    Some(v) => Ok(ScalarValue::F64(v)),
+                    None => Ok(ScalarValue::Null),
+                },
                 _ => Ok(ScalarValue::Null),
             }
         }

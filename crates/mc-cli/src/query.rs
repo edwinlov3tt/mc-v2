@@ -571,6 +571,9 @@ fn find_cross_coord_in_filter(body: &mc_model::ParsedRuleBody) -> Option<String>
         B::NormCdf(b) => find_cross_coord_in_filter(&b.x)
             .or_else(|| find_cross_coord_in_filter(&b.mu))
             .or_else(|| find_cross_coord_in_filter(&b.sigma)),
+        B::NbinomSf(b) | B::NbinomCdf(b) => find_cross_coord_in_filter(&b.k)
+            .or_else(|| find_cross_coord_in_filter(&b.mu))
+            .or_else(|| find_cross_coord_in_filter(&b.alpha)),
         B::Pow(b) => {
             find_cross_coord_in_filter(&b.base).or_else(|| find_cross_coord_in_filter(&b.exponent))
         }
@@ -1156,7 +1159,7 @@ fn eval_filter_expr(
             (Some(a), Some(c)) if c.abs() >= 1e-300 => ScalarValue::F64(a.rem_euclid(c)),
             _ => ScalarValue::Null,
         },
-        B::NormCdf(_) | B::NormInv(_) | B::Exp(_) => {
+        B::NormCdf(_) | B::NormInv(_) | B::Exp(_) | B::NbinomSf(_) | B::NbinomCdf(_) => {
             // These are math primitives but are rare in filter contexts;
             // delegate to Null rather than reimplement here.
             ScalarValue::Null
