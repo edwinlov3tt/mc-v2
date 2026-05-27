@@ -1,6 +1,7 @@
 //! Per-verb HTTP handlers for the daemon API.
 
 pub mod admin;
+pub mod openapi;
 pub mod query;
 pub mod reload;
 pub mod sweep;

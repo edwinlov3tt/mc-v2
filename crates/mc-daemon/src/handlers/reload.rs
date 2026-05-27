@@ -17,21 +17,21 @@ use crate::actor::CubeRequest;
 use crate::error_envelope::{validate_schema_version, MosaicError};
 use crate::server::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ReloadRequest {
     pub schema_version: Option<String>,
     #[serde(default)]
     pub cubes: Option<Vec<String>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ReloadResponse {
     pub schema_version: &'static str,
     pub reloaded: Vec<ReloadedCube>,
     pub errors: Vec<ReloadError>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ReloadedCube {
     pub cube: String,
     pub previous_revision: u64,
@@ -39,13 +39,24 @@ pub struct ReloadedCube {
     pub duration_ms: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ReloadError {
     pub cube: String,
     pub code: String,
     pub message: String,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/reload",
+    request_body = ReloadRequest,
+    responses(
+        (status = 200, description = "Reload results (always 200 per Amendment 4)", body = ReloadResponse),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("bearer" = []))
+)]
 pub async fn handle_reload(
     State(state): State<Arc<AppState>>,
     body: Result<Json<ReloadRequest>, axum::extract::rejection::JsonRejection>,

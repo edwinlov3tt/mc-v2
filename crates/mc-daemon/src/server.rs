@@ -16,7 +16,7 @@ use tower_http::cors::CorsLayer;
 use crate::auth::{self, ApiKeyConfig};
 use crate::cache::CubeCache;
 use crate::config::{CorsConfig, DaemonConfig};
-use crate::handlers::{admin, query, reload, sweep, trace, whatif, write};
+use crate::handlers::{admin, openapi, query, reload, sweep, trace, whatif, write};
 use crate::signals::ShutdownSignal;
 
 /// Shared application state, accessible from all handlers.
@@ -46,6 +46,8 @@ pub async fn start(state: Arc<AppState>, shutdown: ShutdownSignal) {
         .route("/api/v1/whatif", post(whatif::handle_whatif))
         .route("/api/v1/sweep", post(sweep::handle_sweep))
         .route("/api/v1/reload", post(reload::handle_reload))
+        // OpenAPI spec (Phase 8.2 Decision 10 / Amendment 5)
+        .route("/api/v1/openapi.json", get(openapi::handle_openapi))
         // Admin endpoints
         .route("/api/v1/health", get(admin::handle_health))
         .route("/api/v1/status", get(admin::handle_status))

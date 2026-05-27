@@ -21,7 +21,7 @@ use crate::server::AppState;
 /// Maximum sweep points (Decision 4 resource bound).
 const MAX_SWEEP_POINTS: usize = 1000;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SweepRequest {
     pub schema_version: Option<String>,
     pub cube: String,
@@ -43,7 +43,7 @@ fn default_goal() -> String {
     "none".to_string()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum VaryBlock {
     Override {
@@ -57,14 +57,14 @@ pub enum VaryBlock {
     },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SweepRange {
     pub start: f64,
     pub stop: f64,
     pub step: f64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct MetricSpec {
     pub measure: String,
     pub agg: String,
@@ -72,13 +72,13 @@ pub struct MetricSpec {
     pub where_clause: Option<BTreeMap<String, String>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SweepOverride {
     pub at: BTreeMap<String, String>,
     pub value: serde_json::Value,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SweepResponse {
     pub schema_version: &'static str,
     pub cube: String,
@@ -88,25 +88,37 @@ pub struct SweepResponse {
     pub sweep: Vec<SweepPoint>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, utoipa::ToSchema)]
 pub struct SweepPoint {
     pub value: f64,
     pub results: Vec<MeasureValue>,
     pub metric: Option<f64>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, utoipa::ToSchema)]
 pub struct MeasureValue {
     pub measure: String,
     pub value: serde_json::Value,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SweepBest {
     pub value: f64,
     pub metric: f64,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/sweep",
+    request_body = SweepRequest,
+    responses(
+        (status = 200, description = "Sweep results", body = SweepResponse),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Cube not found"),
+    ),
+    security(("bearer" = []))
+)]
 pub async fn handle_sweep(
     State(state): State<Arc<AppState>>,
     body: Result<Json<SweepRequest>, axum::extract::rejection::JsonRejection>,

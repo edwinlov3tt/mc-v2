@@ -21,7 +21,7 @@ use crate::server::AppState;
 /// Maximum overrides per request (Decision 9 resource bound).
 const MAX_OVERRIDES: usize = 100;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct WhatifRequest {
     pub schema_version: Option<String>,
     pub cube: String,
@@ -35,25 +35,37 @@ pub struct WhatifRequest {
     pub show: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct WhatifOverride {
     pub at: BTreeMap<String, String>,
     pub value: serde_json::Value,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct WhatifResponse {
     pub schema_version: &'static str,
     pub cube: String,
     pub results: Vec<WhatifResultEntry>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct WhatifResultEntry {
     pub coord: BTreeMap<String, String>,
     pub value: serde_json::Value,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/whatif",
+    request_body = WhatifRequest,
+    responses(
+        (status = 200, description = "Query results with overrides applied", body = WhatifResponse),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Cube not found"),
+    ),
+    security(("bearer" = []))
+)]
 pub async fn handle_whatif(
     State(state): State<Arc<AppState>>,
     body: Result<Json<WhatifRequest>, axum::extract::rejection::JsonRejection>,
