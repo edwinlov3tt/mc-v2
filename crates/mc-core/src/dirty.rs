@@ -44,7 +44,7 @@ use crate::dependency::DependencyGraph;
 /// (the original Phase 2D draft did re-linearize and the per-iter cost
 /// dominated `WritebackResult.invalidated` construction at scale —
 /// fixed before the acceptance bench was first read).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct TrackedEntry {
     idx: usize,
     coord: CellCoordinate,
@@ -55,7 +55,7 @@ struct TrackedEntry {
 /// (extremely unlikely, see `CubeShape::new`'s cardinality guard) cube
 /// whose Cartesian product overflows the bitset budget. The `Bitset` arm
 /// is the Phase 2D fast path.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum DirtyImpl {
     Hash(AHashSet<CellCoordinate>),
     Bitset {
@@ -88,7 +88,7 @@ impl Default for DirtyImpl {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct DirtyTracker {
     inner: DirtyImpl,
 }

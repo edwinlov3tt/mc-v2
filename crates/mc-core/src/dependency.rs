@@ -36,7 +36,7 @@ pub enum DependencySource {
     Hierarchy(HierarchyId),
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct DependencyGraph {
     /// `from` cell → list of cells `from` reads.
     forward: AHashMap<CellCoordinate, Vec<DependencyEdge>>,

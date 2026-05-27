@@ -176,6 +176,122 @@ impl Cube {
         self.read_inner(coord, principal, /* request_trace */ true)
     }
 
+    /// Evaluate cells at `read_coords` with `overrides` applied transiently.
+    ///
+    /// Per ADR-0032 Decision 3 + Amendment 3: overrides are scoped to this
+    /// call only. After return, the cube is byte-identical to its pre-call
+    /// state: revision unchanged, store unchanged, dirty tracker unchanged,
+    /// dependency graph unchanged, journal untouched (journal is daemon-layer
+    /// but the invariant is the same — no observable mutation persists).
+    ///
+    /// Overrides may target any cell role (Input or Derived). Overriding a
+    /// Derived cell short-circuits rule evaluation for that cell — the
+    /// override value is returned instead of the formula result.
+    ///
+    /// Implementation: snapshot mutable state, apply overrides to store,
+    /// propagate dirty flags so dependents recompute, read via the existing
+    /// `read` path, then restore the saved state. The existing eval
+    /// machinery (rules, cross-coord reads, consolidation) works unchanged.
+    #[must_use = "returns transient query results"]
+    pub fn query_with_overrides(
+        &mut self,
+        read_coords: &[CellCoordinate],
+        overrides: &[(CellCoordinate, ScalarValue)],
+        principal: PrincipalId,
+    ) -> Result<Vec<CellValue>, EngineError> {
+        let rev_at_entry = self.revision;
+
+        // Fast path: no overrides → plain reads.
+        if overrides.is_empty() {
+            let mut results = Vec::with_capacity(read_coords.len());
+            for coord in read_coords {
+                results.push(self.read(coord, principal)?);
+            }
+            return Ok(results);
+        }
+
+        // Save state that read paths mutate (store cache writes, dirty
+        // clears, dep-edge registrations, time-anchor cache updates).
+        let store_backup = self.store.clone();
+        let dirty_backup = self.dirty.clone();
+        let deps_backup = self.deps.clone();
+        let time_anchor_backup = self.time_anchor_cache.clone();
+
+        // Apply overrides directly to the store. This bypasses
+        // `Cube::write` intentionally — no journal, no revision bump,
+        // no writeback validation. The overridden cells appear as
+        // ordinary stored values to the read path.
+        for (coord, value) in overrides {
+            self.store.write(
+                coord.clone(),
+                StoredCell {
+                    value: value.clone(),
+                    provenance: Provenance::Default {
+                        reason: "transient override",
+                    },
+                    uncertainty: None,
+                    revision: self.revision,
+                },
+            );
+        }
+
+        // Clear dirty on override coords so the read path uses the store
+        // value we just wrote (especially for Derived cells — a dirty
+        // Derived cell would re-evaluate its formula, ignoring the override).
+        // Then mark all DEPENDENTS dirty so cells that read from the
+        // overridden coord recompute with the new value.
+        for (coord, _) in overrides {
+            // Per ADR-0032 Amendment 3: overrides on Derived cells
+            // short-circuit formula evaluation. Clear dirty so the read
+            // path returns the stored override, not the formula result.
+            self.dirty.clear(coord);
+            // Propagate to rule dependents (transitive closure via the
+            // reverse-edge graph). mark_closure excludes root — root
+            // already has the override value in the store.
+            self.dirty.mark_closure(coord, &self.deps);
+            // Propagate to hierarchy ancestors so consolidated reads
+            // recompute. compute_dirty_ancestors needs the measure id.
+            let measure_id = coord.element_at(self.measure_dimension_position);
+            let ancestors = self.compute_dirty_ancestors(coord, measure_id);
+            for anc in ancestors {
+                self.dirty.mark(anc);
+            }
+        }
+
+        // Read all requested coords via the existing read path.
+        // read_inner will recompute dirty deriveds and see the override
+        // values in the store. Any intermediate results cached to
+        // self.store / self.dirty / self.deps are fine — we restore
+        // from backups below.
+        let mut results = Vec::with_capacity(read_coords.len());
+        let mut read_err: Option<EngineError> = None;
+        for coord in read_coords {
+            match self.read(coord, principal) {
+                Ok(cv) => results.push(cv),
+                Err(e) => {
+                    read_err = Some(e);
+                    break;
+                }
+            }
+        }
+
+        // Restore state — the invariant: byte-identical after return.
+        self.store = store_backup;
+        self.dirty = dirty_backup;
+        self.deps = deps_backup;
+        self.time_anchor_cache = time_anchor_backup;
+
+        debug_assert_eq!(
+            self.revision, rev_at_entry,
+            "query_with_overrides must not bump revision"
+        );
+
+        match read_err {
+            Some(e) => Err(e),
+            None => Ok(results),
+        }
+    }
+
     /// Execute a `SliceQuery` and return one `CellValue` per coordinate
     /// in the slice. Per spec §12.
     ///
@@ -3869,6 +3985,359 @@ mod tests {
             cube.revision(),
             revision_after,
             "reads do not bump revision"
+        );
+    }
+
+    // --- query_with_overrides tests (per ADR-0032 Decision 3) ---
+
+    #[test]
+    fn t_query_with_overrides_returns_override_value() {
+        let (mut cube, tampa, spend, _clicks, root) = micro_cube();
+        let cube_id = cube.id;
+        // Write initial input so Spend=1000 at Tampa
+        let _ = cube
+            .write(WritebackRequest {
+                coord: coord(cube_id, tampa, spend),
+                new_value: ScalarValue::F64(1000.0),
+                principal: root,
+                intent: WriteIntent::Set,
+                expected_revision: None,
+                now_unix_seconds: 0,
+            })
+            .expect("write ok");
+
+        let override_coord = coord(cube_id, tampa, spend);
+        let read_coord = coord(cube_id, tampa, spend);
+        let results = cube
+            .query_with_overrides(
+                &[read_coord],
+                &[(override_coord, ScalarValue::F64(9999.0))],
+                root,
+            )
+            .expect("query_with_overrides ok");
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].value.as_f64(),
+            Some(9999.0),
+            "override value must be returned"
+        );
+    }
+
+    #[test]
+    fn t_query_with_overrides_does_not_bump_revision() {
+        let (mut cube, tampa, spend, _clicks, root) = micro_cube();
+        let cube_id = cube.id;
+        let _ = cube
+            .write(WritebackRequest {
+                coord: coord(cube_id, tampa, spend),
+                new_value: ScalarValue::F64(1000.0),
+                principal: root,
+                intent: WriteIntent::Set,
+                expected_revision: None,
+                now_unix_seconds: 0,
+            })
+            .expect("write ok");
+        let rev_before = cube.revision();
+
+        let _ = cube
+            .query_with_overrides(
+                &[coord(cube_id, tampa, spend)],
+                &[(coord(cube_id, tampa, spend), ScalarValue::F64(9999.0))],
+                root,
+            )
+            .expect("ok");
+
+        assert_eq!(
+            cube.revision(),
+            rev_before,
+            "query_with_overrides must not bump revision"
+        );
+    }
+
+    #[test]
+    fn t_query_with_overrides_does_not_modify_store() {
+        let (mut cube, tampa, spend, clicks, root) = micro_cube();
+        let cube_id = cube.id;
+        let cpc = cube
+            .dimension_by_name("Measure")
+            .unwrap()
+            .element_by_name("CPC")
+            .unwrap()
+            .id;
+        // Write Spend=1000, CPC=2.0
+        let _ = cube
+            .write(WritebackRequest {
+                coord: coord(cube_id, tampa, spend),
+                new_value: ScalarValue::F64(1000.0),
+                principal: root,
+                intent: WriteIntent::Set,
+                expected_revision: None,
+                now_unix_seconds: 0,
+            })
+            .expect("write ok");
+        let _ = cube
+            .write(WritebackRequest {
+                coord: coord(cube_id, tampa, cpc),
+                new_value: ScalarValue::F64(2.0),
+                principal: root,
+                intent: WriteIntent::Set,
+                expected_revision: None,
+                now_unix_seconds: 0,
+            })
+            .expect("write ok");
+
+        // Read Spend to establish baseline
+        let baseline = cube
+            .read(&coord(cube_id, tampa, spend), root)
+            .expect("read ok");
+        assert_eq!(baseline.value.as_f64(), Some(1000.0));
+
+        // Override Spend to 5000 and read Clicks (derived: Spend/CPC)
+        let _ = cube
+            .query_with_overrides(
+                &[coord(cube_id, tampa, clicks)],
+                &[(coord(cube_id, tampa, spend), ScalarValue::F64(5000.0))],
+                root,
+            )
+            .expect("ok");
+
+        // Store must be unchanged — Spend still 1000
+        let after = cube
+            .read(&coord(cube_id, tampa, spend), root)
+            .expect("read ok");
+        assert_eq!(
+            after.value.as_f64(),
+            Some(1000.0),
+            "store must be unchanged after query_with_overrides"
+        );
+    }
+
+    #[test]
+    fn t_query_with_overrides_does_not_modify_dirty_tracker() {
+        let (mut cube, tampa, spend, clicks, root) = micro_cube();
+        let cube_id = cube.id;
+        let cpc = cube
+            .dimension_by_name("Measure")
+            .unwrap()
+            .element_by_name("CPC")
+            .unwrap()
+            .id;
+        // Write initial inputs
+        let _ = cube
+            .write(WritebackRequest {
+                coord: coord(cube_id, tampa, spend),
+                new_value: ScalarValue::F64(1000.0),
+                principal: root,
+                intent: WriteIntent::Set,
+                expected_revision: None,
+                now_unix_seconds: 0,
+            })
+            .expect("write ok");
+        let _ = cube
+            .write(WritebackRequest {
+                coord: coord(cube_id, tampa, cpc),
+                new_value: ScalarValue::F64(2.0),
+                principal: root,
+                intent: WriteIntent::Set,
+                expected_revision: None,
+                now_unix_seconds: 0,
+            })
+            .expect("write ok");
+        // Read Clicks to populate cache and clear dirty
+        let _ = cube
+            .read(&coord(cube_id, tampa, clicks), root)
+            .expect("read ok");
+        let dirty_before = cube.dirty.len();
+
+        // Override and read
+        let _ = cube
+            .query_with_overrides(
+                &[coord(cube_id, tampa, clicks)],
+                &[(coord(cube_id, tampa, spend), ScalarValue::F64(5000.0))],
+                root,
+            )
+            .expect("ok");
+
+        assert_eq!(
+            cube.dirty.len(),
+            dirty_before,
+            "dirty tracker must be unchanged after query_with_overrides"
+        );
+    }
+
+    #[test]
+    fn t_query_with_overrides_propagates_through_rules() {
+        // Clicks = Spend / CPC. Override Spend → Clicks must recompute.
+        let (mut cube, tampa, spend, clicks, root) = micro_cube();
+        let cube_id = cube.id;
+        let cpc = cube
+            .dimension_by_name("Measure")
+            .unwrap()
+            .element_by_name("CPC")
+            .unwrap()
+            .id;
+        // Write Spend=1000, CPC=5.0 → Clicks should be 200
+        let _ = cube
+            .write(WritebackRequest {
+                coord: coord(cube_id, tampa, spend),
+                new_value: ScalarValue::F64(1000.0),
+                principal: root,
+                intent: WriteIntent::Set,
+                expected_revision: None,
+                now_unix_seconds: 0,
+            })
+            .expect("write ok");
+        let _ = cube
+            .write(WritebackRequest {
+                coord: coord(cube_id, tampa, cpc),
+                new_value: ScalarValue::F64(5.0),
+                principal: root,
+                intent: WriteIntent::Set,
+                expected_revision: None,
+                now_unix_seconds: 0,
+            })
+            .expect("write ok");
+
+        // Baseline: Clicks = 1000/5 = 200
+        let baseline = cube
+            .read(&coord(cube_id, tampa, clicks), root)
+            .expect("read ok");
+        assert!((baseline.value.as_f64().unwrap() - 200.0).abs() < 1e-9);
+
+        // Override Spend to 2500 → Clicks should be 2500/5 = 500
+        let results = cube
+            .query_with_overrides(
+                &[coord(cube_id, tampa, clicks)],
+                &[(coord(cube_id, tampa, spend), ScalarValue::F64(2500.0))],
+                root,
+            )
+            .expect("ok");
+        assert!((results[0].value.as_f64().unwrap() - 500.0).abs() < 1e-9);
+
+        // Original Clicks value must still be 200 after the override call
+        let after = cube
+            .read(&coord(cube_id, tampa, clicks), root)
+            .expect("read ok");
+        assert!((after.value.as_f64().unwrap() - 200.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn t_query_with_overrides_on_derived_short_circuits() {
+        // Override a Derived cell directly — formula is NOT invoked.
+        let (mut cube, tampa, spend, clicks, root) = micro_cube();
+        let cube_id = cube.id;
+        let cpc = cube
+            .dimension_by_name("Measure")
+            .unwrap()
+            .element_by_name("CPC")
+            .unwrap()
+            .id;
+        // Write Spend=1000, CPC=5.0
+        let _ = cube
+            .write(WritebackRequest {
+                coord: coord(cube_id, tampa, spend),
+                new_value: ScalarValue::F64(1000.0),
+                principal: root,
+                intent: WriteIntent::Set,
+                expected_revision: None,
+                now_unix_seconds: 0,
+            })
+            .expect("write ok");
+        let _ = cube
+            .write(WritebackRequest {
+                coord: coord(cube_id, tampa, cpc),
+                new_value: ScalarValue::F64(5.0),
+                principal: root,
+                intent: WriteIntent::Set,
+                expected_revision: None,
+                now_unix_seconds: 0,
+            })
+            .expect("write ok");
+
+        // Override Clicks directly to 42.0 (bypassing formula Spend/CPC)
+        let results = cube
+            .query_with_overrides(
+                &[coord(cube_id, tampa, clicks)],
+                &[(coord(cube_id, tampa, clicks), ScalarValue::F64(42.0))],
+                root,
+            )
+            .expect("ok");
+        assert!(
+            (results[0].value.as_f64().unwrap() - 42.0).abs() < 1e-9,
+            "derived override must short-circuit formula: got {}, expected 42.0",
+            results[0].value.as_f64().unwrap()
+        );
+    }
+
+    #[test]
+    fn t_query_with_overrides_cleanup_on_error_path() {
+        // Trigger an error during override reads and verify state is restored.
+        let (mut cube, tampa, spend, _clicks, root) = micro_cube();
+        let cube_id = cube.id;
+        let _ = cube
+            .write(WritebackRequest {
+                coord: coord(cube_id, tampa, spend),
+                new_value: ScalarValue::F64(1000.0),
+                principal: root,
+                intent: WriteIntent::Set,
+                expected_revision: None,
+                now_unix_seconds: 0,
+            })
+            .expect("write ok");
+        let rev_before = cube.revision();
+        let store_size_before = cube.store.len();
+
+        // Read a coord from a different cube_id → should error.
+        // Use CubeId(999) since IdGenerator::new().cube() returns
+        // CubeId(1) — the same as micro_cube's id.
+        let bad_coord = CellCoordinate::from_parts(CubeId(999), [tampa, spend]);
+        let err = cube.query_with_overrides(
+            &[bad_coord],
+            &[(coord(cube_id, tampa, spend), ScalarValue::F64(9999.0))],
+            root,
+        );
+        assert!(err.is_err(), "reading from wrong cube must error");
+        assert_eq!(
+            cube.revision(),
+            rev_before,
+            "revision must be restored after error"
+        );
+        assert_eq!(
+            cube.store.len(),
+            store_size_before,
+            "store must be restored after error"
+        );
+    }
+
+    #[test]
+    fn t_query_with_overrides_empty_overrides_equals_query() {
+        let (mut cube, tampa, spend, _clicks, root) = micro_cube();
+        let cube_id = cube.id;
+        let _ = cube
+            .write(WritebackRequest {
+                coord: coord(cube_id, tampa, spend),
+                new_value: ScalarValue::F64(1000.0),
+                principal: root,
+                intent: WriteIntent::Set,
+                expected_revision: None,
+                now_unix_seconds: 0,
+            })
+            .expect("write ok");
+
+        // Regular read
+        let normal = cube
+            .read(&coord(cube_id, tampa, spend), root)
+            .expect("read ok");
+
+        // query_with_overrides with empty overrides
+        let via_override = cube
+            .query_with_overrides(&[coord(cube_id, tampa, spend)], &[], root)
+            .expect("ok");
+
+        assert_eq!(
+            normal.value.as_f64(),
+            via_override[0].value.as_f64(),
+            "empty overrides must produce identical result to plain read"
         );
     }
 }
