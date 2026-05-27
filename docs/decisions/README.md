@@ -58,6 +58,7 @@ Use [`../templates/adr.md`](../templates/adr.md) as the starting point.
 | [0029](./0029-phase-8-service-daemon.md) | Phase 8 — Mosaic Service Daemon | **Proposed** — `mc up`, per-cube actor, hot cache, write journal, API key auth |
 | [0030](./0030-model-authoring-ergonomics.md) | Phase 3K — Model Authoring Ergonomics | **Accepted** — auto-element population + JSON schema generation (6 Desktop amendments folded in); shipped `94f45e6` |
 | [0031](./0031-nbinom-sf-formula-function.md) | Phase 3L — `nbinom_sf()` Negative Binomial Survival Function | **Proposed** — distributional formula primitive for MLB cartridge; hand-rolled (no stats dep); driven by claw-core EXP-028 |
+| [0032](./0032-phase-8-2-consumer-api-surface.md) | Phase 8.2 — Consumer API Surface (`/whatif`, `/sweep`, `/reload`) | **Proposed** — three HTTP endpoints carved out of ADR-0029's Phase 8.1; unblocks claw-core's production prediction loop and slider workflow over Cloudflare Tunnel |
 
 ## When to write an ADR
 
