@@ -11,6 +11,8 @@ pub mod actor;
 pub mod auth;
 pub mod cache;
 pub mod config;
+pub mod coord;
+pub mod error_envelope;
 pub mod handlers;
 pub mod journal;
 pub mod loader;
