@@ -50,7 +50,7 @@ pub fn load_cube(model_path: &Path) -> Result<LoadedCube, LoadError> {
         .map_err(|e| LoadError::Io(format!("could not read {path_str}: {e}")))?;
     let parsed = mc_model::parse(&yaml, Some(path_str.clone()))
         .map_err(|e| LoadError::Model(format!("parse error: {e}")))?;
-    let validated = mc_model::validate(parsed).map_err(|errs| {
+    let mut validated = mc_model::validate(parsed).map_err(|errs| {
         LoadError::Model(
             errs.iter()
                 .map(|e| e.to_string())
@@ -59,6 +59,17 @@ pub fn load_cube(model_path: &Path) -> Result<LoadedCube, LoadError> {
         )
     })?;
     let model_dir = model_path.parent();
+    // Phase 3K (ADR-0030): auto-populate empty Standard/Time dimensions
+    // from canonical_inputs columns before downstream resolve/compile.
+    // Without this, cartridges with `elements: []` fail at resolve_inputs.
+    let _ = mc_model::auto_populate_dimensions(&mut validated, model_dir).map_err(|errs| {
+        LoadError::Model(
+            errs.iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    })?;
     let inputs = mc_model::resolve_inputs(&validated, model_dir).map_err(|errs| {
         LoadError::Model(
             errs.iter()
