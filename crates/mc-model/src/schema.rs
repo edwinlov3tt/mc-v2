@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 
 // ---------------------------------------------------------------------------
@@ -20,7 +21,7 @@ use serde::Deserialize;
 // ---------------------------------------------------------------------------
 
 /// Top-level parsed YAML model. Mirrors the on-disk YAML 1:1.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedModel {
     pub model_format_version: i64,
@@ -71,7 +72,7 @@ pub struct ParsedModel {
     pub parameters: Vec<ParsedParameter>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedMetadata {
     pub name: String,
@@ -83,7 +84,7 @@ pub struct ParsedMetadata {
     pub created: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedDimension {
     pub name: String,
@@ -125,7 +126,7 @@ pub struct ParsedDimension {
 /// (Measure-dim elements are NOT modeled here — measures live under the
 /// top-level `measures:` block per the schema; a Measure dim with no
 /// elements declared inline is filled in from `measures:` by the validator.)
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedElement {
     pub name: String,
@@ -145,7 +146,7 @@ pub struct ParsedElement {
     pub period_end_exclusive: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedHierarchy {
     /// Dimension name (must reference a declared dimension).
@@ -159,7 +160,7 @@ pub struct ParsedHierarchy {
     pub default: Option<bool>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedHierarchyEdge {
     pub parent: String,
@@ -170,7 +171,7 @@ pub struct ParsedHierarchyEdge {
 /// A measure declaration. The measure dimension's element list is
 /// **derived from this section** during validation — measures appear
 /// once, not duplicated in `dimensions[Measure].elements`.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedMeasure {
     pub name: String,
@@ -218,18 +219,41 @@ pub struct ParsedMeasure {
 /// string (`"Customers * AOV"`). Both forms produce identical
 /// [`ValidatedModel`]s — the validate stage parses the formula form into
 /// the structured tree before any downstream processing sees it.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedRule {
+    /// Unique name for this rule (distinct across the model). SEPARATE
+    /// from `target_measure`: the name identifies the rule itself; the
+    /// target_measure identifies which measure receives the computed
+    /// value. A rule named "compute_revenue" might target the "Revenue"
+    /// measure — the two names are independent on purpose.
     pub name: String,
+    /// The measure this rule's body computes. NOTE: this field is
+    /// SEPARATE from `name`. The same measure can only be targeted by
+    /// one rule (a Derived measure has exactly one rule; MC2006 fires
+    /// if missing, MC2007 if multiple).
     pub target_measure: String,
-    /// `"AllLeaves"` (Phase 3A's only supported scope).
+    /// `"AllLeaves"` (Phase 3A's only supported scope). Phase 3F adds
+    /// `"FutureLeaves"` for extrapolation rules; per ADR-0016 §11 the
+    /// rule may opt into `allow_past_extrapolation` for relaxed scope.
     pub scope: String,
     /// Optional human-readable description. Phase 3B's MC3003 lint fires
     /// when this is missing. Additive over ADR-0004's schema.
     #[serde(default)]
     pub description: Option<String>,
+    /// Formula expression authored as a string (`"Customers * AOV"`) or
+    /// as a structured s-expression tree. Both forms produce identical
+    /// ValidatedModels. Example string bodies:
+    ///   - `"Customers * AOV"`
+    ///   - `"if(x > 0, x, 0)"`
+    ///   - `'predict("model_name", feature1, feature2)'` — NOTE the
+    ///     model name MUST be a quoted string literal, not a bare
+    ///     identifier (MC1009 fires otherwise).
     pub body: ParsedRuleBodyForm,
+    /// Measures this rule reads. REQUIRED for dependency-graph
+    /// correctness — omitting a measure that `body` actually reads
+    /// causes the rule cycle / undeclared-dependency checks to fail.
+    /// Include every bare measure name that appears in the body.
     pub declared_dependencies: Vec<String>,
     /// Phase 3J item 7 + Amendment §11: opt-in flag allowing
     /// `extrapolate_last_value(measure)` to be used at scopes other
@@ -253,7 +277,7 @@ pub struct ParsedRule {
 /// The wrapper lives in [`ParsedModel`] only; [`ValidatedModel`] flattens
 /// to bare [`ParsedRuleBody`] so downstream stages (`compile`, `lint`,
 /// `inspect`) have no awareness of formula authoring form.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum ParsedRuleBodyForm {
     /// `body: "Customers * AOV"`. Parsed by the formula parser at
@@ -272,7 +296,7 @@ pub enum ParsedRuleBodyForm {
 /// Phase 3E adds comparison, logical, and function variants (17 new).
 /// Phase 3F adds time-series variants (5 new).
 /// Phase 3G adds reference-data variants (4 new).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(untagged, deny_unknown_fields)]
 pub enum ParsedRuleBody {
     /// `{ const: 1.0 }`
@@ -450,45 +474,45 @@ pub enum ParsedRuleBody {
     WAvgOver(ParsedWAvgOverBody),
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedConstBody {
     #[serde(rename = "const")]
     pub value: ParsedScalar,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedRefBody {
     #[serde(rename = "ref")]
     pub measure: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedAddBody {
     pub add: Vec<ParsedRuleBody>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedSubBody {
     pub sub: Vec<ParsedRuleBody>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedMulBody {
     pub mul: Vec<ParsedRuleBody>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedDivBody {
     pub div: Vec<ParsedRuleBody>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedIfNullBody {
     pub if_null: Vec<ParsedRuleBody>,
@@ -500,20 +524,20 @@ pub struct ParsedIfNullBody {
 
 /// Shared body for binary operators (comparisons + logical and/or).
 /// The two children are boxed to allow recursive nesting.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedBinopBody {
     pub left: Box<ParsedRuleBody>,
     pub right: Box<ParsedRuleBody>,
 }
 
 /// Shared body for unary operators (not, abs).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedUnaryBody {
     pub operand: Box<ParsedRuleBody>,
 }
 
 /// `if(condition, then_branch, else_branch)`
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedIfBody {
     pub condition: Box<ParsedRuleBody>,
     pub then_branch: Box<ParsedRuleBody>,
@@ -521,13 +545,13 @@ pub struct ParsedIfBody {
 }
 
 /// Variadic function body (min, max, coalesce).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedVarargBody {
     pub args: Vec<ParsedRuleBody>,
 }
 
 /// `safe_div(numerator, denominator, default)`
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedSafeDivBody {
     pub numerator: Box<ParsedRuleBody>,
     pub denominator: Box<ParsedRuleBody>,
@@ -535,7 +559,7 @@ pub struct ParsedSafeDivBody {
 }
 
 /// `clamp(value, lo, hi)`
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedClampBody {
     pub value: Box<ParsedRuleBody>,
     pub lo: Box<ParsedRuleBody>,
@@ -550,7 +574,7 @@ pub struct ParsedClampBody {
 /// Amendment §3, the fallback may itself contain cross-coord
 /// functions (e.g., `scenario_ref`) — MC1013's nesting prohibition is
 /// explicitly relaxed for this slot only.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedActualRefBody {
     pub measure: String,
     /// Phase 3J item 6: optional lazy fallback expression. Absent
@@ -562,7 +586,7 @@ pub struct ParsedActualRefBody {
 
 /// Phase 3J item 6: `scenario_ref(measure, "ScenarioName")` — read
 /// `measure` from the named scenario at the current coord.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedScenarioRefBody {
     pub measure: String,
     pub scenario: String,
@@ -573,20 +597,20 @@ pub struct ParsedScenarioRefBody {
 // ---------------------------------------------------------------------------
 
 /// Shared body for time-series functions that take a bare measure name.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedMeasureRefBody {
     pub measure: String,
 }
 
 /// `lag(measure, periods)` — the periods argument is an expression.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedLagBody {
     pub measure: String,
     pub periods: Box<ParsedRuleBody>,
 }
 
 /// `rolling_avg(measure, window)` — the window argument is an expression.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedRollingAvgBody {
     pub measure: String,
     pub window: Box<ParsedRuleBody>,
@@ -598,7 +622,7 @@ pub struct ParsedRollingAvgBody {
 
 /// Marker body for `period_index()` — a zero-field struct so the serde
 /// untagged dispatch doesn't match YAML null as a unit variant.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 pub struct ParsedPeriodIndexBody {
     // Intentionally empty — exists to prevent serde null matching.
     #[serde(skip)]
@@ -613,7 +637,7 @@ impl ParsedPeriodIndexBody {
 }
 
 /// `benchmark("name", key_expr)`
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedBenchmarkRefBody {
     pub name: String,
     pub key_expr: Box<ParsedRuleBody>,
@@ -622,21 +646,21 @@ pub struct ParsedBenchmarkRefBody {
 /// `lookup("table", key1, key2, ...)` — Phase 3I item 3 made the key
 /// expression list variadic. A 1-element vec corresponds to the
 /// original Phase 3G single-key shape.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedLookupRefBody {
     pub table: String,
     pub key_exprs: Vec<Box<ParsedRuleBody>>,
 }
 
 /// `bucket(value, "threshold_name")`
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedBucketBody {
     pub value: Box<ParsedRuleBody>,
     pub threshold_name: String,
 }
 
 /// `sum_over(dimension, measure)`
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedSumOverBody {
     pub dimension: String,
     pub measure: String,
@@ -647,21 +671,21 @@ pub struct ParsedSumOverBody {
 // ---------------------------------------------------------------------------
 
 /// `predict("model_name", feature1, feature2, ...)`
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedPredictBody {
     pub model_id: String,
     pub features: Vec<Box<ParsedRuleBody>>,
 }
 
 /// `calibrate(value, "map_name")`
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedCalibrateBody {
     pub value: Box<ParsedRuleBody>,
     pub map_id: String,
 }
 
 /// `norm_cdf(x, mu, sigma)` — normal distribution CDF
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedNormCdfBody {
     pub x: Box<ParsedRuleBody>,
     pub mu: Box<ParsedRuleBody>,
@@ -673,21 +697,21 @@ pub struct ParsedNormCdfBody {
 // ---------------------------------------------------------------------------
 
 /// `pow(base, exponent)`
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedPowBody {
     pub base: Box<ParsedRuleBody>,
     pub exponent: Box<ParsedRuleBody>,
 }
 
 /// `mod(dividend, divisor)`
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedModBody {
     pub dividend: Box<ParsedRuleBody>,
     pub divisor: Box<ParsedRuleBody>,
 }
 
 /// `norm_inv(p, mu, sigma)` — inverse of normal-distribution CDF
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedNormInvBody {
     pub p: Box<ParsedRuleBody>,
     pub mu: Box<ParsedRuleBody>,
@@ -700,7 +724,7 @@ pub struct ParsedNormInvBody {
 /// quoted string literal. Per Phase 3I item 1 W4, string literals are
 /// allowed only as this second arg — a parse-time guarantee enforced by
 /// the formula parser.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedIsElementBody {
     pub dimension: String,
     pub element: String,
@@ -708,7 +732,7 @@ pub struct ParsedIsElementBody {
 
 /// `wavg_over(value_measure, dim, weight_measure)` — weighted average
 /// across leaf elements of `dim`. Phase 3I item 5.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct ParsedWAvgOverBody {
     pub dimension: String,
     pub value_measure: String,
@@ -732,7 +756,7 @@ fn default_indicator_aggregation() -> String {
 /// `{ str_literal: "Houston" }` in the structured YAML form, or as
 /// `"Houston"` in the friendly-formula form (the formula parser produces
 /// a `StrLiteral` node when a quoted string appears in primary position).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedStrLiteralBody {
     pub str_literal: String,
@@ -741,7 +765,7 @@ pub struct ParsedStrLiteralBody {
 /// Phase 3J item 2: `current_element(Dim)` — returns the current coord's
 /// element name in `Dim` as `Str`. Structured form:
 /// `{ current_element: "Channel" }`.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedCurrentElementBody {
     pub current_element: String,
@@ -750,7 +774,7 @@ pub struct ParsedCurrentElementBody {
 /// Phase 3J item 3: a named scalar constant referenced by `param(name)`
 /// in formulas. ADR-0016 Decision 6 binds v1 to `f64` values only; non-
 /// numeric values are rejected by the validator with MC2060.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedParameter {
     pub name: String,
@@ -762,7 +786,7 @@ pub struct ParsedParameter {
 /// Phase 3J item 3: `param(name)` — formula reference to a named scalar
 /// constant from the `parameters:` block. Structured form:
 /// `{ param: "q1_anchor_revenue" }`.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedParamRefBody {
     pub param: String,
@@ -771,7 +795,7 @@ pub struct ParsedParamRefBody {
 /// `Const` payload. `f64` and `i64` are the common shapes; `bool` is
 /// included for forward-compat. Phase 3E adds `Null` so formulas can
 /// reference it explicitly (e.g., `if(cond, value, Null)`).
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, JsonSchema)]
 #[serde(untagged)]
 pub enum ParsedScalar {
     Float(f64),
@@ -784,7 +808,7 @@ pub enum ParsedScalar {
 }
 
 /// Inline golden test entry. `coord` is a flat map of dim-name → element-name.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedGoldenTest {
     pub name: String,
@@ -805,7 +829,7 @@ pub struct ParsedGoldenTest {
     pub fixture: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedEpsilonExpect {
     pub value: f64,
@@ -817,7 +841,7 @@ pub struct ParsedEpsilonExpect {
 // ---------------------------------------------------------------------------
 
 /// Industry benchmark with source attribution (Phase 3G).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedBenchmark {
     pub name: String,
@@ -840,7 +864,7 @@ pub struct ParsedBenchmark {
 /// MC2050 fires if both are set; MC2051 fires if any element name
 /// contains the pipe separator; MC2052 fires if a key has the wrong
 /// arity for the declared key_dimensions.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedLookupTable {
     pub name: String,
@@ -869,7 +893,7 @@ impl ParsedLookupTable {
 }
 
 /// Status threshold configuration with ordered bands (Phase 3G).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedStatusThreshold {
     pub name: String,
@@ -880,7 +904,7 @@ pub struct ParsedStatusThreshold {
 
 /// One band within a status threshold. The last band must have `max: None`
 /// (unbounded above).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedThresholdBand {
     pub label: String,
@@ -893,13 +917,22 @@ pub struct ParsedThresholdBand {
 // ---------------------------------------------------------------------------
 
 /// Pre-fitted model coefficients for `predict()` evaluation (Phase 3H).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedFittedModel {
     pub name: String,
-    /// `"linear"` | `"logistic"`
+    /// Method identifier. NOTE: this field is called `method`, NOT `type`
+    /// (a common mistake). Legal values: `"linear"` | `"logistic"`.
     pub method: String,
+    /// Model intercept (bias term added before features × coefficients).
     pub intercept: f64,
+    /// Per-feature coefficients as a LIST of `{feature, weight}` objects.
+    /// NOTE: this is a LIST OF OBJECTS, not a flat map. Correct shape:
+    /// ```yaml
+    /// coefficients:
+    ///   - { feature: "Weather_Temp", weight: 0.012 }
+    ///   - { feature: "Wind_MPH", weight: 0.035 }
+    /// ```
     pub coefficients: Vec<ParsedFittedCoefficient>,
     #[serde(default)]
     pub standardization: Option<ParsedStandardizationConfig>,
@@ -926,7 +959,7 @@ pub struct ParsedFittedModel {
 /// only). Per ADR-0017 Decision 4: if both are set, MC2070 fires when
 /// `min >= max`. NaN/infinite values are rejected by `serde_yaml` at parse
 /// time.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedOutputBound {
     #[serde(default)]
@@ -936,7 +969,7 @@ pub struct ParsedOutputBound {
 }
 
 /// One coefficient in a fitted model.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedFittedCoefficient {
     pub feature: String,
@@ -946,7 +979,7 @@ pub struct ParsedFittedCoefficient {
 /// Phase 3H.2 (ADR-0018): per-feature adstock + saturation transform block
 /// declared on a fitted model. Both inner lists default to empty so an
 /// empty `transforms: {}` declaration is permissive (Step 1 W4).
-#[derive(Clone, Debug, Deserialize, PartialEq, Default)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Default, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedTransforms {
     #[serde(default)]
@@ -959,7 +992,7 @@ pub struct ParsedTransforms {
 /// Decision 2, both `rate` and `max_lookback` are required (no sensible
 /// defaults). Validators MC2075/MC2076 cover bounds; MC2071 covers
 /// `feature` membership in `coefficients`.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedAdstockSpec {
     pub feature: String,
@@ -971,7 +1004,7 @@ pub struct ParsedAdstockSpec {
 /// `#[serde(tag = "type")]` so unknown saturation types fire a serde
 /// deserialization error at parse time (Step 1 W2; supersedes MC2077
 /// when serde catches first).
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ParsedSaturationSpec {
     Hill {
@@ -997,7 +1030,7 @@ impl ParsedSaturationSpec {
 }
 
 /// Standardization configuration (z-score normalization).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedStandardizationConfig {
     /// `"zscore"` (only supported method for now).
@@ -1006,7 +1039,7 @@ pub struct ParsedStandardizationConfig {
 }
 
 /// Per-feature standardization parameters.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedStandardizationParam {
     pub feature: String,
@@ -1015,7 +1048,7 @@ pub struct ParsedStandardizationParam {
 }
 
 /// Optional metadata for fitted models.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedFittedModelMetadata {
     #[serde(default)]
@@ -1031,7 +1064,7 @@ pub struct ParsedFittedModelMetadata {
 }
 
 /// Calibration map for `calibrate()` evaluation (Phase 3H).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedCalibrationMap {
     pub name: String,
@@ -1046,7 +1079,7 @@ pub struct ParsedCalibrationMap {
 }
 
 /// One point in a PAVA calibration map.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedCalibrationPoint {
     pub raw: f64,
@@ -1054,7 +1087,7 @@ pub struct ParsedCalibrationPoint {
 }
 
 /// Platt sigmoid parameters.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedPlattParams {
     pub a: f64,
@@ -1062,7 +1095,7 @@ pub struct ParsedPlattParams {
 }
 
 /// Optional metadata for calibration maps.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedCalibrationMetadata {
     #[serde(default)]
@@ -1090,7 +1123,7 @@ pub struct ParsedCalibrationMetadata {
 /// as the cell value (literal `"value"` per ADR-0006 amendment #19's
 /// alternate-route flag); every other column must match a dimension
 /// name declared in the model.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedInputSet {
     pub columns: Vec<String>,
@@ -1109,7 +1142,7 @@ pub struct ParsedInputSet {
 /// Inline `rows:` payload for a `ParsedInputSet`. Each inner cell is a
 /// [`ParsedRowCell`] (string OR number OR bool) so dim columns (string)
 /// and the value column (numeric / bool) coexist on the same row.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedInlineRows {
     pub rows: Vec<Vec<ParsedRowCell>>,
@@ -1119,7 +1152,7 @@ pub struct ParsedInlineRows {
 /// Wider than `ParsedScalar` (which is for rule constants and excludes
 /// strings on purpose) — inline rows mix string dim values with numeric
 /// cell values.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, JsonSchema)]
 #[serde(untagged)]
 pub enum ParsedRowCell {
     Float(f64),
@@ -1131,7 +1164,7 @@ pub enum ParsedRowCell {
 /// One named per-test fixture under `test_fixtures:`. Fixtures inherit the
 /// same source-XOR-inline shape as `canonical_inputs:`, but carry a
 /// `name:` so golden tests can reference them.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedFixture {
     pub name: String,

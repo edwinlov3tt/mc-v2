@@ -20,8 +20,11 @@
 //! | Range          | Category                                         |
 //! |----------------|--------------------------------------------------|
 //! | `MC1001..1002` | Parse errors (YAML syntax + safe-subset)         |
+//! | `MC1015..1017` | Info/Warning/Error — auto-element population (3K) |
 //! | `MC2001..2010` | Validation errors (Phase 3A's 10 ADR-0004 rules) |
 //! | `MC2011`       | Validation error (Phase 3B promotion from lint)  |
+//! | `MC2012..2025` | Fixture / canonical_inputs validators (Phase 3C) |
+//! | `MC2026`       | Case-mismatch hint on empty dim (Phase 3K)       |
 //! | `MC3001..3007` | Lint warnings (descriptions, goldens, orphan, …) |
 //! | `MC3008`       | **RETIRED** — promoted to `MC2011`               |
 //! | `MC3009..3011` | Lint warnings (unused measures, root ambiguity)  |

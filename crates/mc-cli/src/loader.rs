@@ -170,7 +170,7 @@ pub fn load_model_with_policy(
         .map_err(|e| LoadModelError::Io(format!("could not read model file {path:?}: {e}")))?;
     let parsed = mc_model::parse(&yaml, Some(path.to_string()))
         .map_err(|e| LoadModelError::Model(format!("parse error: {e}")))?;
-    let validated = mc_model::validate(parsed).map_err(|errs| {
+    let mut validated = mc_model::validate(parsed).map_err(|errs| {
         LoadModelError::Model(
             errs.iter()
                 .map(|e| e.to_string())
@@ -179,6 +179,20 @@ pub fn load_model_with_policy(
         )
     })?;
     let model_dir = Path::new(path).parent();
+    // Phase 3K (ADR-0030): auto-populate empty Standard/Time dimensions
+    // from canonical_inputs columns before downstream resolve/compile.
+    // MC2026 case-mismatch errors are surfaced via LoadModelError::Model.
+    // Info/Warning diagnostics (MC1015/16/17) are silently discarded here
+    // — agent-surface loaders don't print them; see `load_validated` in
+    // mc-cli/main.rs for the user-facing surface.
+    let _ = mc_model::auto_populate_dimensions(&mut validated, model_dir).map_err(|errs| {
+        LoadModelError::Model(
+            errs.iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    })?;
     let inputs = mc_model::resolve_inputs(&validated, model_dir).map_err(|errs| {
         LoadModelError::Model(
             errs.iter()

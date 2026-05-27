@@ -1119,11 +1119,18 @@ fn load_validated_quiet(path: &str) -> Result<ValidatedModel, Vec<Diagnostic>> {
         Ok(p) => p,
         Err(e) => return Err(vec![parse_diagnostic(path, &e)]),
     };
-    let validated = match mc_model::validate(parsed) {
+    let mut validated = match mc_model::validate(parsed) {
         Ok(v) => v,
         Err(errs) => return Err(mixed_errors_to_diagnostics(&errs, path)),
     };
     let model_dir = std::path::Path::new(path).parent();
+    // Phase 3K (ADR-0030): auto-populate empty Standard/Time dims before
+    // resolve_inputs sees them. MC2026 case-mismatch errors are reported;
+    // info-severity diagnostics are discarded here (this is the MCP
+    // quiet path; the interactive CLI's `load_validated` surfaces them).
+    if let Err(errs) = mc_model::auto_populate_dimensions(&mut validated, model_dir) {
+        return Err(validation_errors_to_diagnostics(&errs, path));
+    }
     if let Err(errs) = resolve_inputs(&validated, model_dir) {
         return Err(validation_errors_to_diagnostics(&errs, path));
     }

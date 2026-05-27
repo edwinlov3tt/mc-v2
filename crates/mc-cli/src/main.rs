@@ -457,7 +457,7 @@ fn load_validated(path: &str, format: OutputFormat) -> ValidatedModel {
             std::process::exit(1);
         }
     };
-    let validated = match mc_model::validate(parsed) {
+    let mut validated = match mc_model::validate(parsed) {
         Ok(v) => v,
         Err(errs) => {
             // Phase 3D: validate now returns Vec<Error> mixing
@@ -469,10 +469,30 @@ fn load_validated(path: &str, format: OutputFormat) -> ValidatedModel {
             std::process::exit(1);
         }
     };
+    let model_dir = std::path::Path::new(path).parent();
+    // Phase 3K (ADR-0030): auto-populate empty Standard/Time dims from
+    // canonical_inputs. Info/Warning MC1015/16 diagnostics surface
+    // alongside the validate output (Amendment 4). MC1017 is severity
+    // Error but does not block compilation — auto-population still
+    // succeeded; the author opts out by declaring elements explicitly.
+    let auto_pop_diags = match mc_model::auto_populate_dimensions(&mut validated, model_dir) {
+        Ok(d) => d,
+        Err(errs) => {
+            print_validation_errors(path, &errs, format);
+            std::process::exit(1);
+        }
+    };
+    if !auto_pop_diags.is_empty() {
+        let mut sorted = auto_pop_diags;
+        sort_diagnostics(&mut sorted);
+        match format {
+            OutputFormat::Text => eprint!("{}", diagnostics_to_text(&sorted)),
+            OutputFormat::Json => eprint!("{}", diagnostics_to_json(&sorted)),
+        }
+    }
     // Resolve-inputs stage. Discards the resolved data; only the
     // validation side-effects matter at this layer (`mc model test`
     // re-runs resolve_inputs to actually use the data).
-    let model_dir = std::path::Path::new(path).parent();
     if let Err(errs) = resolve_inputs(&validated, model_dir) {
         print_validation_errors(path, &errs, format);
         std::process::exit(1);

@@ -33,8 +33,9 @@ use mc_core::{
 
 use crate::compile::ModelRefs;
 use crate::csv::parse_strict;
+use crate::diagnostic::{Diagnostic, ModelPath, Severity};
 use crate::error::ValidationError;
-use crate::schema::{ParsedFixture, ParsedInputSet, ParsedRowCell, ValidatedModel};
+use crate::schema::{ParsedElement, ParsedFixture, ParsedInputSet, ParsedRowCell, ValidatedModel};
 
 /// Reserved column name for the cell value column. Per ADR-0006
 /// amendment #19's chosen literal — the implementer was given leeway to
@@ -611,6 +612,229 @@ fn row_cell_to_string(s: &ParsedRowCell) -> String {
 fn internal_schema(label: &str, msg: &str) -> ValidationError {
     ValidationError::Schema {
         message: format!("input set {label:?}: internal: {msg}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3K: auto-element population from canonical_inputs.
+// ---------------------------------------------------------------------------
+
+/// Phase 3K (ADR-0030): auto-populate empty `Standard`/`Time` dimensions
+/// from matching columns in `canonical_inputs`. Mutates the `ValidatedModel`
+/// in place; rebuilds [`ValidatedModel::element_index_by_name`] for any
+/// dimension that gained elements.
+///
+/// Rules (binding per ADR-0030 Decision 1 + amendments):
+/// - Only fires when `dim.elements.is_empty()` — explicit declarations
+///   always win, never overridden.
+/// - Only applies to `Standard` and `Time` kinds. `Scenario`, `Version`,
+///   and `Measure` dimensions are skipped (semantic, not data-derived).
+/// - Column lookup is **case-sensitive exact match** against the dim name.
+///   Case-only mismatches surface MC2026 with an actionable hint.
+/// - Distinct values are inserted in **first-seen CSV order**, not sorted.
+/// - Auto-population still proceeds at high cardinalities; MC1016 (warning)
+///   fires above 10,000 elements, MC1017 (critical) above 100,000. Authors
+///   opt out by declaring `elements:` explicitly.
+///
+/// The function returns:
+/// - `Ok(diags)` — every `Diagnostic` is Info/Warning severity (MC1015/1016/1017).
+/// - `Err(errs)` — case-mismatch errors (MC2026); auto-population did not
+///   fire for the affected dimensions, and the caller should surface them
+///   alongside any other validation errors.
+///
+/// Models without a `canonical_inputs:` block return `Ok(vec![])` (no-op).
+pub fn auto_populate_dimensions(
+    validated: &mut ValidatedModel,
+    model_dir: Option<&Path>,
+) -> Result<Vec<Diagnostic>, Vec<ValidationError>> {
+    let Some(decl) = validated.parsed.canonical_inputs.clone() else {
+        return Ok(Vec::new());
+    };
+
+    // Identify candidate dimensions BEFORE touching the CSV. If no
+    // Standard/Time dim is empty, skip the CSV read entirely.
+    let candidates: Vec<(usize, String)> = validated
+        .parsed
+        .dimensions
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| dim_kind_is_auto_populatable(&d.kind) && d.elements.is_empty())
+        .map(|(i, d)| (i, d.name.clone()))
+        .collect();
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Validate column-declaration shape. If the columns block is malformed,
+    // `resolve_inputs` will catch it with a proper diagnostic — skip
+    // auto-population silently so the error appears in the right place.
+    let dim_cols: &[String] = if decl.columns.len() < 2 {
+        return Ok(Vec::new());
+    } else {
+        &decl.columns[..decl.columns.len() - 1]
+    };
+
+    let raw_rows: Vec<Vec<String>> =
+        match read_canonical_inputs_raw(&decl, model_dir, "canonical_inputs") {
+            Ok(r) => r,
+            // Per ADR-0030: any IO/parse failure on the CSV will surface
+            // via `resolve_inputs` with a proper MC2022/MC2023/MC2024 code.
+            // Don't double-report from here — auto-population is best-effort.
+            Err(_) => return Ok(Vec::new()),
+        };
+
+    let mut diags: Vec<Diagnostic> = Vec::new();
+    let mut errs: Vec<ValidationError> = Vec::new();
+
+    for (dim_idx, dim_name) in candidates {
+        // Exact-case match against declared column headers.
+        let exact_col_idx = dim_cols.iter().position(|c| c == &dim_name);
+        if let Some(col_idx) = exact_col_idx {
+            let values = distinct_values_for_column(&raw_rows, col_idx);
+            let count = values.len();
+            // Populate elements.
+            let mut new_index: BTreeMap<String, usize> = BTreeMap::new();
+            let elements: Vec<ParsedElement> = values
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    new_index.insert(v.clone(), i);
+                    ParsedElement {
+                        name: v,
+                        version_state: None,
+                        scenario_meta: None,
+                        date: None,
+                        period_start: None,
+                        period_end_exclusive: None,
+                    }
+                })
+                .collect();
+            validated.parsed.dimensions[dim_idx].elements = elements;
+            validated.element_index_by_name[dim_idx] = new_index;
+            diags.push(cardinality_diagnostic(&dim_name, count));
+            continue;
+        }
+
+        // No exact match. Look for a case-insensitive match; if present,
+        // emit MC2026 with the actionable hint.
+        if let Some(actual) = find_column_case_insensitive(dim_cols, &dim_name) {
+            errs.push(ValidationError::DimensionEmptyCaseMismatchHint {
+                dim: dim_name,
+                actual_column: actual.to_string(),
+            });
+        }
+        // Else: silently fall through. The kernel will fire
+        // `DimensionEmpty` at compile time — same behavior as today.
+    }
+
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+    Ok(diags)
+}
+
+fn dim_kind_is_auto_populatable(kind: &str) -> bool {
+    matches!(kind, "Standard" | "Time")
+}
+
+/// Distinct values from a column in first-seen order. Empty / whitespace-
+/// only values are skipped (CSV authoring oversight; they would fail at
+/// resolve-inputs anyway).
+fn distinct_values_for_column(rows: &[Vec<String>], col_idx: usize) -> Vec<String> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for row in rows {
+        let Some(v) = row.get(col_idx) else { continue };
+        if v.trim().is_empty() {
+            continue;
+        }
+        if seen.insert(v.clone()) {
+            out.push(v.clone());
+        }
+    }
+    out
+}
+
+/// Case-insensitive column-name match. Returns the actual column name
+/// (original casing) on hit so the hint can quote it back to the author.
+fn find_column_case_insensitive<'a>(cols: &'a [String], name: &str) -> Option<&'a str> {
+    let lower = name.to_ascii_lowercase();
+    cols.iter()
+        .find(|c| c.to_ascii_lowercase() == lower)
+        .map(String::as_str)
+}
+
+/// Per ADR-0030 Amendment 2: escalating-severity diagnostic based on
+/// element count. MC1015 ≤ 10K (Info), MC1016 ≤ 100K (Warning), MC1017
+/// > 100K (Error severity surfaces the warning impossible to miss; auto-
+/// population still proceeded — explicit `elements:` opts out).
+fn cardinality_diagnostic(dim_name: &str, count: usize) -> Diagnostic {
+    let model_path = format!("dimensions.{dim_name}");
+    let yaml_pointer = String::new();
+    let path = ModelPath::new(PathBuf::new(), yaml_pointer, model_path);
+    if count <= 10_000 {
+        Diagnostic {
+            code: "MC1015",
+            severity: Severity::Info,
+            path,
+            message: format!(
+                "Dimension {dim_name:?} populated automatically from canonical_inputs ({count} elements)"
+            ),
+            suggestion: None,
+        }
+    } else if count <= 100_000 {
+        Diagnostic {
+            code: "MC1016",
+            severity: Severity::Warning,
+            path,
+            message: format!(
+                "High-cardinality auto-population: dimension {dim_name:?} has {count} elements. \
+                 High-cardinality dimensions may indicate the data belongs as a fact rather than \
+                 a dimension. Consider whether {dim_name:?} should be modeled differently."
+            ),
+            suggestion: Some("Declare elements explicitly to opt out of auto-population.".into()),
+        }
+    } else {
+        Diagnostic {
+            code: "MC1017",
+            severity: Severity::Error,
+            path,
+            message: format!(
+                "Very high-cardinality auto-population: dimension {dim_name:?} has {count} \
+                 elements. This is almost certainly a modeling error — {dim_name:?} likely \
+                 belongs as fact data, not as a dimension. Auto-population proceeded but \
+                 review the cube design."
+            ),
+            suggestion: Some("Declare elements explicitly to opt out of auto-population.".into()),
+        }
+    }
+}
+
+/// Read the raw rows of `canonical_inputs` (source CSV or inline) for
+/// auto-population scanning. Returns string-typed rows so the caller can
+/// distinct-scan an arbitrary column without re-deriving measure types.
+fn read_canonical_inputs_raw(
+    decl: &ParsedInputSet,
+    model_dir: Option<&Path>,
+    label: &str,
+) -> Result<Vec<Vec<String>>, ()> {
+    match (&decl.source, &decl.inline) {
+        (Some(src), None) => {
+            let path = resolve_csv_path(model_dir, src, label).map_err(|_| ())?;
+            let content = std::fs::read_to_string(path).map_err(|_| ())?;
+            parse_strict(&content, &decl.columns, label).map_err(|_| ())
+        }
+        (None, Some(inline)) => {
+            let mut rows: Vec<Vec<String>> = Vec::with_capacity(inline.rows.len());
+            for row in &inline.rows {
+                if row.len() != decl.columns.len() {
+                    return Err(());
+                }
+                rows.push(row.iter().map(row_cell_to_string).collect());
+            }
+            Ok(rows)
+        }
+        _ => Err(()),
     }
 }
 
