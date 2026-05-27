@@ -198,3 +198,86 @@ This is a small, additive phase — no architectural changes, no kernel changes,
 The JSON schema is the higher-leverage of the two: it catches errors at edit time across every future cube authored by any user. Auto-element-population is narrower (only helps when canonical_inputs is present) but eliminates the most tedious authoring task (generating thousands of element lines from data).
 
 Effort estimate: 1 session for auto-population, 1 session for schema generation + doc comment cleanup. Combined: 1-2 sessions total.
+
+---
+
+## Amendments (from Claude Desktop review, 2026-05-26)
+
+### Amendment 1: Case-mismatch hint on fall-through error (closes new friction loop)
+
+The original Decision 1 specified case-sensitive exact match for column-to-dimension lookup with no special handling when matching fails. Desktop correctly identified that this introduces a new friction point: an author with column `game` and dimension `Game` gets the existing missing-elements error with no indication that casing was the cause.
+
+**Amended behavior:** When auto-population does NOT fire (no exact-case-match column found) AND the missing-elements error is about to be emitted, the validator MUST scan canonical_inputs columns for case-insensitive matches and include them in the error hint:
+
+```
+MC1001 [Error]: Dimension 'Game' has no elements declared.
+  Hint: canonical_inputs has column 'game' (case differs from dimension 'Game').
+  Auto-population requires exact case match. Either rename the dimension to 'game',
+  rename the CSV column to 'Game', or declare elements explicitly.
+```
+
+**Implementation:** Add a helper in the missing-elements check path that walks canonical_inputs column headers, does case-insensitive comparison, and appends matches to the diagnostic's hint field. Only fires for dimensions eligible for auto-population (Standard/Time).
+
+**Why case-sensitive primary:** Preserves unambiguous matching (no surprise when CSV has both `Game` and `game`). The hint makes the rule discoverable at the exact moment it matters, without making the rule itself lenient.
+
+### Amendment 2: High-cardinality guardrail (prevents pathological cubes)
+
+The original ADR did not address upper-bound cardinality. A `customer_id` or `transaction_id` dimension auto-populated from a CRM/payments export could silently produce a 2M-element dimension — a modeling smell that the feature would hide rather than surface.
+
+**Amended thresholds:**
+
+| Cardinality | Behavior | Diagnostic |
+|---|---|---|
+| ≤ 10,000 | Auto-populate silently | MC1015 info (existing) |
+| 10,001 – 100,000 | Auto-populate + warn | **MC1016 warning** — "High-cardinality auto-population ({N} elements). High-cardinality dimensions may indicate the data belongs as a fact rather than a dimension. Consider whether '{dim_name}' should be modeled differently." |
+| > 100,000 | Auto-populate + critical warning | **MC1017 critical** — same message, escalated severity. Auto-population still proceeds (no hard error) to preserve author flexibility, but the warning is impossible to miss. |
+
+**Rationale:** No hard cap because the author might have a legitimate case. But silent pathological auto-population is the failure mode worth preventing. The thresholds match plausible real-world boundaries — MLB across 10 seasons (~24K games) sits comfortably in the warning band; a payments dimension (2M+) hits critical and gets the author's attention.
+
+**Why not hard-error above 100K:** The author can always opt out by declaring elements explicitly (which always wins per Decision 1). A hard error would force authors to write workarounds for a feature meant to reduce friction. The critical-severity warning surfaces the problem without dictating the solution.
+
+### Amendment 3: Exact-pin schemars (prevents CI drift false positives)
+
+The original Decision 2 specified `schemars = "0.8"`. Schemars output formatting (key ordering, whitespace, `$ref` structure) is not guaranteed stable across minor versions. A routine `cargo update` could change the generated JSON without changing the schema semantically, causing the CI drift check to fail.
+
+**Amended:** Pin exactly. Verify the latest schemars 0.8.x that compiles cleanly at Rust 1.78 (Cargo.lock pin), then use exact version requirement:
+
+```toml
+schemars = "=0.8.21"  # exact pin — output formatting must be stable for CI drift check
+```
+
+If the latest 0.8.x requires Rust > 1.78, fall back to the newest compatible. Document the version choice in `crates/mc-model/Cargo.toml` with a brief comment explaining the exact-pin requirement.
+
+**Pattern reference:** Matches existing project discipline (`duckdb = "=1.1.1"`, `clap_lex = "=0.6.0"` in Cargo.lock pins).
+
+### Amendment 4: MC1015 surfaces by default (announce the magic)
+
+Auto-population is silent magic. If MC1015 only surfaces with `--verbose`, authors won't know auto-population happened — they'll write `elements: []`, run validate, see "OK", then later look at `mc model inspect` and see thousands of elements they didn't write. Confusion.
+
+**Amended:** MC1015 (and MC1016, MC1017) MUST surface in the default validate output, not only with `--verbose`. They are info/warning/critical respectively — not debug-level. The implementer should verify this by running `mc model validate` on an auto-populated model and confirming MC1015 appears in the diagnostic stream.
+
+If the project's existing diagnostic infrastructure suppresses info-severity by default, this phase adjusts that for MC1015 only OR escalates MC1015 to "notice" / "verbose-info" severity that surfaces by default while staying visually distinct from warnings.
+
+**Companion:** `mc model inspect` annotates auto-populated dimensions with `(from canonical_inputs)` per the original Decision 1 — keep that.
+
+### Amendment 5: Doc comment priority on historically-confusing fields
+
+The implementer should treat these fields (the ones the MLB session got wrong) as priority targets for excellent doc comments — because that's where the schema's hover-tooltip value is highest:
+
+- `ParsedRule::target_measure` — explain that it's separate from `name` (rule identifies itself; target_measure identifies the output)
+- `ParsedRule::declared_dependencies` — explain that omitting these fails validation; list pattern of what to include
+- `ParsedFittedModel::method` — call out that this field is `method`, NOT `type` (common mistake)
+- `ParsedFittedModel::coefficients` — explain the `[{feature, weight}]` list structure (NOT a flat map)
+- `ParsedRule::body` — for `predict()` formulas, note that the model name argument must be a quoted string literal
+
+A generic doc comment like "the rule's body" is wasted opportunity. The doc comment is where the hover-tooltip pays for itself.
+
+### Amendment 6: GitHub raw URL is a development placeholder
+
+The original Decision 2 showed an absolute GitHub URL for the `$schema=` directive. This is acceptable for development but should not be baked into user-facing documentation as the permanent answer.
+
+**Amended:** The Acme example in `crates/mc-model/examples/acme.yaml` uses a RELATIVE path (`$schema=../../docs/specs/mosaic-model-schema.json`) — works offline, no network required, demonstrates the directive. The handoff documents the GitHub raw URL as a "development placeholder; a stable versioned URL (e.g., `schemas.mosaic.dev/v1/model.json`) ships when Mosaic publishes a public schema endpoint."
+
+### Followup not in this phase
+
+Desktop noted that `predict()` quoting friction (model name must be a quoted string) is not addressed by either improvement. It's mechanical and the error message is reasonable today, but for fitted-model-heavy domains (sports betting) it recurs. **Filed as a small follow-up:** improve the formula parser's error message for unquoted predict() model names to suggest the fix inline. Not scope for Phase 3K; track in research-notes if it recurs during sports betting cube authoring.
