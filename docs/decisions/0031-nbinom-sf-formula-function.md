@@ -1,7 +1,8 @@
 # ADR-0031: `nbinom_sf()` Negative Binomial Survival Function
 
-**Status:** Proposed (with 7 acceptance amendments — see bottom; binding for implementation)
+**Status:** Accepted (with 7 acceptance amendments — see bottom; binding for implementation)
 **Date:** 2026-05-27
+**Accepted:** 2026-05-27 (project owner approved after external review pass)
 **Last amended:** 2026-05-27 — review feedback folded in; fixture values corrected against scipy 1.13.1
 **Deciders:** project owner
 **Phase:** 3L (distributional formula primitives — first addition: `nbinom_sf`)

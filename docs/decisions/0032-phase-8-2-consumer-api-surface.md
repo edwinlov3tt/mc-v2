@@ -1,7 +1,8 @@
 # ADR-0032: Phase 8.2 — Consumer API Surface (`/whatif`, `/sweep`, `/reload`)
 
-**Status:** Proposed
+**Status:** Accepted (with 7 acceptance amendments — see bottom; binding for implementation)
 **Date:** 2026-05-27
+**Last amended:** 2026-05-27 — external review feedback folded in
 **Deciders:** project owner
 **Phase:** 8.2 (carved narrowly out of ADR-0029's Phase 8.1; ships ahead of MCP/org/Tessera/warm-restart)
 **Crate:** `mc-daemon` (extends Phase 8.0 substrate; no kernel or model-layer changes)
@@ -513,4 +514,246 @@ If sequencing one before the other, ship **this ADR first**. Rationale:
 
 ## Acceptance amendments
 
-*(None as of authoring. Project owner review pending.)*
+Filed 2026-05-27 after external review (GPT-5.1 high-effort thinking). All seven amendments are **binding** for implementation and override the body of this ADR where they conflict. Each amendment was independently evaluated and adopted with author judgment on the precise wording.
+
+### Amendment 1: `/sweep` supports override sweeps, not just coefficient sweeps (CRITICAL)
+
+**Problem.** Decision 4's `/sweep` contract only varies a fitted-model coefficient. That's useful for model debugging, but it is NOT the primary slider workflow. Real sports-betting sliders vary an **input value** at a coordinate (the market line, pace, weather input), not the published coefficient of a fitted model. The original Decision 4 contract would have shipped a coefficient-debug endpoint and called it a slider — a contract mismatch that would have broken ADR-0001 AC-11.
+
+**Amendment.** The `/sweep` request is restructured around a `vary` block with two modes — discriminated by `kind`:
+
+```json
+POST /api/v1/sweep
+{
+  "schema_version": "1.0",
+  "cube": "nba-totals",
+  "workspace": null,
+  "vary": {
+    "kind": "override",
+    "at": { "Game": "LAL_at_BOS", "Measure": "Market_Line" },
+    "range": { "start": 7.5, "stop": 10.5, "step": 0.5 }
+  },
+  "where": { "Scenario": "Base", "Version": "Working", "Sportsbook": "Pinnacle", "Time": "2026_04_15" },
+  "overrides": [],
+  "show": ["P_Over", "Calibrated_P_Over"],
+  "metric": null,
+  "goal": "none"
+}
+```
+
+or:
+
+```json
+{
+  "vary": {
+    "kind": "coefficient",
+    "model": "nba_v16_lasso",
+    "coefficient": "avg_pace",
+    "range": { "start": 2.5, "stop": 3.5, "step": 0.1 }
+  },
+  ...
+}
+```
+
+**`vary.kind: "override"`** — the primary slider mode. Sweeps a value at one coordinate. Per step the daemon: (1) merges `vary.at` over `where` to form a fully-qualified coord (Amendment 3), (2) applies the override + any fixed `overrides[]`, (3) evaluates `show[]` measures, (4) computes `metric` if specified. Response per step includes the swept value AND the per-step `show[]` values.
+
+**`vary.kind: "coefficient"`** — model-debug mode. Sweeps a fitted-model coefficient. Identical to the original Decision 4 contract, just nested under `vary`. Per step the daemon substitutes the coefficient value in the model and re-evaluates dependents.
+
+**Response shape (unified across both modes):**
+
+```json
+{
+  "schema_version": "1.0",
+  "cube": "nba-totals",
+  "vary": { "kind": "override", "at": {...}, "range": {...} },
+  "baseline": {
+    "value": 8.5,
+    "results": [
+      { "measure": "P_Over",            "value": 0.54 },
+      { "measure": "Calibrated_P_Over", "value": 0.52 }
+    ],
+    "metric": null
+  },
+  "best": null,
+  "sweep": [
+    {
+      "value": 7.5,
+      "results": [
+        { "measure": "P_Over",            "value": 0.81 },
+        { "measure": "Calibrated_P_Over", "value": 0.78 }
+      ],
+      "metric": null
+    },
+    ...
+  ]
+}
+```
+
+- `baseline.value`: for override sweeps, the original cell value before override; for coefficient sweeps, the model's published coefficient
+- `baseline.results`: `show[]` measures evaluated WITHOUT the sweep override applied
+- `best`: populated only when `metric` is specified AND `goal` is `maximize`/`minimize`; otherwise null
+- `sweep[].metric`: populated only when `metric` is specified; otherwise null
+- `sweep[].results`: always present; mirrors `show[]`
+
+**Future extension (out of scope for 8.2):** `vary` can later become `vary[]` for multi-dimensional grid sweeps. The single-vary contract is forward-compatible — a single-element array would have identical semantics. Don't ship multi-vary now; it has its own design questions (full grid vs cartesian vs zip?) and no consumer is asking.
+
+### Amendment 2: `metric` becomes a structured object
+
+**Problem.** Decision 4's `metric: "mean"` doesn't specify *what measure* the aggregation applies to. Implicit "the show[] measure" or "the predicted total" creates ambiguity, especially for multi-show requests.
+
+**Amendment.** The `metric` field becomes a structured object (or `null` to skip best-point computation):
+
+```json
+"metric": {
+  "measure": "Calibrated_P_Over",
+  "agg": "mean",
+  "where": { "Time": "Q1_2026" }
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `measure` | string | Required. The measure to aggregate. Must be a measure name in the cube. |
+| `agg` | string | Required. One of: `mean`, `sum`, `min`, `max`, `count`. |
+| `where` | object | Optional. Coord filter restricting which cells contribute to the aggregation. When absent, aggregates over all cells matching the request's top-level `where`. |
+
+`metric_where` from the original Decision 4 is **removed** — folded into `metric.where`. Cleaner: one place to look for the aggregation scope.
+
+When `metric` is `null` (or omitted), the response's `best` is `null` and per-step `metric` values are `null`. The sweep returns just the per-step `show[]` curve — ideal for slider visualizations that don't need a "best" selection.
+
+When `metric` is present and `goal` is `"maximize"` / `"minimize"`, the daemon picks the best step. When `goal` is `"none"` (or omitted), the per-step metric is computed but `best` stays `null`.
+
+`agg` validation: unknown agg → 400 with `MosaicError::UnknownAggregation` (new diagnostic — verify code via Amendment 7 preflight, candidate **MC4019**).
+
+### Amendment 3: Override coordinate resolution — explicit merge rule
+
+**Problem.** Decision 3's `/whatif` example showed `override.at` as a partial coord with `where` filling in the rest, but the rule was never stated. Without an explicit rule, the daemon could legally interpret it three different ways and the consumer wouldn't know which.
+
+**Amendment.** The override coordinate resolution rule (binding for both `/whatif` and `/sweep` `vary.kind: "override"`):
+
+```
+1. Start with request.where as the base coordinate filter.
+2. Overlay override.at (or vary.at for sweep) — fields in override.at
+   REPLACE the matching fields in where.
+3. The merged coordinate must resolve to exactly one cell in the cube.
+4. If zero cells match → 400 MosaicError::UnknownCoordinate
+5. If multiple cells match (under-specified) → 400 MosaicError::AmbiguousCoordinate
+6. The matching cell may be any role (Input or Derived). Overriding a
+   Derived cell means "ignore the formula; use this value for this
+   request only." This matches the existing CLI `--set` semantic.
+```
+
+**Worked example** (matches the Decision 3 example):
+
+Request:
+```json
+"overrides": [{ "at": { "Game": "LAL_at_BOS", "Measure": "avg_pace" }, "value": 102.4 }],
+"where": { "Scenario": "Base", "Version": "Working", "Sportsbook": "Pinnacle", "Time": "2026_04_15" }
+```
+
+Merged coord: `{Game: LAL_at_BOS, Scenario: Base, Version: Working, Sportsbook: Pinnacle, Time: 2026_04_15, Measure: avg_pace}` — a complete 6-dim coord (matches NBA cartridge dim order). One cell. Override applied.
+
+If the cube has multiple games per (Scenario, Version, Sportsbook, Time) and `override.at` only specified `{Measure: avg_pace}` without `Game`, the merged coord would match many cells → AmbiguousCoordinate.
+
+**New diagnostic:** **MC4020** for AmbiguousCoordinate (verify via Amendment 7 preflight). UnknownCoordinate reuses an existing code if one exists in the catalog; else allocate **MC4021** at preflight.
+
+### Amendment 4: `/reload` HTTP status — always 200 unless malformed/unauthorized
+
+**Problem.** Decision 5 had a tension: per-cube failures go in `errors[]` (good for batch), but tests said "non-existent cube → 404 in errors[]" which mixes per-item and HTTP status semantics. GPT proposed a two-mode rule (single vs multi). Considered and rejected.
+
+**Amendment.** Single contract regardless of cardinality:
+
+```
+HTTP 200 ALWAYS when the request is well-formed and authenticated.
+Per-cube outcomes — including "cube not registered" — go in errors[].
+
+HTTP 4xx ONLY for request-level failures:
+  400 — malformed JSON, invalid schema_version
+  401 — missing/invalid bearer token
+  403 — auth valid but caller lacks reload capability (Phase 9+ — not enforced in 8.2)
+
+HTTP 5xx ONLY for daemon-internal failures:
+  500 — panic, OOM, journal I/O error
+  503 — daemon shutting down
+```
+
+**Why simpler beats more-RESTful.** Worker code is uniform:
+```ts
+const res = await reload({ cubes: ["nba-totals"] });
+if (res.errors.length > 0) handleErrors(res.errors);
+// proceed with res.reloaded
+```
+
+Mode-switching on cardinality forces the Worker to write two branches for the same logical outcome. Batch APIs (Stripe, Gmail Batch, Twilio bulk) all converged on "always 2xx + per-item status" for the same reason.
+
+**Cold-cube reload behavior (now explicit):**
+
+| Request | Cube state | Behavior |
+|---|---|---|
+| `cubes: ["X"]` | X registered + warm | Drain, recompile, replace; bump revision; `reloaded[]` includes X |
+| `cubes: ["X"]` | X registered + cold | Cold-load fresh from disk; cube ends up warm; `reloaded[]` includes X |
+| `cubes: ["X"]` | X not registered | `errors[]` entry: `MosaicError::UnknownCube` |
+| `cubes: []` or omitted | (any) | Reload every WARM cube; cold cubes stay cold; `reloaded[]` lists what got reloaded |
+
+Rationale for cold-cube reload: the verb is "reload" — if the cube exists in the workspace manifest, "reload" it (which for a cold cube means cold-load). The consumer who didn't want it warm wouldn't have named it.
+
+### Amendment 5: `GET /api/v1/openapi.json` promoted to Decision 10
+
+**Problem.** Decision-level commitments need to be numbered. The OpenAPI endpoint is a contract surface (the Worker codegens against it) — burying it in Implementation Step 5 + Notes is too quiet for something downstream consumers depend on.
+
+**Amendment.** Add Decision 10 to the body:
+
+> **Decision 10: OpenAPI spec endpoint — `GET /api/v1/openapi.json`**
+>
+> The daemon ships `GET /api/v1/openapi.json` as the authoritative machine-readable contract for all Phase 8.0 + 8.2 endpoints (and future endpoints as they ship). Consumers codegen client types against this spec.
+>
+> **Generation strategy: `utoipa` crate (`utoipa = "5"`).** Single dev-tier dep, attribute-driven, derives OpenAPI 3.x from the existing Rust request/response structs at compile time. Pre-flight verify dep tree depth (utoipa pulls in `serde_json` + `indexmap` — both already transitively present in mc-daemon via axum/serde; no new transitive runtime deps expected).
+>
+> **Alternative considered (rejected): hand-written static `openapi.json` + drift test.** Lower dep count but higher maintenance burden — every endpoint change requires manually updating two files (the code + the spec) and the drift test is non-trivial to write correctly. utoipa attribute-on-handler keeps the spec in sync mechanically.
+>
+> **Auth: same as other authenticated endpoints.** `/openapi.json` requires bearer token when `api_key` is configured. Rationale: the spec discloses internal endpoint shapes that aren't sensitive in themselves but reveal the operational surface. Symmetric with the other authenticated endpoints.
+
+If during implementation utoipa's dep tree turns out to be heavier than expected (audit reveals nalgebra-class transitive deps), fall back to the hand-written + drift-test approach. The contract surface stays the same; the generation mechanism is implementation detail.
+
+### Amendment 6: `/reload` 408 semantics documented
+
+**Problem.** Decision 9's timeout rule (timeout fires from the daemon's perspective; the actor continues to completion) is benign for read-ish endpoints. For `/reload` (state-changing) it's a footgun: client sees 408, retries, second reload starts while the first is still in flight → 409 conflict (or worse, double-recompile).
+
+**Amendment.** Add to Decision 9:
+
+> **`/reload` 408 caveat (operational note).** A 408 response from `/reload` means the HTTP request timed out, NOT that the reload operation was cancelled. The daemon's actor continues the reload to completion (or failure) and the result is discarded from the HTTP response. Clients receiving 408 on `/reload` MUST verify cube state via `GET /api/v1/cubes` (check revision number) or `GET /api/v1/status` before retrying. Retrying immediately can produce 409 ReloadInProgress conflicts.
+
+This documents the operational reality. Proper cancellation through the actor channel is Phase 9+ work — kernel changes required.
+
+### Amendment 7: Diagnostic codes are placeholders until preflight sweep
+
+**Problem.** Decision 8 hard-coded MC4015-MC4018 (plus this amendment block proposes MC4019-MC4021). Same risk pattern as ADR-0031 Amendment 3 — must verify against current `main` before allocating.
+
+**Amendment.** The diagnostic codes in this ADR are **semantic names + reserved slots**, not final assignments. Before implementation:
+
+```bash
+# Preflight: run from repo root
+grep -RE "MC4015|MC4016|MC4017|MC4018|MC4019|MC4020|MC4021" docs/ crates/ 2>/dev/null
+```
+
+For each code that returns a match, shift to the next unallocated MC40xx code. Update Decision 8 table + Decision 4 (sweep validation) + Amendment 2 (UnknownAggregation) + Amendment 3 (AmbiguousCoordinate / UnknownCoordinate) accordingly.
+
+Semantic names that stay stable across renumbering:
+- `SWEEP_TOO_LARGE` (was MC4015)
+- `UNKNOWN_COEFFICIENT` (was MC4016)
+- `OVERRIDE_TYPE_MISMATCH` (was MC4017)
+- `RELOAD_IN_PROGRESS` (was MC4018)
+- `UNKNOWN_AGGREGATION` (Amendment 2 — was MC4019)
+- `AMBIGUOUS_COORDINATE` (Amendment 3 — was MC4020)
+- `UNKNOWN_COORDINATE` (Amendment 3 — was MC4021 if not already in catalog)
+
+---
+
+*End of amendments. Body of ADR above is preserved for audit-trail purposes; amendments win on conflicts. Acceptance criteria #1-21 in the body are augmented by:*
+- *AC #22: `/sweep` supports both `vary.kind: "override"` and `vary.kind: "coefficient"` modes (Amendment 1)*
+- *AC #23: `metric` accepts structured `{measure, agg, where?}` object or null (Amendment 2)*
+- *AC #24: Override coordinate resolution returns AmbiguousCoordinate / UnknownCoordinate as appropriate (Amendment 3)*
+- *AC #25: `/reload` returns 200 with `errors[]` for all per-cube outcomes including UnknownCube; cold cubes named explicitly are loaded (Amendment 4)*
+- *AC #26: `/openapi.json` returns valid OpenAPI 3.x covering all 8.0 + 8.2 endpoints; generated via utoipa (or static fallback if dep audit fails) (Amendment 5)*
+- *AC #27: `/reload` 408 caveat documented in the daemon README operational notes section (Amendment 6)*
+- *AC #28: All diagnostic codes assigned post-preflight against current main; semantic names locked, numeric codes shifted only if collisions detected (Amendment 7)*
