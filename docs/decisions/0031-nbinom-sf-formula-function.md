@@ -1,7 +1,8 @@
 # ADR-0031: `nbinom_sf()` Negative Binomial Survival Function
 
-**Status:** Proposed
+**Status:** Proposed (with 7 acceptance amendments — see bottom; binding for implementation)
 **Date:** 2026-05-27
+**Last amended:** 2026-05-27 — review feedback folded in; fixture values corrected against scipy 1.13.1
 **Deciders:** project owner
 **Phase:** 3L (distributional formula primitives — first addition: `nbinom_sf`)
 **Crate(s) touched:** `mc-model` (parser) + `mc-core` (evaluator); no other crates
@@ -396,4 +397,263 @@ Both ship independently. Doing this ADR first does not block (1); doing (1) firs
 
 ## Acceptance amendments
 
-*(None as of authoring. Project owner review pending.)*
+The amendments below are **binding** for implementation and override the body of this ADR where they conflict. They were filed 2026-05-27 after external review (GPT-5.1 with high-effort thinking) caught a critical fixture-value error and proposed semantic and process improvements. Each amendment was independently verified before adoption — see Amendment 1 for the math check.
+
+### Amendment 1: Corrected reference fixtures (CRITICAL — blocks implementation)
+
+**Problem.** The research note's reference values were wrong. They appear to conflate `P(X ≥ k)` with `P(X > k)` (likely scipy was passed `k-1` or a non-flooring branch). The ADR body's test fixture `nbinom_sf(8.5, 8.5, 0.13) == 0.4513` was also off — within tolerance of the correct value but not derived from scipy.
+
+**Verification.** Independently computed against `scipy.stats.nbinom.sf(floor(k), n=1/α, p=1/(1+α·μ))` using scipy 1.13.1. Both the research note's values and the ADR body's test values disagree with scipy. The corrected values below ARE scipy-authoritative.
+
+**Reference-generation script (pin this verbatim in the test suite — `crates/mc-core/tests/nbinom_sf_fixtures.py`):**
+
+```python
+# Run with: python3 nbinom_sf_fixtures.py
+# Requires: scipy >= 1.11 (pinned for stable nbinom.sf behavior on half-integers)
+from scipy.stats import nbinom
+import math
+
+def sf(k, mu, alpha):
+    n = 1.0 / alpha
+    p = 1.0 / (1.0 + alpha * mu)
+    return float(nbinom.sf(math.floor(k), n, p))
+
+def cdf(k, mu, alpha):
+    n = 1.0 / alpha
+    p = 1.0 / (1.0 + alpha * mu)
+    return float(nbinom.cdf(math.floor(k), n, p))
+```
+
+**Acceptance fixture grid (scipy 1.13.1, 2026-05-27 — paste into test file verbatim):**
+
+| k     | mu   | alpha | nbinom_sf       | nbinom_cdf      | Note |
+|-------|------|-------|-----------------|-----------------|------|
+|  8.0  |  8.5 | 0.13  | 0.449201940     | 0.550798060     | MLB typical line, integer |
+|  8.5  |  8.5 | 0.13  | 0.449201940     | 0.550798060     | Half-integer — equals integer k=8 (floor convention test) |
+|  9.0  |  8.5 | 0.13  | 0.360882026     | 0.639117974     | MLB push-line behavior |
+| 10.0  |  8.5 | 0.13  | 0.283491963     | 0.716508037     | High line |
+| 20.0  |  8.5 | 0.13  | 0.010324246     | 0.989675754     | Extreme over (lottery) |
+|  0.0  |  4.0 | 0.15  | 0.956428740     | 0.043571260     | Low-mu, k=0 (almost always over) |
+|  4.0  |  4.0 | 0.15  | 0.367553663     | 0.632446337     | At-the-line low-scoring matchup |
+|  5.5  |  4.0 | 0.15  | 0.244569812     | 0.755430188     | Half-integer over, low-scoring |
+|  7.5  | 12.0 | 0.10  | 0.806240752     | 0.193759248     | Half-integer under, high-scoring |
+| 12.5  | 12.0 | 0.10  | 0.418033119     | 0.581966881     | Half-integer over, high-scoring |
+| -1.0  |  8.5 | 0.13  | 1.000000000     | 0.000000000     | Negative k → always over (X ≥ 0 invariant) |
+|  8.0  |  8.5 | 0.05  | 0.464321488     | 0.535678512     | Near-Poisson (small α) |
+|  8.0  |  8.5 | 0.30  | 0.425855506     | 0.574144494     | High dispersion |
+
+**Tolerance:** `1e-6` absolute, matching the precision regime of the direct-PMF-summation hand-roll. (The kernel-wide `1e-9` epsilon is reserved for exact float comparisons; PMF accumulation has wider numerical bounds.)
+
+**Acceptance gate:** Implementation MUST regenerate this table via the script above against the same scipy version, paste the output into a doc comment in the test file, and assert against the pasted values. If a future scipy version changes any value beyond `1e-6`, the implementer must surface the change in chat before silently adopting the new values — it indicates either a scipy bugfix (adopt it, update the table, note the version bump) or a regression (don't adopt it, pin to older scipy).
+
+### Amendment 2: Invalid-domain inputs return Null, not runtime error or NaN
+
+**Problem.** Decision 4 specified MC2058 runtime errors for `mu ≤ 0` or `alpha ≤ 0`, and NaN propagation for NaN inputs. This diverges from Mosaic formula-engine convention (Phase 3H `norm_cdf` returns Null for invalid sigma rather than erroring) and is dangerous for betting math — a NaN probability silently corrupts edge/Kelly/calibration calculations downstream.
+
+**Amendment.** Replace Decision 4's edge-case table with:
+
+| Input | Behavior | Diagnostic |
+|---|---|---|
+| `k < 0` | Return `1.0` (X non-negative; threshold below zero always exceeded) | None |
+| Any arg is `Null` | Return `Null` (Mosaic Null-propagation default) | None |
+| `mu <= 0` | Return `Null` | None |
+| `alpha <= 0` | Return `Null` | None |
+| Any arg is `NaN` | Return `Null` | None — never let NaN flow through |
+| Non-integer `k` (finite, ≥ 0) | Floor to integer per Amendment 6 | None |
+| `k` very large (>10000) | Returns approximately 0; no overflow | None |
+
+**Rationale.** Returning Null:
+- Matches Mosaic's null-propagation discipline (CLAUDE.md §2.5 — Null is the distinguished "no value" marker)
+- Prevents NaN poisoning downstream Kelly/edge math
+- Makes invalid inputs visible without crashing the request (the consumer can see Null in the response and react)
+- Aligns with Phase 3H `norm_cdf` precedent — sigma ≤ 0 returns Null, not error
+- A runtime error on the daemon surfaces as a 500 response; a Null surfaces as a calculable value the consumer can guard against. For a probability function, Null is always preferable.
+
+**MC2058 retired from this ADR.** The diagnostic code stays unallocated. If a future phase needs a runtime diagnostic for nbinom_sf (e.g., a deliberate strict-mode flag), allocate it then.
+
+**Optional companion (Amendment 2a):** A *lint-time* warning (not runtime) when a formula contains literal constants known to be invalid — e.g., `nbinom_sf(k, mu=-1, alpha=0.13)` with literal `-1` in the YAML. This catches authoring mistakes at validate-time without affecting runtime behavior. Diagnostic code reserved as **MC3013** (verify via Amendment 3 preflight before allocating). Optional — skip if it adds friction to implementation.
+
+### Amendment 3: Diagnostic codes are placeholders until preflight sweep
+
+**Problem.** Decision 5 hard-coded MC1018/MC1019/MC2058 (and Amendment 2a above proposes MC3013) before verifying these codes are unallocated against current `main`. Phase 3I had collision issues; treat this as a process discipline gate.
+
+**Amendment.** The diagnostic codes in this ADR are **semantic names + reserved slots**, not final assignments. Before implementation:
+
+```bash
+# Preflight: run from repo root
+grep -RE "MC1018|MC1019|MC3013" docs/ crates/ 2>/dev/null
+```
+
+For each code that returns a match, shift to the next unallocated code in the same range:
+- Parse range: MC10xx — next free after the highest existing MC10xx assignment
+- Lint range: MC30xx — next free after the highest existing MC30xx assignment
+
+**Update locations after preflight:** Decision 5 table, Implementation Step 1 (parser handler error messages), Implementation Step 5 (tests), and any doc comments referencing the codes. The semantic names (`NBINOM_SF_WRONG_ARG_COUNT`, `NBINOM_CDF_WRONG_ARG_COUNT`, `NBINOM_SF_INVALID_LITERAL_CONSTANT`) stay stable across the rename — only the numeric codes shift.
+
+MC2058 is **removed** entirely per Amendment 2 — no runtime diagnostic.
+
+### Amendment 4: "Numerically exact" → "validated against scipy within tolerance"
+
+**Problem.** Decision 7 claimed the hand-roll is "numerically exact for `k ∈ [0, ~50]`, `α ∈ [0.05, 1.0]`, `μ ∈ [0.5, 50]`." Floating-point recurrence is not exact — it accumulates roundoff. The ADR itself acknowledges precision loss outside the range, which contradicts the "exact" framing.
+
+**Amendment.** Decision 7's language updates to:
+
+> The hand-roll is **validated against `scipy.stats.nbinom.sf` within `1e-6` absolute tolerance** across the declared MLB operating range (`k ∈ [0, 50]`, `α ∈ [0.05, 1.0]`, `μ ∈ [0.5, 50]`).
+>
+> Outside this range the direct PMF sum can lose precision (PMF underflow at very large `k`; cumulative roundoff for `α` near 0 or `μ` very large). For consumers operating outside this range, see the future-work options in Decision 7 (log-space accumulation, incomplete-beta path). This phase does NOT certify accuracy outside the declared range.
+
+### Amendment 5: Shared helper — sf computed via cdf, not duplicated
+
+**Problem.** Decision 2 shows a `nbinom_sf_compute` body and Decision 3 says `nbinom_cdf` is the trivial complement. The risk: two implementations drift over time as future maintenance touches one path but not the other.
+
+**Amendment.** Implement `nbinom_cdf_compute` as the single source of truth; `nbinom_sf_compute` calls it:
+
+```rust
+/// Returns Some(cdf) for valid inputs, None for invalid (per Amendment 2).
+fn nbinom_cdf_compute(k: f64, mu: f64, alpha: f64) -> Option<f64> {
+    // Invalid-domain guards (Amendment 2)
+    if k.is_nan() || mu.is_nan() || alpha.is_nan() { return None; }
+    if mu <= 0.0 || alpha <= 0.0 { return None; }
+    let k_int = k.floor() as i64;
+    if k_int < 0 { return Some(0.0); }   // P(X <= negative) = 0; sf will be 1.0
+
+    let r = 1.0 / alpha;
+    let p = 1.0 / (1.0 + alpha * mu);
+
+    let mut cdf = p.powf(r);                 // pmf(0) = p^r
+    let mut pmf_i = cdf;
+    for i in 1..=k_int {
+        pmf_i *= (r + (i as f64) - 1.0) / (i as f64) * (1.0 - p);
+        cdf += pmf_i;
+    }
+    Some(cdf.clamp(0.0, 1.0))
+}
+
+fn nbinom_sf_compute(k: f64, mu: f64, alpha: f64) -> Option<f64> {
+    nbinom_cdf_compute(k, mu, alpha).map(|cdf| (1.0 - cdf).clamp(0.0, 1.0))
+}
+```
+
+The dispatch sites convert `None` to `ScalarValue::Null` per Amendment 2; convert `Some(x)` to `ScalarValue::Number(x)`. Both functions share one PMF accumulation loop; cannot drift.
+
+**Note on `k < 0` invariant:** `nbinom_cdf_compute(-1, ...)` returns `Some(0.0)`, so `nbinom_sf_compute(-1, ...)` returns `Some(1.0)`. This matches the ADR body's Decision 4 rule "negative k returns 1.0" — preserved through the shared helper.
+
+### Amendment 6: Half-integer + integer-push-line tests explicit
+
+**Problem.** Decision 6 documented the floor convention but the test list only had one fixture for it. The convention is load-bearing for sportsbook math and deserves more coverage.
+
+**Amendment.** The test suite MUST include these specific named tests (in addition to the Amendment 1 fixture grid):
+
+```rust
+#[test]
+fn t_nbinom_sf_half_integer_floor() {
+    // Per ADR §6: nbinom_sf(8.5, ...) == nbinom_sf(8.0, ...) == nbinom_sf(8.999, ...)
+    let a = nbinom_sf_compute(8.5,   8.5, 0.13).unwrap();
+    let b = nbinom_sf_compute(8.0,   8.5, 0.13).unwrap();
+    let c = nbinom_sf_compute(8.999, 8.5, 0.13).unwrap();
+    assert!((a - b).abs() < 1e-9, "8.5 must floor to 8.0");
+    assert!((b - c).abs() < 1e-9, "8.999 must floor to 8.0 (NOT round)");
+}
+
+#[test]
+fn t_nbinom_sf_integer_push_line() {
+    // Sportsbook push line: integer line. P(over) = P(X > 9) = sf(9).
+    // P(push) = P(X = 9) = cdf(9) - cdf(8) = pmf(9).
+    let sf_9   = nbinom_sf_compute(9.0,  8.5, 0.13).unwrap();
+    let cdf_9  = nbinom_cdf_compute(9.0, 8.5, 0.13).unwrap();
+    let cdf_8  = nbinom_cdf_compute(8.0, 8.5, 0.13).unwrap();
+    let push   = cdf_9 - cdf_8;
+    let under  = cdf_8;
+    let over   = sf_9;
+    // Sanity: P(over) + P(push) + P(under) = 1
+    assert!((over + push + under - 1.0).abs() < 1e-9);
+    // Expected push probability: pmf(9) under the locked convention
+    assert!(push > 0.0 && push < 1.0);
+}
+
+#[test]
+fn t_nbinom_sf_monotone_decreasing_in_k() {
+    // sf(k+1) <= sf(k) for all k (sf is non-increasing)
+    let mu = 8.5;
+    let alpha = 0.13;
+    let mut prev = 1.0;
+    for k in 0..=20 {
+        let s = nbinom_sf_compute(k as f64, mu, alpha).unwrap();
+        assert!(s <= prev + 1e-12, "sf must be non-increasing in k: sf({k})={s}, sf({k}-1)={prev}");
+        prev = s;
+    }
+}
+
+#[test]
+fn t_nbinom_sf_monotone_increasing_in_mu() {
+    // For fixed k, higher mu generally increases sf (more mass at high counts)
+    let k = 8.0;
+    let alpha = 0.13;
+    let sf_low  = nbinom_sf_compute(k, 4.0,  alpha).unwrap();
+    let sf_mid  = nbinom_sf_compute(k, 8.0,  alpha).unwrap();
+    let sf_high = nbinom_sf_compute(k, 12.0, alpha).unwrap();
+    assert!(sf_low < sf_mid,  "sf({k}, mu=4) < sf({k}, mu=8): {sf_low} vs {sf_mid}");
+    assert!(sf_mid < sf_high, "sf({k}, mu=8) < sf({k}, mu=12): {sf_mid} vs {sf_high}");
+}
+
+#[test]
+fn t_nbinom_sf_cdf_complement() {
+    // sf + cdf must equal 1.0 (within floating-point tolerance) — shared-helper invariant
+    let cases = [(8.0, 8.5, 0.13), (10.0, 8.5, 0.13), (0.0, 4.0, 0.15), (20.0, 8.5, 0.13)];
+    for (k, mu, alpha) in cases {
+        let sf  = nbinom_sf_compute(k, mu, alpha).unwrap();
+        let cdf = nbinom_cdf_compute(k, mu, alpha).unwrap();
+        assert!((sf + cdf - 1.0).abs() < 1e-9, "sf+cdf={} at k={k}", sf + cdf);
+    }
+}
+
+#[test]
+fn t_nbinom_sf_invalid_returns_null() {
+    // Per Amendment 2: invalid domain returns None (mapped to ScalarValue::Null at dispatch)
+    assert!(nbinom_sf_compute(8.0,  0.0, 0.13).is_none(), "mu=0 must return None");
+    assert!(nbinom_sf_compute(8.0, -1.0, 0.13).is_none(), "mu<0 must return None");
+    assert!(nbinom_sf_compute(8.0,  8.5,  0.0).is_none(), "alpha=0 must return None");
+    assert!(nbinom_sf_compute(8.0,  8.5, -0.5).is_none(), "alpha<0 must return None");
+    assert!(nbinom_sf_compute(f64::NAN, 8.5, 0.13).is_none(), "NaN k must return None");
+    assert!(nbinom_sf_compute(8.0, f64::NAN, 0.13).is_none(), "NaN mu must return None");
+    assert!(nbinom_sf_compute(8.0, 8.5, f64::NAN).is_none(), "NaN alpha must return None");
+}
+```
+
+These tests are in addition to the Amendment 1 fixture-grid tests (which assert specific scipy-reference values). The Amendment 6 tests verify *invariants* (monotonicity, complement, floor, push-decomposition, Null behavior) without depending on specific scipy values.
+
+### Amendment 7: Acceptance criteria updates
+
+Replace the original Decision-7-based acceptance criteria with:
+
+1. `nbinom_sf(k, mu, alpha)` parses as a formula function (semantic name MC code per Amendment 3 preflight)
+2. `nbinom_cdf(k, mu, alpha)` parses as a formula function (semantic name MC code per Amendment 3 preflight)
+3. Both compute correct values against the Amendment 1 fixture grid within `1e-6` tolerance — 13 fixture cases pasted from the Python regeneration script into the test file
+4. **Floor convention** test (Amendment 6 `t_nbinom_sf_half_integer_floor`)
+5. **Push-line decomposition** test (Amendment 6 `t_nbinom_sf_integer_push_line`)
+6. **Monotonicity in k** test (Amendment 6 `t_nbinom_sf_monotone_decreasing_in_k`)
+7. **Monotonicity in μ** test (Amendment 6 `t_nbinom_sf_monotone_increasing_in_mu`)
+8. **sf + cdf = 1** complement invariant test (Amendment 6 `t_nbinom_sf_cdf_complement`)
+9. **Invalid-domain → Null** test (Amendment 6 `t_nbinom_sf_invalid_returns_null`) — `mu ≤ 0`, `alpha ≤ 0`, NaN any arg all return `None`/`ScalarValue::Null`
+10. `k < 0` returns 1.0 without error (shared-helper preserves this through `cdf(-) = 0`)
+11. Validity-range documentation reflects Amendment 4 language ("validated against scipy within tolerance" — NOT "numerically exact")
+12. Shared-helper architecture per Amendment 5 — `nbinom_sf_compute` calls `nbinom_cdf_compute`; no PMF accumulation duplicated
+13. Diagnostic codes assigned post-preflight per Amendment 3
+14. No new external dependencies in `mc-model` or `mc-core` Cargo.toml
+15. All existing tests pass unchanged (NBA cartridge, Acme, all phase tests)
+16. `cargo test --workspace` passes
+17. `cargo clippy --all-targets --workspace -- -D warnings` passes
+18. `cargo fmt --check --all` clean
+19. JSON schema regenerated per Phase 3K — new `ParsedRuleBody` variants `#[derive(JsonSchema)]`; committed `docs/specs/mosaic-model-schema.json` updated; CI drift check passes
+20. Python reference-generation script committed at `crates/mc-core/tests/nbinom_sf_fixtures.py` with scipy version pin in a comment header
+
+**Soft acceptance (cartridge proof point — claw-core or Mosaic, separate commit):**
+- MLB cartridge migrated from baked `P_Over_NB` (Input) to formula-derived `P_Over_NB` (Derived via `nbinom_sf`)
+- `mc model whatif --coord '...Game=X,Measure=sharp_close_line' --value 9.5` returns updated `P_Over_NB`
+- Slider workflow ADR-0001 was built around works end-to-end for MLB
+
+The acceptance criteria in the body of this ADR (Decision-7-section §"Acceptance criteria") are SUPERSEDED by this Amendment 7 list. Implementer reads this list, not the original.
+
+---
+
+*End of amendments. Body of ADR above is preserved for audit-trail purposes; amendments win on conflicts.*
