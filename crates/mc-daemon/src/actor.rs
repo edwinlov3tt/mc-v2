@@ -39,6 +39,18 @@ pub enum CubeRequest {
         coord: CellCoordinate,
         reply: oneshot::Sender<Result<TraceResult, String>>,
     },
+    /// Phase 8.2: transient override query via `Cube::query_with_overrides`.
+    /// Per ADR-0032 Decision 3: no revision bump, no journal touch.
+    WhatIf {
+        read_coords: Vec<CellCoordinate>,
+        overrides: Vec<(CellCoordinate, ScalarValue)>,
+        reply: oneshot::Sender<Result<WhatIfResult, String>>,
+    },
+    /// Phase 8.2: force reload cube from disk.
+    /// Per ADR-0032 Decision 5 + Amendment 4.
+    Reload {
+        reply: oneshot::Sender<Result<ReloadResult, String>>,
+    },
     Shutdown {
         reply: oneshot::Sender<()>,
     },
@@ -64,6 +76,23 @@ pub struct WriteResult {
 pub struct TraceResult {
     pub value: ScalarValue,
     pub trace: Option<TraceNode>,
+}
+
+/// Result of a whatif (transient override) operation.
+/// Per ADR-0032 Decision 3: revision is unchanged.
+#[derive(Debug)]
+pub struct WhatIfResult {
+    pub values: Vec<mc_core::CellValue>,
+    pub revision: u64,
+}
+
+/// Result of a reload operation.
+/// Per ADR-0032 Decision 5 + Amendment 4.
+#[derive(Debug)]
+pub struct ReloadResult {
+    pub previous_revision: u64,
+    pub new_revision: u64,
+    pub duration_ms: u64,
 }
 
 /// State held by the actor (moved in/out of spawn_blocking).
@@ -174,6 +203,73 @@ async fn actor_loop(mut rx: mpsc::Receiver<CubeRequest>, mut state: ActorState) 
                         })
                         .map_err(|e| e.to_string());
                     (state, r)
+                })
+                .await;
+                match result {
+                    Ok((s, r)) => {
+                        state = s;
+                        let _ = reply.send(r);
+                    }
+                    Err(e) => {
+                        tracing::error!("spawn_blocking panicked: {e}");
+                        return;
+                    }
+                }
+            }
+            CubeRequest::WhatIf {
+                read_coords,
+                overrides,
+                reply,
+            } => {
+                let result = tokio::task::spawn_blocking(move || {
+                    let principal = state.principal;
+                    let r = state
+                        .cube
+                        .query_with_overrides(&read_coords, &overrides, principal)
+                        .map(|values| WhatIfResult {
+                            values,
+                            revision: state.cube.revision().0,
+                        })
+                        .map_err(|e| e.to_string());
+                    (state, r)
+                })
+                .await;
+                match result {
+                    Ok((s, r)) => {
+                        state = s;
+                        let _ = reply.send(r);
+                    }
+                    Err(e) => {
+                        tracing::error!("spawn_blocking panicked: {e}");
+                        return;
+                    }
+                }
+            }
+            CubeRequest::Reload { reply } => {
+                let result = tokio::task::spawn_blocking(move || {
+                    let start = std::time::Instant::now();
+                    let previous_revision = state.cube.revision().0;
+
+                    // Re-load the cube from disk using the existing model path.
+                    let load_result = crate::loader::load_cube(&state.model_dir);
+                    match load_result {
+                        Ok(loaded) => {
+                            state.cube = loaded.cube;
+                            state.refs = loaded.refs;
+                            state.principal = loaded.root_principal;
+                            let new_revision = state.cube.revision().0;
+                            let duration_ms = start.elapsed().as_millis() as u64;
+                            (
+                                state,
+                                Ok(ReloadResult {
+                                    previous_revision,
+                                    new_revision,
+                                    duration_ms,
+                                }),
+                            )
+                        }
+                        Err(e) => (state, Err(e.to_string())),
+                    }
                 })
                 .await;
                 match result {

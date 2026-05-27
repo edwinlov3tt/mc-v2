@@ -275,6 +275,12 @@ impl CubeCache {
         self.actors.len()
     }
 
+    /// Names of all warm (loaded) cubes.
+    /// Per ADR-0032 Amendment 4: `/reload` with omitted cubes reloads warm only.
+    pub fn warm_cube_names(&self) -> Vec<String> {
+        self.actors.keys().map(|k| k.cube_name.clone()).collect()
+    }
+
     /// Current memory usage in bytes.
     pub fn current_bytes(&self) -> usize {
         self.current_bytes
