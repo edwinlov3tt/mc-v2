@@ -1,0 +1,78 @@
+# yaml-language-server: $schema=../../docs/specs/mosaic-model-schema.json
+model_format_version: 1
+
+canonical_inputs:
+  source: "mlb-totals.inputs.csv"
+  columns: ["Scenario", "Version", "Game", "Measure", "value"]
+
+metadata:
+  name: "MLB_Totals_2022"
+  description: >
+    MLB game totals prediction model — 2022 full season (2353 games).
+    Predicts combined run totals from weather, venue, and game-type features
+    via a linear fitted model with predict(). Real data from claw-core
+    training parquet.
+  author: "Mosaic Sports-Betting Cartridge"
+  created: "2026-05-26"
+
+dimensions:
+  - name: Scenario
+    kind: Scenario
+    elements:
+      - name: Actual
+
+  - name: Version
+    kind: Version
+    elements:
+      - name: Working
+
+  - name: Game
+    kind: Standard
+    elements: []
+
+  - name: Measure
+    kind: Measure
+    elements: []
+
+measures:
+  - { name: Total_Score, description: "Actual combined runs", role: Input, data_type: F64, aggregation: Sum }
+  - { name: Weather_Temp, description: "Temperature °F", role: Input, data_type: F64, aggregation: Sum }
+  - { name: Wind_MPH, description: "Wind speed mph", role: Input, data_type: F64, aggregation: Sum }
+  - { name: Is_Day_Game, description: "1=day 0=night", role: Input, data_type: F64, aggregation: Sum }
+  - { name: Is_Dome, description: "1=dome 0=open", role: Input, data_type: F64, aggregation: Sum }
+  - { name: Elevation_Ft, description: "Venue elevation ft", role: Input, data_type: F64, aggregation: Sum }
+  - { name: Predicted_Total, description: "Model prediction", role: Derived, data_type: F64, aggregation: Sum }
+  - { name: Residual, description: "Actual - Predicted", role: Derived, data_type: F64, aggregation: Sum }
+  - { name: Abs_Error, description: "Absolute error", role: Derived, data_type: F64, aggregation: Sum }
+
+rules:
+  - name: predict_total
+    target_measure: Predicted_Total
+    body: 'predict("mlb_weather_model", Weather_Temp, Wind_MPH, Is_Day_Game, Is_Dome, Elevation_Ft)'
+    scope: AllLeaves
+    declared_dependencies: [Weather_Temp, Wind_MPH, Is_Day_Game, Is_Dome, Elevation_Ft]
+
+  - name: calc_residual
+    target_measure: Residual
+    body: "Total_Score - Predicted_Total"
+    scope: AllLeaves
+    declared_dependencies: [Total_Score, Predicted_Total]
+
+  - name: calc_abs_error
+    target_measure: Abs_Error
+    body: "abs(Total_Score - Predicted_Total)"
+    scope: AllLeaves
+    declared_dependencies: [Total_Score, Predicted_Total]
+
+fitted_models:
+  - name: mlb_weather_model
+    method: linear
+    intercept: 7.2
+    coefficients:
+      - { feature: Weather_Temp, weight: 0.012 }
+      - { feature: Wind_MPH, weight: 0.035 }
+      - { feature: Is_Day_Game, weight: -0.15 }
+      - { feature: Is_Dome, weight: -0.4 }
+      - { feature: Elevation_Ft, weight: 0.0003 }
+    residual_std: 3.5
+
