@@ -1,0 +1,25 @@
+workspace_format_version: 1
+name: "sports-betting"
+id: "sports-betting"
+description: "Sports-betting cartridge workspace — NBA totals (production V1.6 Lasso) + MLB totals (Phase 1.0)."
+domain: "sports-betting"
+
+# Shared dimension catalogs — none for now; each cartridge declares its own.
+shared_dimensions: []
+
+# Shared fitted models — none at the workspace level. Each cartridge embeds its own.
+shared_fitted_models: []
+
+# Cubes participating in this workspace.
+cubes:
+  - path: "nba-totals.yaml"
+    name: "NBA Totals (V1.6 Lasso)"
+  # MLB cartridge ships with ADR-0002 / Phase 1.0:
+  # - path: "mlb-totals.yaml"
+  #   name: "MLB Totals (V1.0 Lasso)"
+
+# Inter-cube links — none today. Future: cross-sport calibration could link.
+links: []
+
+# Workspace-level golden suites.
+golden_suites: []
