@@ -1,7 +1,8 @@
 # ADR-0030: Model Authoring Ergonomics — Auto-Element Population + JSON Schema
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-26
+**Accepted:** 2026-05-26 (shipped in commit `94f45e6`)
 **Deciders:** project owner
 **Phase:** 3K (model authoring ergonomics)
 **Crate:** `mc-model` only
