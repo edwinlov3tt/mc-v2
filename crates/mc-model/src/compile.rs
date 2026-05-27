@@ -857,6 +857,21 @@ fn compile_expr(
             let sigma = compile_expr(&b.sigma, refs, validated)?;
             Ok(Expr::NormCdf(Box::new(x), Box::new(mu), Box::new(sigma)))
         }
+        // Per docs/decisions/0031-nbinom-sf-formula-function.md §3:
+        // ParsedRuleBody::Nbinom* compiles to the matching Expr::Nbinom*
+        // variant with three recursively-compiled sub-expressions.
+        ParsedRuleBody::NbinomSf(b) => {
+            let k = compile_expr(&b.k, refs, validated)?;
+            let mu = compile_expr(&b.mu, refs, validated)?;
+            let alpha = compile_expr(&b.alpha, refs, validated)?;
+            Ok(Expr::NbinomSf(Box::new(k), Box::new(mu), Box::new(alpha)))
+        }
+        ParsedRuleBody::NbinomCdf(b) => {
+            let k = compile_expr(&b.k, refs, validated)?;
+            let mu = compile_expr(&b.mu, refs, validated)?;
+            let alpha = compile_expr(&b.alpha, refs, validated)?;
+            Ok(Expr::NbinomCdf(Box::new(k), Box::new(mu), Box::new(alpha)))
+        }
         // Phase 3I: math primitives
         ParsedRuleBody::Pow(b) => {
             let base = compile_expr(&b.base, refs, validated)?;

@@ -3368,6 +3368,14 @@ fn validate_expr_well_typed(expr: &Expr, measure_dim: &Dimension) -> Result<(), 
             validate_expr_well_typed(sigma, measure_dim)?;
             Ok(())
         }
+        // Per docs/decisions/0031-nbinom-sf-formula-function.md §3:
+        // nbinom_sf/nbinom_cdf take three numeric sub-expressions (k, mu, alpha).
+        Expr::NbinomSf(k, mu, alpha) | Expr::NbinomCdf(k, mu, alpha) => {
+            validate_expr_well_typed(k, measure_dim)?;
+            validate_expr_well_typed(mu, measure_dim)?;
+            validate_expr_well_typed(alpha, measure_dim)?;
+            Ok(())
+        }
         // Phase 3I: math primitives
         Expr::Pow(a, b) | Expr::Mod(a, b) => {
             validate_expr_well_typed(a, measure_dim)?;

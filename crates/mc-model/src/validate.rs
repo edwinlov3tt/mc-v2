@@ -727,6 +727,13 @@ fn check_binop_arity(body: &ParsedRuleBody, rule_name: &str, errors: &mut Vec<Va
             check_binop_arity(&b.sigma, rule_name, errors);
             return;
         }
+        // Phase 3L: nbinom_sf / nbinom_cdf — descend into k, mu, alpha.
+        ParsedRuleBody::NbinomSf(b) | ParsedRuleBody::NbinomCdf(b) => {
+            check_binop_arity(&b.k, rule_name, errors);
+            check_binop_arity(&b.mu, rule_name, errors);
+            check_binop_arity(&b.alpha, rule_name, errors);
+            return;
+        }
         // Phase 3I
         ParsedRuleBody::Pow(b) => {
             check_binop_arity(&b.base, rule_name, errors);
@@ -881,6 +888,11 @@ fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
             collect_body_refs(&b.x, out);
             collect_body_refs(&b.mu, out);
             collect_body_refs(&b.sigma, out);
+        }
+        ParsedRuleBody::NbinomSf(b) | ParsedRuleBody::NbinomCdf(b) => {
+            collect_body_refs(&b.k, out);
+            collect_body_refs(&b.mu, out);
+            collect_body_refs(&b.alpha, out);
         }
         // Phase 3I
         ParsedRuleBody::Pow(b) => {
@@ -1165,6 +1177,9 @@ fn uses_time_series(body: &ParsedRuleBody) -> bool {
         ParsedRuleBody::NormCdf(b) => {
             uses_time_series(&b.x) || uses_time_series(&b.mu) || uses_time_series(&b.sigma)
         }
+        ParsedRuleBody::NbinomSf(b) | ParsedRuleBody::NbinomCdf(b) => {
+            uses_time_series(&b.k) || uses_time_series(&b.mu) || uses_time_series(&b.alpha)
+        }
         // Phase 3I: math primitives are local — recurse into operands.
         ParsedRuleBody::Pow(b) => uses_time_series(&b.base) || uses_time_series(&b.exponent),
         ParsedRuleBody::Sqrt(b)
@@ -1252,6 +1267,9 @@ fn uses_actual_ref(body: &ParsedRuleBody) -> bool {
         ParsedRuleBody::Exp(b) => uses_actual_ref(&b.operand),
         ParsedRuleBody::NormCdf(b) => {
             uses_actual_ref(&b.x) || uses_actual_ref(&b.mu) || uses_actual_ref(&b.sigma)
+        }
+        ParsedRuleBody::NbinomSf(b) | ParsedRuleBody::NbinomCdf(b) => {
+            uses_actual_ref(&b.k) || uses_actual_ref(&b.mu) || uses_actual_ref(&b.alpha)
         }
         // Phase 3I
         ParsedRuleBody::Pow(b) => uses_actual_ref(&b.base) || uses_actual_ref(&b.exponent),
@@ -1449,6 +1467,11 @@ fn find_cross_coord_nesting(body: &ParsedRuleBody) -> Option<String> {
         ParsedRuleBody::NormCdf(b) => find_cross_coord_nesting(&b.x)
             .or_else(|| find_cross_coord_nesting(&b.mu))
             .or_else(|| find_cross_coord_nesting(&b.sigma)),
+        ParsedRuleBody::NbinomSf(b) | ParsedRuleBody::NbinomCdf(b) => {
+            find_cross_coord_nesting(&b.k)
+                .or_else(|| find_cross_coord_nesting(&b.mu))
+                .or_else(|| find_cross_coord_nesting(&b.alpha))
+        }
         // Phase 3I
         ParsedRuleBody::Pow(b) => {
             find_cross_coord_nesting(&b.base).or_else(|| find_cross_coord_nesting(&b.exponent))
@@ -2002,6 +2025,11 @@ fn uses_anchor_function(body: &ParsedRuleBody) -> bool {
                 || uses_anchor_function(&b.mu)
                 || uses_anchor_function(&b.sigma)
         }
+        ParsedRuleBody::NbinomSf(b) | ParsedRuleBody::NbinomCdf(b) => {
+            uses_anchor_function(&b.k)
+                || uses_anchor_function(&b.mu)
+                || uses_anchor_function(&b.alpha)
+        }
         // Phase 3I
         ParsedRuleBody::Pow(b) => {
             uses_anchor_function(&b.base) || uses_anchor_function(&b.exponent)
@@ -2535,6 +2563,11 @@ fn walk_is_element_and_over(
             walk_is_element_and_over(&b.mu, rule_name, dim_names, known_measures, errors);
             walk_is_element_and_over(&b.sigma, rule_name, dim_names, known_measures, errors);
         }
+        ParsedRuleBody::NbinomSf(b) | ParsedRuleBody::NbinomCdf(b) => {
+            walk_is_element_and_over(&b.k, rule_name, dim_names, known_measures, errors);
+            walk_is_element_and_over(&b.mu, rule_name, dim_names, known_measures, errors);
+            walk_is_element_and_over(&b.alpha, rule_name, dim_names, known_measures, errors);
+        }
         ParsedRuleBody::Pow(b) => {
             walk_is_element_and_over(&b.base, rule_name, dim_names, known_measures, errors);
             walk_is_element_and_over(&b.exponent, rule_name, dim_names, known_measures, errors);
@@ -2722,6 +2755,11 @@ fn walk_predict_arity(
             walk_predict_arity(&b.mu, rule_name, models, errors);
             walk_predict_arity(&b.sigma, rule_name, models, errors);
         }
+        ParsedRuleBody::NbinomSf(b) | ParsedRuleBody::NbinomCdf(b) => {
+            walk_predict_arity(&b.k, rule_name, models, errors);
+            walk_predict_arity(&b.mu, rule_name, models, errors);
+            walk_predict_arity(&b.alpha, rule_name, models, errors);
+        }
         ParsedRuleBody::Pow(b) => {
             walk_predict_arity(&b.base, rule_name, models, errors);
             walk_predict_arity(&b.exponent, rule_name, models, errors);
@@ -2840,6 +2878,8 @@ fn expr_static_type(body: &ParsedRuleBody) -> ExprStaticType {
         | ParsedRuleBody::Calibrate(_)
         | ParsedRuleBody::Exp(_)
         | ParsedRuleBody::NormCdf(_)
+        | ParsedRuleBody::NbinomSf(_)
+        | ParsedRuleBody::NbinomCdf(_)
         | ParsedRuleBody::Pow(_)
         | ParsedRuleBody::Sqrt(_)
         | ParsedRuleBody::Ln(_)
@@ -3175,6 +3215,22 @@ fn check_str_type_context_walk(
             check_str_type_context_walk(&b.mu, rule_name, errors);
             check_str_type_context_walk(&b.sigma, rule_name, errors);
         }
+        // Phase 3L: nbinom_sf / nbinom_cdf take 3 numeric args (k, mu, alpha).
+        ParsedRuleBody::NbinomSf(b) | ParsedRuleBody::NbinomCdf(b) => {
+            if expr_static_type(&b.k) == T::Str
+                || expr_static_type(&b.mu) == T::Str
+                || expr_static_type(&b.alpha) == T::Str
+            {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "rule {rule_name:?}: nbinom_sf/nbinom_cdf received a Str operand (MC1026)"
+                    ),
+                });
+            }
+            check_str_type_context_walk(&b.k, rule_name, errors);
+            check_str_type_context_walk(&b.mu, rule_name, errors);
+            check_str_type_context_walk(&b.alpha, rule_name, errors);
+        }
         // Calibrate value must be numeric.
         ParsedRuleBody::Calibrate(b) => {
             if expr_static_type(&b.value) == T::Str {
@@ -3452,6 +3508,11 @@ fn walk_param_refs(
             walk_param_refs(&b.x, rule_name, declared, errors);
             walk_param_refs(&b.mu, rule_name, declared, errors);
             walk_param_refs(&b.sigma, rule_name, declared, errors);
+        }
+        ParsedRuleBody::NbinomSf(b) | ParsedRuleBody::NbinomCdf(b) => {
+            walk_param_refs(&b.k, rule_name, declared, errors);
+            walk_param_refs(&b.mu, rule_name, declared, errors);
+            walk_param_refs(&b.alpha, rule_name, declared, errors);
         }
         ParsedRuleBody::Pow(b) => {
             walk_param_refs(&b.base, rule_name, declared, errors);
@@ -3766,6 +3827,11 @@ fn walk_scenario_and_fallback(
             walk_scenario_and_fallback(&b.mu, rule_name, scenario_elems, errors);
             walk_scenario_and_fallback(&b.sigma, rule_name, scenario_elems, errors);
         }
+        ParsedRuleBody::NbinomSf(b) | ParsedRuleBody::NbinomCdf(b) => {
+            walk_scenario_and_fallback(&b.k, rule_name, scenario_elems, errors);
+            walk_scenario_and_fallback(&b.mu, rule_name, scenario_elems, errors);
+            walk_scenario_and_fallback(&b.alpha, rule_name, scenario_elems, errors);
+        }
         ParsedRuleBody::Pow(b) => {
             walk_scenario_and_fallback(&b.base, rule_name, scenario_elems, errors);
             walk_scenario_and_fallback(&b.exponent, rule_name, scenario_elems, errors);
@@ -3893,6 +3959,11 @@ fn body_uses_extrapolate(body: &ParsedRuleBody) -> bool {
             body_uses_extrapolate(&b.x)
                 || body_uses_extrapolate(&b.mu)
                 || body_uses_extrapolate(&b.sigma)
+        }
+        ParsedRuleBody::NbinomSf(b) | ParsedRuleBody::NbinomCdf(b) => {
+            body_uses_extrapolate(&b.k)
+                || body_uses_extrapolate(&b.mu)
+                || body_uses_extrapolate(&b.alpha)
         }
         ParsedRuleBody::Pow(b) => {
             body_uses_extrapolate(&b.base) || body_uses_extrapolate(&b.exponent)

@@ -349,6 +349,11 @@ fn collect_self_refs(expr: &mc_core::Expr) -> std::collections::HashSet<mc_core:
                 walk(mu, acc);
                 walk(sigma, acc);
             }
+            mc_core::Expr::NbinomSf(k, mu, alpha) | mc_core::Expr::NbinomCdf(k, mu, alpha) => {
+                walk(k, acc);
+                walk(mu, acc);
+                walk(alpha, acc);
+            }
             // Phase 3I
             mc_core::Expr::Pow(a, b) | mc_core::Expr::Mod(a, b) => {
                 walk(a, acc);

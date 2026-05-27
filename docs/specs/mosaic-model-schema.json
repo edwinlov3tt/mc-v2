@@ -1192,6 +1192,26 @@
       },
       "additionalProperties": false
     },
+    "ParsedNbinomBody": {
+      "description": "`nbinom_sf(k, mu, alpha)` / `nbinom_cdf(k, mu, alpha)` — Negative Binomial survival function and CDF in mean-dispersion parametrization. Shared body shape per docs/decisions/0031-nbinom-sf-formula-function.md §3 (Decision 1).",
+      "type": "object",
+      "required": [
+        "alpha",
+        "k",
+        "mu"
+      ],
+      "properties": {
+        "alpha": {
+          "$ref": "#/definitions/ParsedRuleBody"
+        },
+        "k": {
+          "$ref": "#/definitions/ParsedRuleBody"
+        },
+        "mu": {
+          "$ref": "#/definitions/ParsedRuleBody"
+        }
+      }
+    },
     "ParsedNormCdfBody": {
       "description": "`norm_cdf(x, mu, sigma)` — normal distribution CDF",
       "type": "object",
@@ -1796,6 +1816,22 @@
           "allOf": [
             {
               "$ref": "#/definitions/ParsedNormCdfBody"
+            }
+          ]
+        },
+        {
+          "description": "`nbinom_sf(k, mu, alpha)` — Negative Binomial survival function `P(X > floor(k))` in mean-dispersion parametrization.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ParsedNbinomBody"
+            }
+          ]
+        },
+        {
+          "description": "`nbinom_cdf(k, mu, alpha)` — Negative Binomial CDF `P(X ≤ floor(k))`.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ParsedNbinomBody"
             }
           ]
         },
