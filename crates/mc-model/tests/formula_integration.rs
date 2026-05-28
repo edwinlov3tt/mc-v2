@@ -4335,32 +4335,32 @@ dimensions:
   - name: "Scenario"
     kind: "Scenario"
     elements:
-      - {{ name: "Base", scenario_meta: "Default" }}
+      - { name: "Base", scenario_meta: "Default" }
   - name: "Version"
     kind: "Version"
     elements:
-      - {{ name: "Working", version_state: "Draft" }}
+      - { name: "Working", version_state: "Draft" }
   - name: "Time"
     kind: "Time"
     elements:
-      - {{ name: "P1" }}
+      - { name: "P1" }
   - name: "Channel"
     kind: "Standard"
     elements:
-      - {{ name: "Web" }}
+      - { name: "Web" }
   - name: "Market"
     kind: "Standard"
     elements:
-      - {{ name: "Houston" }}
-      - {{ name: "Dallas" }}
-      - {{ name: "Austin" }}
+      - { name: "Houston" }
+      - { name: "Dallas" }
+      - { name: "Austin" }
   - name: "Measure"
     kind: "Measure"
     elements: []
 measures:
-  - {{ name: "Spend", role: "Input", data_type: "F64", aggregation: "Sum" }}
-  - {{ name: "IsPresent", role: "Derived", data_type: "F64", aggregation: "Sum" }}
-  - {{ name: "Result", role: "Derived", data_type: "F64", aggregation: "Sum" }}
+  - { name: "Spend", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "IsPresent", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "Result", role: "Derived", data_type: "F64", aggregation: "Sum" }
 rules:
   - name: "rule_is_present"
     target_measure: "IsPresent"
