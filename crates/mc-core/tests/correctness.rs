@@ -380,6 +380,16 @@ fn collect_self_refs(expr: &mc_core::Expr) -> std::collections::HashSet<mc_core:
                 acc.insert(*value);
                 acc.insert(*weight);
             }
+            // Phase 10A (ADR-0033): metrics primitives.
+            mc_core::Expr::StdOver(_, m)
+            | mc_core::Expr::VarOver(_, m)
+            | mc_core::Expr::CountOver(_, m) => {
+                acc.insert(*m);
+            }
+            mc_core::Expr::WilsonCiLower(p, n) | mc_core::Expr::WilsonCiUpper(p, n) => {
+                walk(p, acc);
+                walk(n, acc);
+            }
             // Phase 3J: string-domain primitives + param don't introduce SelfRef.
             mc_core::Expr::StrLiteral(_)
             | mc_core::Expr::CurrentElementName(_)
