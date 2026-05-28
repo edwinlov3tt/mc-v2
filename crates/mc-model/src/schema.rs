@@ -482,6 +482,30 @@ pub enum ParsedRuleBody {
     MaxOver(ParsedSumOverBody),
     /// `wavg_over(measure, dim, weight_measure)` — weighted average.
     WAvgOver(ParsedWAvgOverBody),
+
+    // -- Phase 10A: evaluation metrics primitives (ADR-0033) --
+    // The three new `_over` variants reuse `ParsedSumOverBody` (the
+    // `dimension`/`measure` pair) the same way `AvgOver`/`MinOver`/`MaxOver`
+    // do. Like those siblings, they accept BARE MEASURES ONLY for the
+    // second arg per Amendment 1 — no inline expressions in this phase.
+    /// `std_over(measure, dim)` — sample standard deviation (ddof=1) of
+    /// `measure` across leaves of `dim`. Per ADR-0033 Amendment 3.
+    StdOver(ParsedSumOverBody),
+    /// `var_over(measure, dim)` — sample variance (ddof=1).
+    VarOver(ParsedSumOverBody),
+    /// `count_over(measure, dim)` — count of non-null evaluated `measure`
+    /// values across leaves of `dim`. Per ADR-0033 Amendment 2, the
+    /// measure is evaluated at every leaf (same dispatch as `sum_over`),
+    /// not counted from already-materialized store entries.
+    CountOver(ParsedSumOverBody),
+    /// `wilson_ci_lower(p, n)` — Wilson 95% confidence-interval lower
+    /// bound on a binomial proportion `p = k/n`. Both arguments are
+    /// arbitrary numeric expressions (mirrors `norm_cdf` shape). Invalid
+    /// inputs (n ≤ 0, p ∉ [0,1], NaN any arg) return Null per
+    /// ADR-0033 Decision 3 and ADR-0031 Amendment 2.
+    WilsonCiLower(ParsedWilsonBody),
+    /// `wilson_ci_upper(p, n)` — Wilson 95% confidence-interval upper bound.
+    WilsonCiUpper(ParsedWilsonBody),
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
@@ -757,6 +781,17 @@ pub struct ParsedWAvgOverBody {
     pub dimension: String,
     pub value_measure: String,
     pub weight_measure: String,
+}
+
+/// `wilson_ci_lower(p, n)` / `wilson_ci_upper(p, n)` — Wilson 95%
+/// confidence-interval bounds on a binomial proportion. Shared body
+/// shape per ADR-0033 Decision 2; both arguments are arbitrary numeric
+/// expressions (mirrors `norm_cdf`'s shape, not `_over`'s bare-identifier
+/// constraint — Wilson's args are scalars, not measure references).
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+pub struct ParsedWilsonBody {
+    pub p: Box<ParsedRuleBody>,
+    pub n: Box<ParsedRuleBody>,
 }
 
 /// Phase 3J item 4: default `data_type` for an `Indicator` measure when

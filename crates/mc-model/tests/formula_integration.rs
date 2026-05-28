@@ -4200,6 +4200,331 @@ fn test_avg_over_equals_wavg_over_with_unit_weights() {
 }
 
 // ============================================================================
+// Phase 10A (ADR-0033) — evaluation metrics primitives
+//
+// std_over / var_over / count_over plus wilson_ci_lower / wilson_ci_upper.
+// The _over variants mirror the avg_over / min_over / max_over tests above
+// — same (measure, dim) bare-identifier shape (Amendment 1), same skip-
+// Null semantics. count_over uses an explicit per-leaf eval per Amendment 2.
+// Wilson is tested at the parse + integration layer here; closed-form
+// numeric correctness against statsmodels lives in
+// `crates/mc-core/tests/metrics.rs`.
+// ============================================================================
+
+#[test]
+fn test_std_over_basic() {
+    // Per ADR-0033 Amendment 3: sample variance (ddof=1).
+    // std_over of [100, 200, 300] = sample std with n=3 = 100.0.
+    let yaml = over_model("std_over(Spend, Market)", r#""Spend""#);
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_market_inputs(
+        &mut cube,
+        &compiled.refs,
+        p,
+        "Spend",
+        &[("Houston", 100.0), ("Dallas", 200.0), ("Austin", 300.0)],
+    );
+    match read_houston_result(&mut cube, &compiled.refs, p) {
+        ScalarValue::F64(v) => assert_f64_eq(v, 100.0, "std_over of [100,200,300], ddof=1"),
+        other => panic!("expected F64, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_var_over_basic() {
+    // var_over of [100, 200, 300] = 10000.0 (ddof=1).
+    let yaml = over_model("var_over(Spend, Market)", r#""Spend""#);
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_market_inputs(
+        &mut cube,
+        &compiled.refs,
+        p,
+        "Spend",
+        &[("Houston", 100.0), ("Dallas", 200.0), ("Austin", 300.0)],
+    );
+    match read_houston_result(&mut cube, &compiled.refs, p) {
+        ScalarValue::F64(v) => assert_f64_eq(v, 10000.0, "var_over of [100,200,300], ddof=1"),
+        other => panic!("expected F64, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_std_over_n_less_than_2_returns_null() {
+    // Per Decision 3 + Amendment 3: sample variance is undefined for
+    // n<2; std_over / var_over return Null. With only Houston written
+    // (n=1 non-Null leaf), the result is Null.
+    let yaml = over_model("std_over(Spend, Market)", r#""Spend""#);
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_market_inputs(&mut cube, &compiled.refs, p, "Spend", &[("Houston", 42.0)]);
+    let val = read_houston_result(&mut cube, &compiled.refs, p);
+    assert_null(val, "std_over of single-value sample returns Null");
+}
+
+#[test]
+fn test_count_over_evaluates_input_leaves() {
+    // Per Amendment 2: count_over evaluates the measure at every leaf
+    // via the same dispatch as sum_over (it does NOT count cells from
+    // the store). For an Input measure, eval == store-read, so a
+    // 2-of-3 write gives count=2.
+    let yaml = over_model("count_over(Spend, Market)", r#""Spend""#);
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_market_inputs(
+        &mut cube,
+        &compiled.refs,
+        p,
+        "Spend",
+        &[("Houston", 100.0), ("Austin", 300.0)],
+    );
+    match read_houston_result(&mut cube, &compiled.refs, p) {
+        ScalarValue::F64(v) => assert_f64_eq(v, 2.0, "count_over of 2-of-3 non-Null leaves"),
+        other => panic!("expected F64, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_count_over_empty_scope_returns_zero() {
+    // Per Decision 3: count_over returns 0.0 (NOT Null) for an empty
+    // scope — zero is information. Distinct from std_over / var_over,
+    // which return Null because the statistic is undefined.
+    let yaml = over_model("count_over(Spend, Market)", r#""Spend""#);
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    // No writes — every Market leaf reads as Null.
+    match read_houston_result(&mut cube, &compiled.refs, p) {
+        ScalarValue::F64(v) => assert_f64_eq(v, 0.0, "count_over of all-Null returns 0.0"),
+        other => panic!("expected F64(0.0), got {other:?}"),
+    }
+}
+
+#[test]
+fn test_count_over_evaluates_derived_measure() {
+    // Per Amendment 2 (the load-bearing integration test for the
+    // "evaluates measure at every leaf" semantic): count_over with a
+    // derived measure must trigger the per-leaf rule eval and count
+    // the non-Null results, NOT the store's pre-materialized cells.
+    //
+    // Setup: Spend is Input (written sparsely — 2 of 3 Market leaves),
+    // IsPresent is Derived `if(Spend > 0, 1.0, 0.0)`, and Result is
+    // `count_over(IsPresent, Market)`.
+    //
+    // IsPresent is NEVER written to the store (it's Derived). If
+    // count_over were tallying store entries, the result would be 0.
+    // It returns 3 instead: at every Market leaf the IsPresent rule
+    // evaluates and returns a non-Null F64 (1.0 where Spend is
+    // written, 0.0 where Spend is Null because `if`'s else branch
+    // fires for the falsy Null-comparison result). 3 ≠ 0 unambiguously
+    // proves count_over invokes per-leaf evaluation rather than
+    // reading store materialization.
+    let yaml = r#"
+model_format_version: 1
+metadata:
+  name: "CountOverDerived"
+  description: "Amendment 2 integration"
+  author: "test"
+  created: "2026-05-27"
+dimensions:
+  - name: "Scenario"
+    kind: "Scenario"
+    elements:
+      - {{ name: "Base", scenario_meta: "Default" }}
+  - name: "Version"
+    kind: "Version"
+    elements:
+      - {{ name: "Working", version_state: "Draft" }}
+  - name: "Time"
+    kind: "Time"
+    elements:
+      - {{ name: "P1" }}
+  - name: "Channel"
+    kind: "Standard"
+    elements:
+      - {{ name: "Web" }}
+  - name: "Market"
+    kind: "Standard"
+    elements:
+      - {{ name: "Houston" }}
+      - {{ name: "Dallas" }}
+      - {{ name: "Austin" }}
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+measures:
+  - {{ name: "Spend", role: "Input", data_type: "F64", aggregation: "Sum" }}
+  - {{ name: "IsPresent", role: "Derived", data_type: "F64", aggregation: "Sum" }}
+  - {{ name: "Result", role: "Derived", data_type: "F64", aggregation: "Sum" }}
+rules:
+  - name: "rule_is_present"
+    target_measure: "IsPresent"
+    scope: "AllLeaves"
+    body: "if(Spend > 0, 1.0, 0.0)"
+    declared_dependencies: ["Spend"]
+  - name: "rule_result"
+    target_measure: "Result"
+    scope: "AllLeaves"
+    body: "count_over(IsPresent, Market)"
+    declared_dependencies: ["IsPresent"]
+"#;
+    let compiled = build_test_cube(yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    write_market_inputs(
+        &mut cube,
+        &compiled.refs,
+        p,
+        "Spend",
+        &[("Houston", 100.0), ("Austin", 300.0)],
+    );
+    match read_houston_result(&mut cube, &compiled.refs, p) {
+        ScalarValue::F64(v) => assert_f64_eq(
+            v,
+            3.0,
+            "count_over must evaluate IsPresent per leaf (Amendment 2): \
+             expected 3 non-Null evaluations across Market (IsPresent is \
+             Derived, never stored — 3 ≠ 0 proves per-leaf eval)",
+        ),
+        other => panic!("expected F64(3.0), got {other:?}"),
+    }
+}
+
+/// Read `Result` at the single (Base, Working, P1, Web, US) coord that
+/// `simple_model` produces. Mirrors the existing pattern used by the
+/// Phase 3E if/comparison tests above.
+fn read_simple_result(
+    cube: &mut mc_core::Cube,
+    refs: &ModelRefs,
+    p: mc_core::PrincipalId,
+) -> ScalarValue {
+    read_value(
+        cube,
+        refs,
+        p,
+        &[
+            ("Scenario", "Base"),
+            ("Version", "Working"),
+            ("Time", "P1"),
+            ("Channel", "Web"),
+            ("Market", "US"),
+            ("Measure", "Result"),
+        ],
+    )
+}
+
+#[test]
+fn test_wilson_ci_lower_basic() {
+    // Wilson takes arbitrary numeric expressions (not bare measures).
+    // wilson_ci_lower(0.5, 100) = 0.403831530 per metrics.rs fixtures.
+    let yaml = simple_model("wilson_ci_lower(0.5, 100)", "");
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    match read_simple_result(&mut cube, &compiled.refs, p) {
+        ScalarValue::F64(v) => {
+            assert!(
+                (v - 0.403831530).abs() < 1e-6,
+                "wilson_ci_lower(0.5, 100) = 0.403831530, got {v}"
+            );
+        }
+        other => panic!("expected F64, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_wilson_ci_upper_basic() {
+    // wilson_ci_upper(0.5, 100) = 0.596168470.
+    let yaml = simple_model("wilson_ci_upper(0.5, 100)", "");
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    match read_simple_result(&mut cube, &compiled.refs, p) {
+        ScalarValue::F64(v) => {
+            assert!(
+                (v - 0.596168470).abs() < 1e-6,
+                "wilson_ci_upper(0.5, 100) = 0.596168470, got {v}"
+            );
+        }
+        other => panic!("expected F64, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_wilson_ci_invalid_returns_null_via_eval() {
+    // Per Decision 3 + ADR-0031 Amendment 2: invalid inputs (n=0, p>1,
+    // negative p, NaN) return Null. Tested at the eval layer here;
+    // the compute helper is exercised in metrics.rs.
+    let yaml = simple_model("wilson_ci_lower(0.5, 0)", "");
+    let compiled = build_test_cube(&yaml);
+    let mut cube = compiled.cube;
+    let p = compiled.root_principal;
+    let val = read_simple_result(&mut cube, &compiled.refs, p);
+    assert_null(val, "wilson with n=0 returns Null");
+}
+
+// ----------------------------------------------------------------------------
+// Parse-time tests — wrong arg count → MC1008 per Amendment 6
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_std_over_wrong_arity_mc1008() {
+    // std_over takes exactly 2 args; passing 1 → MC1008 via the shared
+    // wrong_arg_count helper. Same MC code as the rest of the _over
+    // family (Amendment 6). The MC code is attached via the
+    // ParseError::code() method, not interpolated into the Debug
+    // message — match the variant name + the per-fn-name disambiguator
+    // in the message text instead.
+    let yaml = over_model("std_over(Spend)", r#""Spend""#);
+    let errs = mc_model::load_str(&yaml, Some("test".into())).unwrap_err();
+    let any = errs.iter().any(|e| {
+        let s = format!("{e:?}");
+        s.contains("FormulaWrongArgCount") && s.contains("std_over")
+    });
+    assert!(
+        any,
+        "expected MC1008 (FormulaWrongArgCount) mentioning std_over: {errs:?}"
+    );
+}
+
+#[test]
+fn test_wilson_ci_lower_wrong_arity_mc1008() {
+    // wilson_ci_lower takes exactly 2 args; 3 → MC1008. Per Amendment 6
+    // the function name disambiguates in the message text.
+    let yaml = simple_model("wilson_ci_lower(0.5, 100, 0.95)", "");
+    let errs = mc_model::load_str(&yaml, Some("test".into())).unwrap_err();
+    let any = errs.iter().any(|e| {
+        let s = format!("{e:?}");
+        s.contains("FormulaWrongArgCount") && s.contains("wilson_ci_lower")
+    });
+    assert!(
+        any,
+        "expected MC1008 (FormulaWrongArgCount) mentioning wilson_ci_lower: {errs:?}"
+    );
+}
+
+#[test]
+fn test_count_over_parses_with_bare_identifiers_amendment1() {
+    // Per Amendment 1: count_over accepts BARE measure + dim
+    // identifiers only — no inline expressions. This test confirms
+    // the standard 2-bare-identifier form parses cleanly; the inline-
+    // expression case fails at parse (the parser tries to consume the
+    // identifier and rejects `if(...)` as not an identifier).
+    let yaml = over_model("count_over(Spend, Market)", r#""Spend""#);
+    let result = mc_model::load_str(&yaml, Some("test".into()));
+    assert!(
+        result.is_ok(),
+        "bare-identifier count_over should parse: {:?}",
+        result.err()
+    );
+}
+
+// ============================================================================
 // Phase 3I — Item 3: Multi-key lookup_tables
 // ============================================================================
 

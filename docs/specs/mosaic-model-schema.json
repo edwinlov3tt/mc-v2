@@ -1986,6 +1986,46 @@
               "$ref": "#/definitions/ParsedWAvgOverBody"
             }
           ]
+        },
+        {
+          "description": "`std_over(measure, dim)` — sample standard deviation (ddof=1) of `measure` across leaves of `dim`. Per ADR-0033 Amendment 3.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ParsedSumOverBody"
+            }
+          ]
+        },
+        {
+          "description": "`var_over(measure, dim)` — sample variance (ddof=1).",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ParsedSumOverBody"
+            }
+          ]
+        },
+        {
+          "description": "`count_over(measure, dim)` — count of non-null evaluated `measure` values across leaves of `dim`. Per ADR-0033 Amendment 2, the measure is evaluated at every leaf (same dispatch as `sum_over`), not counted from already-materialized store entries.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ParsedSumOverBody"
+            }
+          ]
+        },
+        {
+          "description": "`wilson_ci_lower(p, n)` — Wilson 95% confidence-interval lower bound on a binomial proportion `p = k/n`. Both arguments are arbitrary numeric expressions (mirrors `norm_cdf` shape). Invalid inputs (n ≤ 0, p ∉ [0,1], NaN any arg) return Null per ADR-0033 Decision 3 and ADR-0031 Amendment 2.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ParsedWilsonBody"
+            }
+          ]
+        },
+        {
+          "description": "`wilson_ci_upper(p, n)` — Wilson 95% confidence-interval upper bound.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ParsedWilsonBody"
+            }
+          ]
         }
       ]
     },
@@ -2315,6 +2355,22 @@
         },
         "weight_measure": {
           "type": "string"
+        }
+      }
+    },
+    "ParsedWilsonBody": {
+      "description": "`wilson_ci_lower(p, n)` / `wilson_ci_upper(p, n)` — Wilson 95% confidence-interval bounds on a binomial proportion. Shared body shape per ADR-0033 Decision 2; both arguments are arbitrary numeric expressions (mirrors `norm_cdf`'s shape, not `_over`'s bare-identifier constraint — Wilson's args are scalars, not measure references).",
+      "type": "object",
+      "required": [
+        "n",
+        "p"
+      ],
+      "properties": {
+        "n": {
+          "$ref": "#/definitions/ParsedRuleBody"
+        },
+        "p": {
+          "$ref": "#/definitions/ParsedRuleBody"
         }
       }
     }

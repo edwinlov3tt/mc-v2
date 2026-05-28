@@ -986,6 +986,54 @@ fn compile_expr(
             let weight_measure = lookup_measure_id(refs, validated, &b.weight_measure)?;
             Ok(Expr::WAvgOver(dim_id, value_measure, weight_measure))
         }
+        // Phase 10A (ADR-0033): metrics primitives. The three `_over`
+        // variants reuse `ParsedSumOverBody` and resolve the same way
+        // `avg_over`/`min_over`/`max_over` do above.
+        ParsedRuleBody::StdOver(b) => {
+            let dim_id =
+                refs.dimensions
+                    .get(&b.dimension)
+                    .copied()
+                    .ok_or(EngineError::Internal(
+                        "compile: std_over references unknown dimension",
+                    ))?;
+            let measure = lookup_measure_id(refs, validated, &b.measure)?;
+            Ok(Expr::StdOver(dim_id, measure))
+        }
+        ParsedRuleBody::VarOver(b) => {
+            let dim_id =
+                refs.dimensions
+                    .get(&b.dimension)
+                    .copied()
+                    .ok_or(EngineError::Internal(
+                        "compile: var_over references unknown dimension",
+                    ))?;
+            let measure = lookup_measure_id(refs, validated, &b.measure)?;
+            Ok(Expr::VarOver(dim_id, measure))
+        }
+        ParsedRuleBody::CountOver(b) => {
+            let dim_id =
+                refs.dimensions
+                    .get(&b.dimension)
+                    .copied()
+                    .ok_or(EngineError::Internal(
+                        "compile: count_over references unknown dimension",
+                    ))?;
+            let measure = lookup_measure_id(refs, validated, &b.measure)?;
+            Ok(Expr::CountOver(dim_id, measure))
+        }
+        // Wilson family — both args are arbitrary numeric expressions
+        // (mirrors `norm_cdf`'s three-arg compile shape).
+        ParsedRuleBody::WilsonCiLower(b) => {
+            let p = compile_expr(&b.p, refs, validated)?;
+            let n = compile_expr(&b.n, refs, validated)?;
+            Ok(Expr::WilsonCiLower(Box::new(p), Box::new(n)))
+        }
+        ParsedRuleBody::WilsonCiUpper(b) => {
+            let p = compile_expr(&b.p, refs, validated)?;
+            let n = compile_expr(&b.n, refs, validated)?;
+            Ok(Expr::WilsonCiUpper(Box::new(p), Box::new(n)))
+        }
         // Phase 3J item 1: string literal lifts directly to the kernel
         // `Expr::StrLiteral`. The validator pre-clears Str-in-disallowed
         // contexts (MC1026/27/28, MC2058); compile is straight rewrite.

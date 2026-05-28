@@ -525,6 +525,12 @@ fn find_cross_coord_in_filter(body: &mc_model::ParsedRuleBody) -> Option<String>
         B::MinOver(_) => Some("min_over() not allowed in filter".into()),
         B::MaxOver(_) => Some("max_over() not allowed in filter".into()),
         B::WAvgOver(_) => Some("wavg_over() not allowed in filter".into()),
+        // Phase 10A (ADR-0033): metrics _over primitives are cross-coord
+        // dimension scans (same shape as avg/min/max over) — not
+        // filter-safe.
+        B::StdOver(_) => Some("std_over() not allowed in filter".into()),
+        B::VarOver(_) => Some("var_over() not allowed in filter".into()),
+        B::CountOver(_) => Some("count_over() not allowed in filter".into()),
         B::Predict(_) => Some("predict() not allowed in filter".into()),
         B::Calibrate(_) => Some("calibrate() not allowed in filter".into()),
         B::Lookup(_) => Some("lookup() not allowed in filter".into()),
@@ -585,6 +591,11 @@ fn find_cross_coord_in_filter(body: &mc_model::ParsedRuleBody) -> Option<String>
         B::NormInv(b) => find_cross_coord_in_filter(&b.p)
             .or_else(|| find_cross_coord_in_filter(&b.mu))
             .or_else(|| find_cross_coord_in_filter(&b.sigma)),
+        // Phase 10A (ADR-0033): Wilson is a closed-form transform; the
+        // cross-coord check delegates to its p/n sub-expressions.
+        B::WilsonCiLower(b) | B::WilsonCiUpper(b) => {
+            find_cross_coord_in_filter(&b.p).or_else(|| find_cross_coord_in_filter(&b.n))
+        }
         // Phase 3J: string-domain primitives + param are local (no
         // cross-coord resolution); they're allowed in filter
         // expressions.
@@ -1159,11 +1170,19 @@ fn eval_filter_expr(
             (Some(a), Some(c)) if c.abs() >= 1e-300 => ScalarValue::F64(a.rem_euclid(c)),
             _ => ScalarValue::Null,
         },
-        B::NormCdf(_) | B::NormInv(_) | B::Exp(_) | B::NbinomSf(_) | B::NbinomCdf(_) => {
-            // These are math primitives but are rare in filter contexts;
-            // delegate to Null rather than reimplement here.
-            ScalarValue::Null
-        }
+        B::NormCdf(_)
+        | B::NormInv(_)
+        | B::Exp(_)
+        | B::NbinomSf(_)
+        | B::NbinomCdf(_)
+        // Phase 10A (ADR-0033): Wilson is a closed-form math primitive
+        // — same "rare in filter contexts" treatment as NormCdf above.
+        // Returning Null here is the defensive policy that matches the
+        // existing math primitives; the cross-coord guard above rejects
+        // these in actual filter parses, so this arm is unreachable in
+        // practice.
+        | B::WilsonCiLower(_)
+        | B::WilsonCiUpper(_) => ScalarValue::Null,
         // Cross-coord operators were rejected at parse-time; treat
         // defensively as Null if we ever see them here.
         B::ActualRef(_)
@@ -1178,6 +1197,11 @@ fn eval_filter_expr(
         | B::MinOver(_)
         | B::MaxOver(_)
         | B::WAvgOver(_)
+        // Phase 10A (ADR-0033): _over scans are cross-coord — same
+        // rejection-at-parse semantics; defensive Null here.
+        | B::StdOver(_)
+        | B::VarOver(_)
+        | B::CountOver(_)
         | B::Predict(_)
         | B::Calibrate(_)
         | B::Lookup(_)

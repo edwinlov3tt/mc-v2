@@ -454,6 +454,14 @@ fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
             out.insert(b.value_measure.clone());
             out.insert(b.weight_measure.clone());
         }
+        // Phase 10A (ADR-0033): metrics primitives.
+        ParsedRuleBody::StdOver(b) | ParsedRuleBody::VarOver(b) | ParsedRuleBody::CountOver(b) => {
+            out.insert(b.measure.clone());
+        }
+        ParsedRuleBody::WilsonCiLower(b) | ParsedRuleBody::WilsonCiUpper(b) => {
+            collect_body_refs(&b.p, out);
+            collect_body_refs(&b.n, out);
+        }
         // Phase 3J: string-domain primitives — no measure refs.
         ParsedRuleBody::StrLiteral(_)
         | ParsedRuleBody::CurrentElement(_)

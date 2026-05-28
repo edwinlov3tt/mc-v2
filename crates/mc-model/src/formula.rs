@@ -31,6 +31,7 @@ use crate::schema::{
     ParsedNormInvBody, ParsedParamRefBody, ParsedPowBody, ParsedPredictBody, ParsedRefBody,
     ParsedRollingAvgBody, ParsedRuleBody, ParsedSafeDivBody, ParsedScalar, ParsedScenarioRefBody,
     ParsedStrLiteralBody, ParsedSubBody, ParsedSumOverBody, ParsedUnaryBody, ParsedVarargBody,
+    ParsedWilsonBody,
 };
 
 // ---------------------------------------------------------------------------
@@ -1080,6 +1081,51 @@ impl<'a> Parser<'a> {
                 "min_over" => parse_simple_over(self, "min_over", call_start, OverKind::Min),
                 "max_over" => parse_simple_over(self, "max_over", call_start, OverKind::Max),
                 "wavg_over" => parse_wavg_over(self, call_start),
+                // -- Phase 10A (ADR-0033): metrics primitives --
+                // The three new `_over` variants reuse `parse_simple_over`,
+                // inheriting the bare-measure constraint per Amendment 1.
+                "std_over" => parse_simple_over(self, "std_over", call_start, OverKind::Std),
+                "var_over" => parse_simple_over(self, "var_over", call_start, OverKind::Var),
+                "count_over" => parse_simple_over(self, "count_over", call_start, OverKind::Count),
+                // Wilson family — 2-arg shape mirrors `norm_cdf` (arbitrary
+                // numeric expressions for both args). Wrong arg count
+                // surfaces through the shared MC1008 helper per Amendment 6.
+                "wilson_ci_lower" => {
+                    let args = self.parse_arg_list()?;
+                    self.expect_close_paren("wilson_ci_lower")?;
+                    if args.len() != 2 {
+                        return Err(FormulaError::wrong_arg_count(
+                            call_start,
+                            format!(
+                                "wilson_ci_lower expects exactly 2 arguments, got {}",
+                                args.len()
+                            ),
+                        ));
+                    }
+                    let [p, n] = take2(args);
+                    Ok(ParsedRuleBody::WilsonCiLower(ParsedWilsonBody {
+                        p: Box::new(p),
+                        n: Box::new(n),
+                    }))
+                }
+                "wilson_ci_upper" => {
+                    let args = self.parse_arg_list()?;
+                    self.expect_close_paren("wilson_ci_upper")?;
+                    if args.len() != 2 {
+                        return Err(FormulaError::wrong_arg_count(
+                            call_start,
+                            format!(
+                                "wilson_ci_upper expects exactly 2 arguments, got {}",
+                                args.len()
+                            ),
+                        ));
+                    }
+                    let [p, n] = take2(args);
+                    Ok(ParsedRuleBody::WilsonCiUpper(ParsedWilsonBody {
+                        p: Box::new(p),
+                        n: Box::new(n),
+                    }))
+                }
                 // -- Phase 3I item 6: ifs() / switch() — desugar to nested If --
                 "ifs" => {
                     let args = self.parse_arg_list()?;
@@ -1299,11 +1345,18 @@ enum CmpOp {
 
 /// Phase 3I item 5: shared shape for `avg_over` / `min_over` / `max_over`.
 /// `wavg_over` has its own dedicated body (3 args) and bypasses this enum.
+///
+/// Phase 10A (ADR-0033) extends this with `std_over` / `var_over` /
+/// `count_over` — all reuse `ParsedSumOverBody` and inherit the
+/// bare-measure constraint per Amendment 1.
 #[derive(Clone, Copy)]
 enum OverKind {
     Avg,
     Min,
     Max,
+    Std,
+    Var,
+    Count,
 }
 
 /// Phase 3I item 2: helper for unary math primitives that take exactly
@@ -1356,6 +1409,9 @@ fn parse_simple_over(
         OverKind::Avg => ParsedRuleBody::AvgOver(body),
         OverKind::Min => ParsedRuleBody::MinOver(body),
         OverKind::Max => ParsedRuleBody::MaxOver(body),
+        OverKind::Std => ParsedRuleBody::StdOver(body),
+        OverKind::Var => ParsedRuleBody::VarOver(body),
+        OverKind::Count => ParsedRuleBody::CountOver(body),
     })
 }
 
@@ -1665,6 +1721,13 @@ fn prec(body: &ParsedRuleBody) -> u8 {
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_)
+        // Phase 10A (ADR-0033): metrics primitives are call-shaped
+        // primaries, same precedence class as the avg_over family above.
+        | ParsedRuleBody::StdOver(_)
+        | ParsedRuleBody::VarOver(_)
+        | ParsedRuleBody::CountOver(_)
+        | ParsedRuleBody::WilsonCiLower(_)
+        | ParsedRuleBody::WilsonCiUpper(_)
         // Phase 3J: string literal + current_element + param + scenario_ref
         // + extrapolate_last_value are atomic primaries
         | ParsedRuleBody::StrLiteral(_)
@@ -2002,6 +2065,45 @@ fn write_node_bare(out: &mut String, body: &ParsedRuleBody) {
             out.push_str(&b.weight_measure);
             out.push(')');
         }
+        // Phase 10A (ADR-0033): metrics primitives. Argument order
+        // (measure, dim) matches the avg_over family above (the
+        // bare-measure constraint per Amendment 1 keeps this trivial).
+        ParsedRuleBody::StdOver(b) => {
+            out.push_str("std_over(");
+            out.push_str(&b.measure);
+            out.push_str(", ");
+            out.push_str(&b.dimension);
+            out.push(')');
+        }
+        ParsedRuleBody::VarOver(b) => {
+            out.push_str("var_over(");
+            out.push_str(&b.measure);
+            out.push_str(", ");
+            out.push_str(&b.dimension);
+            out.push(')');
+        }
+        ParsedRuleBody::CountOver(b) => {
+            out.push_str("count_over(");
+            out.push_str(&b.measure);
+            out.push_str(", ");
+            out.push_str(&b.dimension);
+            out.push(')');
+        }
+        // Wilson — both args are sub-expressions (mirrors norm_cdf shape).
+        ParsedRuleBody::WilsonCiLower(b) => {
+            out.push_str("wilson_ci_lower(");
+            write_node(out, &b.p, 0, false);
+            out.push_str(", ");
+            write_node(out, &b.n, 0, false);
+            out.push(')');
+        }
+        ParsedRuleBody::WilsonCiUpper(b) => {
+            out.push_str("wilson_ci_upper(");
+            write_node(out, &b.p, 0, false);
+            out.push_str(", ");
+            write_node(out, &b.n, 0, false);
+            out.push(')');
+        }
         // Phase 3J: string literal — emit double-quoted, escape inner
         // backslashes and quotes for round-trip stability.
         ParsedRuleBody::StrLiteral(b) => {
@@ -2115,6 +2217,14 @@ pub fn contains_cross_coord(body: &ParsedRuleBody) -> bool {
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_)
+        // Phase 10A (ADR-0033): the three new `_over` primitives are
+        // cross-coord (dimension scans) just like avg_over/min_over/
+        // max_over above. Wilson is NOT cross-coord by itself but its
+        // p/n sub-expressions can introduce cross-coord — handled
+        // recursively below.
+        | ParsedRuleBody::StdOver(_)
+        | ParsedRuleBody::VarOver(_)
+        | ParsedRuleBody::CountOver(_)
         // Phase 3J item 6: scenario_ref is cross-coord (Scenario shift).
         | ParsedRuleBody::ScenarioRef(_)
         // Phase 3J item 7: extrapolate_last_value walks Time backward.
@@ -2206,6 +2316,11 @@ pub fn contains_cross_coord(body: &ParsedRuleBody) -> bool {
         ParsedRuleBody::StrLiteral(_)
         | ParsedRuleBody::CurrentElement(_)
         | ParsedRuleBody::ParamRef(_) => false,
+        // Phase 10A: Wilson is a closed-form transform; cross-coord can
+        // only enter via the p/n sub-expressions.
+        ParsedRuleBody::WilsonCiLower(b) | ParsedRuleBody::WilsonCiUpper(b) => {
+            contains_cross_coord(&b.p) || contains_cross_coord(&b.n)
+        }
     }
 }
 

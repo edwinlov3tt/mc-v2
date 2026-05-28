@@ -1494,6 +1494,37 @@ impl Cube {
                 principal,
                 cross_coord_reads,
             ),
+            // Phase 10A (ADR-0033): metrics primitives. All three reuse
+            // `dimension_aggregate` — Std/Var collect the leaf sample
+            // and defer to `rule::var_compute` (ddof=1, Amendment 3);
+            // Count tallies non-Null evaluations (Amendment 2).
+            CrossCoordRead::DimensionStd { dimension, measure } => self.dimension_aggregate(
+                *dimension,
+                *measure,
+                target_coord,
+                measure_dim_position,
+                principal,
+                DimAggOp::Std,
+                cross_coord_reads,
+            ),
+            CrossCoordRead::DimensionVar { dimension, measure } => self.dimension_aggregate(
+                *dimension,
+                *measure,
+                target_coord,
+                measure_dim_position,
+                principal,
+                DimAggOp::Var,
+                cross_coord_reads,
+            ),
+            CrossCoordRead::DimensionCount { dimension, measure } => self.dimension_aggregate(
+                *dimension,
+                *measure,
+                target_coord,
+                measure_dim_position,
+                principal,
+                DimAggOp::Count,
+                cross_coord_reads,
+            ),
             CrossCoordRead::PredictModel { model_id, features } => {
                 // Phase 3H.2: clone the model so subsequent `read_inner`
                 // calls inside `apply_adstock` (which need `&mut self`)
@@ -1717,8 +1748,19 @@ impl Cube {
             .map(|e| e.id)
             .collect();
 
+        // Std/Var need the full sample to compute (Welford lives in
+        // `rule::var_compute`); collect rather than streaming. Avg/Min/
+        // Max stream as before. Count just tallies non-Null evaluations
+        // — Amendment 2's "evaluate at every leaf, count non-null
+        // results" is enforced by `read_inner`'s eval call below.
+        let needs_full_sample = matches!(op, DimAggOp::Std | DimAggOp::Var);
         let mut accum: Option<f64> = None;
         let mut count: u64 = 0;
+        let mut sample: Vec<f64> = if needs_full_sample {
+            Vec::with_capacity(leaf_ids.len())
+        } else {
+            Vec::new()
+        };
         for leaf_id in leaf_ids {
             let mut elements: SmallVec<[ElementId; 8]> =
                 target_coord.elements().iter().copied().collect();
@@ -1730,18 +1772,40 @@ impl Cube {
             let cv = self.read_inner(&c, principal, false)?;
             if let ScalarValue::F64(v) = cv.value {
                 count += 1;
+                if needs_full_sample {
+                    sample.push(v);
+                }
                 accum = Some(match (accum, op) {
                     (None, _) => v,
                     (Some(cur), DimAggOp::Avg) => cur + v,
                     (Some(cur), DimAggOp::Min) => cur.min(v),
                     (Some(cur), DimAggOp::Max) => cur.max(v),
+                    // Std/Var don't use the streaming accumulator —
+                    // hold the placeholder so the `Some(_)` arm fires
+                    // below. The actual stat comes from `sample`.
+                    (Some(cur), DimAggOp::Std | DimAggOp::Var | DimAggOp::Count) => cur,
                 });
             }
+        }
+        // Per ADR-0033 Decision 3 + Amendment 2: count_over returns
+        // Some(0.0) for an empty scope (zero is information); the
+        // other reductions return Null when no non-Null value was
+        // observed (no statistic is defined).
+        if matches!(op, DimAggOp::Count) {
+            return Ok(ScalarValue::F64(count as f64));
         }
         match (accum, op, count) {
             (None, _, _) => Ok(ScalarValue::Null),
             (Some(s), DimAggOp::Avg, n) if n > 0 => Ok(ScalarValue::F64(s / n as f64)),
             (Some(v), DimAggOp::Min | DimAggOp::Max, _) => Ok(ScalarValue::F64(v)),
+            (Some(_), DimAggOp::Std, _) => match crate::rule::std_compute(&sample) {
+                Some(v) => Ok(ScalarValue::F64(v)),
+                None => Ok(ScalarValue::Null),
+            },
+            (Some(_), DimAggOp::Var, _) => match crate::rule::var_compute(&sample) {
+                Some(v) => Ok(ScalarValue::F64(v)),
+                None => Ok(ScalarValue::Null),
+            },
             _ => Ok(ScalarValue::Null),
         }
     }
@@ -3204,11 +3268,18 @@ pub struct ThresholdBand {
 
 /// Phase 3I: which reduction the dimension-aggregate helper performs.
 /// Internal — kernel surface stays locked at the public API level.
+///
+/// Phase 10A (ADR-0033) extends this with `Std`, `Var`, and `Count`.
+/// `Std`/`Var` use sample variance (ddof=1) per Amendment 3; `Count`
+/// returns the number of non-Null evaluated leaves per Amendment 2.
 #[derive(Clone, Copy, Debug)]
 enum DimAggOp {
     Avg,
     Min,
     Max,
+    Std,
+    Var,
+    Count,
 }
 
 #[derive(Debug)]
@@ -3526,6 +3597,21 @@ fn validate_expr_well_typed(expr: &Expr, measure_dim: &Dimension) -> Result<(), 
             let _ = measure_dim
                 .element(*weight)
                 .ok_or(EngineError::ElementNotFound(*weight, measure_dim.id))?;
+            Ok(())
+        }
+        // Phase 10A (ADR-0033): metrics primitives. Std/Var/Count
+        // reference a single bare measure each (mirrors Avg/Min/Max
+        // above); Wilson's args are arbitrary numeric sub-expressions
+        // (mirrors NormCdf).
+        Expr::StdOver(_, m) | Expr::VarOver(_, m) | Expr::CountOver(_, m) => {
+            let _ = measure_dim
+                .element(*m)
+                .ok_or(EngineError::ElementNotFound(*m, measure_dim.id))?;
+            Ok(())
+        }
+        Expr::WilsonCiLower(p, n) | Expr::WilsonCiUpper(p, n) => {
+            validate_expr_well_typed(p, measure_dim)?;
+            validate_expr_well_typed(n, measure_dim)?;
             Ok(())
         }
         // Phase 3J: string-domain expressions are well-typed by

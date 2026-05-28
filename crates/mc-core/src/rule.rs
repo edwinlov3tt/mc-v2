@@ -240,6 +240,33 @@ pub enum Expr {
     /// leaf elements of `dim`. Returns `sum(value*weight)/sum(weight)`,
     /// or Null if all weights are zero / all values are null.
     WAvgOver(crate::id::DimensionId, ElementId, ElementId),
+
+    // -- Phase 10A (ADR-0033): evaluation metrics primitives --
+    /// `std_over(measure, dim)` — sample standard deviation (ddof=1) of
+    /// `measure` across leaf elements of `dim`, skipping Nulls. Returns
+    /// Null when fewer than 2 non-Null values are observed (sample
+    /// variance undefined). Per ADR-0033 Decision 3 + Amendment 3.
+    StdOver(crate::id::DimensionId, ElementId),
+    /// `var_over(measure, dim)` — sample variance (ddof=1). Companion to
+    /// `StdOver` with the same Null semantics.
+    VarOver(crate::id::DimensionId, ElementId),
+    /// `count_over(measure, dim)` — count of non-Null evaluated `measure`
+    /// values across leaf elements of `dim`. Per ADR-0033 Amendment 2:
+    /// the measure is **evaluated** at every leaf via the same dispatch
+    /// as `SumOver`/`AvgOver` — not counted from already-materialized
+    /// store entries. Returns Some(0.0) for empty scope (zero is
+    /// information per Decision 3).
+    CountOver(crate::id::DimensionId, ElementId),
+
+    // -- Phase 10A (ADR-0033): Wilson 95% binomial confidence interval --
+    /// `wilson_ci_lower(p, n)` — Wilson 95% CI lower bound on a binomial
+    /// proportion `p ∈ [0,1]` over `n` trials. Returns Null for invalid
+    /// inputs (n ≤ 0, p ∉ [0,1], NaN any arg) per ADR-0033 Decision 3
+    /// and ADR-0031 Amendment 2.
+    WilsonCiLower(Box<Expr>, Box<Expr>),
+    /// `wilson_ci_upper(p, n)` — Wilson 95% CI upper bound. Companion
+    /// to `WilsonCiLower` with the same Null semantics.
+    WilsonCiUpper(Box<Expr>, Box<Expr>),
 }
 
 #[derive(Debug)]
@@ -502,6 +529,17 @@ fn collect_self_refs(expr: &Expr) -> AHashSet<ElementId> {
                 out.insert(*value);
                 out.insert(*weight);
             }
+            // Phase 10A (ADR-0033): metrics primitives.
+            // Std/Var/Count each take a single bare measure (same as the
+            // avg/min/max family above); Wilson takes arbitrary sub-exprs
+            // and walks recursively like NormCdf above.
+            Expr::StdOver(_, m) | Expr::VarOver(_, m) | Expr::CountOver(_, m) => {
+                out.insert(*m);
+            }
+            Expr::WilsonCiLower(p, n) | Expr::WilsonCiUpper(p, n) => {
+                walk(p, out);
+                walk(n, out);
+            }
             // Phase 3J: string-domain expressions and current_element.
             // None of these introduce a `SelfRef` measure dependency —
             // strings flow through eval without touching the dependency
@@ -541,7 +579,13 @@ pub fn expr_depth(expr: &Expr) -> u32 {
         | Expr::AvgOver(_, _)
         | Expr::MinOver(_, _)
         | Expr::MaxOver(_, _)
-        | Expr::WAvgOver(_, _, _) => 1,
+        | Expr::WAvgOver(_, _, _)
+        // Phase 10A: cross-coord scan primitives are leaf-shaped at the
+        // operator-depth level — they read a bare measure and produce a
+        // single scalar (same shape as SumOver/AvgOver above).
+        | Expr::StdOver(_, _)
+        | Expr::VarOver(_, _)
+        | Expr::CountOver(_, _) => 1,
         Expr::Add(a, b)
         | Expr::Sub(a, b)
         | Expr::Mul(a, b)
@@ -571,6 +615,11 @@ pub fn expr_depth(expr: &Expr) -> u32 {
         Expr::NormCdf(x, mu, sigma) => 1 + expr_depth(x).max(expr_depth(mu)).max(expr_depth(sigma)),
         Expr::NbinomSf(k, mu, alpha) | Expr::NbinomCdf(k, mu, alpha) => {
             1 + expr_depth(k).max(expr_depth(mu)).max(expr_depth(alpha))
+        }
+        // Phase 10A: Wilson CI takes two arbitrary numeric expressions
+        // (same shape as norm_cdf modulo arity).
+        Expr::WilsonCiLower(p, n) | Expr::WilsonCiUpper(p, n) => {
+            1 + expr_depth(p).max(expr_depth(n))
         }
         // Phase 3I
         Expr::Pow(a, b) | Expr::Mod(a, b) => 1 + expr_depth(a).max(expr_depth(b)),
@@ -1070,6 +1119,36 @@ where
                 weight_measure: *weight_measure,
             })
         }
+        // -- Phase 10A (ADR-0033): metrics primitives. --
+        // Std/Var/Count dispatch through the same cross-coord path as
+        // Avg/Min/Max above (Amendment 2: count_over evaluates the
+        // measure at every leaf via the same dispatch as sum_over).
+        Expr::StdOver(dim, measure) => lookup_cross(&CrossCoordRead::DimensionStd {
+            dimension: *dim,
+            measure: *measure,
+        }),
+        Expr::VarOver(dim, measure) => lookup_cross(&CrossCoordRead::DimensionVar {
+            dimension: *dim,
+            measure: *measure,
+        }),
+        Expr::CountOver(dim, measure) => lookup_cross(&CrossCoordRead::DimensionCount {
+            dimension: *dim,
+            measure: *measure,
+        }),
+        // Wilson is a pure closed-form transform over two evaluated
+        // scalars — no cross-coord lookup required. Non-numeric (Str
+        // or Null) args poison to Null per the standard arithmetic
+        // contract.
+        Expr::WilsonCiLower(p_expr, n_expr) => {
+            let pv = eval_expr(p_expr, lookup_self, lookup_cross)?;
+            let nv = eval_expr(n_expr, lookup_self, lookup_cross)?;
+            Ok(eval_wilson(pv, nv, WilsonBound::Lower))
+        }
+        Expr::WilsonCiUpper(p_expr, n_expr) => {
+            let pv = eval_expr(p_expr, lookup_self, lookup_cross)?;
+            let nv = eval_expr(n_expr, lookup_self, lookup_cross)?;
+            Ok(eval_wilson(pv, nv, WilsonBound::Upper))
+        }
         // -- Phase 3J: string-domain expressions --
         Expr::StrLiteral(s) => Ok(ScalarValue::Str(s.clone())),
         Expr::CurrentElementName(dim) => {
@@ -1328,6 +1407,112 @@ pub fn nbinom_sf_compute(k: f64, mu: f64, alpha: f64) -> Option<f64> {
     nbinom_cdf_compute(k, mu, alpha).map(|cdf| (1.0 - cdf).clamp(0.0, 1.0))
 }
 
+// ---------------------------------------------------------------------------
+// Phase 10A (ADR-0033): evaluation metrics primitives
+// ---------------------------------------------------------------------------
+
+/// Sample variance (ddof=1) via Welford's single-pass algorithm.
+///
+/// Per ADR-0033 Amendment 3, the sample (not population) estimator is the
+/// canonical default — matches numpy/statsmodels/pandas/scipy with `ddof=1`
+/// and is the correct statistic for the inferential workflows that drive
+/// Phase 10's evaluation primitives. NaN inputs are skipped (matches the
+/// `_over` family's skip-Null semantics at the f64 layer). Returns `None`
+/// when fewer than 2 non-NaN values are observed — sample variance is
+/// undefined for n < 2.
+pub fn var_compute(values: &[f64]) -> Option<f64> {
+    let mut k = 0.0_f64;
+    let mut mean = 0.0_f64;
+    let mut m2 = 0.0_f64;
+    for &v in values.iter().filter(|v| !v.is_nan()) {
+        k += 1.0;
+        let delta = v - mean;
+        mean += delta / k;
+        let delta2 = v - mean;
+        m2 += delta * delta2;
+    }
+    if k < 2.0 {
+        return None;
+    }
+    Some(m2 / (k - 1.0))
+}
+
+/// Sample standard deviation (ddof=1). Equals `sqrt(var_compute(values))`
+/// when defined; returns `None` for the same n < 2 boundary.
+pub fn std_compute(values: &[f64]) -> Option<f64> {
+    var_compute(values).map(f64::sqrt)
+}
+
+/// Wilson 95% CI z-score: `Φ⁻¹(0.975)` to 16 digits.
+const WILSON_Z_95: f64 = 1.959963984540054;
+
+/// Wilson 95% CI lower bound on a binomial proportion.
+///
+/// Per ADR-0033 Decision 2: hand-rolled, no new dependencies; matches the
+/// closed-form `(p̂ + z²/(2n) − z·√(p̂(1−p̂)/n + z²/(4n²))) / (1 + z²/n)`.
+///
+/// Returns `None` for invalid inputs — `n ≤ 0`, `p ∉ [0, 1]`, or NaN on
+/// either arg — which the eval-layer maps to `ScalarValue::Null` per
+/// ADR-0031 Amendment 2. The successful return is clamped to `[0, 1]` to
+/// suppress tiny floating-point excursions near the degenerate boundaries
+/// (`p = 0` / `p = 1`).
+pub fn wilson_ci_lower_compute(p: f64, n: f64) -> Option<f64> {
+    wilson_ci_compute(p, n).map(|(lo, _hi)| lo)
+}
+
+/// Wilson 95% CI upper bound on a binomial proportion. Companion to
+/// [`wilson_ci_lower_compute`] with identical validity and Null semantics.
+pub fn wilson_ci_upper_compute(p: f64, n: f64) -> Option<f64> {
+    wilson_ci_compute(p, n).map(|(_lo, hi)| hi)
+}
+
+/// Shared Wilson formula. Returns `(lower, upper)` for valid `(p, n)`,
+/// else `None`. Centralizing the math avoids drift between the two
+/// public wrappers and keeps the invalid-input contract single-sourced.
+fn wilson_ci_compute(p: f64, n: f64) -> Option<(f64, f64)> {
+    if p.is_nan() || n.is_nan() {
+        return None;
+    }
+    if n <= 0.0 || !(0.0..=1.0).contains(&p) {
+        return None;
+    }
+    let z = WILSON_Z_95;
+    let z2 = z * z;
+    let denom = 1.0 + z2 / n;
+    let center = (p + z2 / (2.0 * n)) / denom;
+    let margin = z * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt() / denom;
+    Some((
+        (center - margin).clamp(0.0, 1.0),
+        (center + margin).clamp(0.0, 1.0),
+    ))
+}
+
+#[derive(Clone, Copy)]
+enum WilsonBound {
+    Lower,
+    Upper,
+}
+
+/// Eval-layer Wilson dispatch: coerce the two ScalarValue args to f64,
+/// invoke the appropriate compute helper, and map the `Option<f64>` to
+/// `ScalarValue::F64` / `Null`. Non-numeric (Str) or Null operands
+/// produce Null per the standard arithmetic-context contract.
+fn eval_wilson(pv: ScalarValue, nv: ScalarValue, which: WilsonBound) -> ScalarValue {
+    match (to_f64_opt(&pv), to_f64_opt(&nv)) {
+        (Some(p), Some(n)) => {
+            let result = match which {
+                WilsonBound::Lower => wilson_ci_lower_compute(p, n),
+                WilsonBound::Upper => wilson_ci_upper_compute(p, n),
+            };
+            match result {
+                Some(v) => ScalarValue::F64(v),
+                None => ScalarValue::Null,
+            }
+        }
+        _ => ScalarValue::Null,
+    }
+}
+
 /// Cross-coordinate read specification, passed to the `lookup_cross` closure.
 /// The caller (typically `Cube::read`) resolves these against the full
 /// coordinate context.
@@ -1439,6 +1624,27 @@ pub enum CrossCoordRead {
         dimension: crate::id::DimensionId,
         value_measure: ElementId,
         weight_measure: ElementId,
+    },
+    // -- Phase 10A (ADR-0033): metrics primitives --
+    /// Sample standard deviation (ddof=1) of `measure` across leaf
+    /// elements of `dimension`, skipping Nulls. Null when fewer than 2
+    /// non-Null values are observed.
+    DimensionStd {
+        dimension: crate::id::DimensionId,
+        measure: ElementId,
+    },
+    /// Sample variance (ddof=1). Companion to `DimensionStd`.
+    DimensionVar {
+        dimension: crate::id::DimensionId,
+        measure: ElementId,
+    },
+    /// Count of non-Null evaluated `measure` values across leaf elements
+    /// of `dimension`. Per Amendment 2 the measure is evaluated at each
+    /// leaf (same dispatch as the other DimensionXxx variants). Returns
+    /// 0.0 for an empty scope (not Null) per Decision 3.
+    DimensionCount {
+        dimension: crate::id::DimensionId,
+        measure: ElementId,
     },
 }
 
@@ -1849,6 +2055,35 @@ where
                 value_measure: *value_measure,
                 weight_measure: *weight_measure,
             }))
+        }
+        // Phase 10A (ADR-0033): metrics primitives. The Std/Var/Count
+        // family routes through cross-coord dispatch (the actual leaf
+        // walk lives in cube.rs `dimension_aggregate`, mirroring the
+        // Avg/Min/Max arms above). Wilson is a closed-form scalar
+        // transform — recurse on both args and apply the formula.
+        Expr::StdOver(dim, measure) => handler(EvalLookup::Cross(&CrossCoordRead::DimensionStd {
+            dimension: *dim,
+            measure: *measure,
+        })),
+        Expr::VarOver(dim, measure) => handler(EvalLookup::Cross(&CrossCoordRead::DimensionVar {
+            dimension: *dim,
+            measure: *measure,
+        })),
+        Expr::CountOver(dim, measure) => {
+            handler(EvalLookup::Cross(&CrossCoordRead::DimensionCount {
+                dimension: *dim,
+                measure: *measure,
+            }))
+        }
+        Expr::WilsonCiLower(p_expr, n_expr) => {
+            let pv = eval_expr_unified_inner(p_expr, handler)?;
+            let nv = eval_expr_unified_inner(n_expr, handler)?;
+            Ok(eval_wilson(pv, nv, WilsonBound::Lower))
+        }
+        Expr::WilsonCiUpper(p_expr, n_expr) => {
+            let pv = eval_expr_unified_inner(p_expr, handler)?;
+            let nv = eval_expr_unified_inner(n_expr, handler)?;
+            Ok(eval_wilson(pv, nv, WilsonBound::Upper))
         }
         // -- Phase 3J: string-domain expressions --
         Expr::StrLiteral(s) => Ok(ScalarValue::Str(s.clone())),

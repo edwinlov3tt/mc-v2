@@ -765,6 +765,17 @@ fn check_binop_arity(body: &ParsedRuleBody, rule_name: &str, errors: &mut Vec<Va
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_) => return,
+        // Phase 10A (ADR-0033): metrics primitives. The _over variants
+        // are leaf-shaped here (no sub-expressions to descend into);
+        // Wilson takes two arbitrary sub-expressions like NormCdf.
+        ParsedRuleBody::StdOver(_) | ParsedRuleBody::VarOver(_) | ParsedRuleBody::CountOver(_) => {
+            return
+        }
+        ParsedRuleBody::WilsonCiLower(b) | ParsedRuleBody::WilsonCiUpper(b) => {
+            check_binop_arity(&b.p, rule_name, errors);
+            check_binop_arity(&b.n, rule_name, errors);
+            return;
+        }
         // Phase 3J: string literal and current_element are atomic — no
         // sub-expressions to descend into.
         ParsedRuleBody::StrLiteral(_)
@@ -921,6 +932,18 @@ fn collect_body_refs(body: &ParsedRuleBody, out: &mut BTreeSet<String>) {
         ParsedRuleBody::WAvgOver(b) => {
             out.insert(b.value_measure.clone());
             out.insert(b.weight_measure.clone());
+        }
+        // Phase 10A (ADR-0033): metrics primitives. Std/Var/Count
+        // each introduce a single bare measure dep (mirrors avg/min/
+        // max above per Amendment 1's bare-identifier constraint).
+        ParsedRuleBody::StdOver(b) | ParsedRuleBody::VarOver(b) | ParsedRuleBody::CountOver(b) => {
+            out.insert(b.measure.clone());
+        }
+        // Wilson — descend into the two sub-expressions; the function
+        // itself introduces no direct measure dep.
+        ParsedRuleBody::WilsonCiLower(b) | ParsedRuleBody::WilsonCiUpper(b) => {
+            collect_body_refs(&b.p, out);
+            collect_body_refs(&b.n, out);
         }
         // Phase 3J: string literal and current_element introduce no
         // measure dependency. current_element resolves via the dim axis.
@@ -1198,6 +1221,16 @@ fn uses_time_series(body: &ParsedRuleBody) -> bool {
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_) => false,
+        // Phase 10A (ADR-0033): metrics primitives. Std/Var/Count
+        // are non-time-series cross-coord scans (same as avg/min/max);
+        // Wilson is a closed-form transform — time-series can only
+        // enter through the p/n sub-expressions.
+        ParsedRuleBody::StdOver(_) | ParsedRuleBody::VarOver(_) | ParsedRuleBody::CountOver(_) => {
+            false
+        }
+        ParsedRuleBody::WilsonCiLower(b) | ParsedRuleBody::WilsonCiUpper(b) => {
+            uses_time_series(&b.p) || uses_time_series(&b.n)
+        }
         // Phase 3J: string-domain expressions are not time-series.
         ParsedRuleBody::StrLiteral(_)
         | ParsedRuleBody::CurrentElement(_)
@@ -1288,6 +1321,15 @@ fn uses_actual_ref(body: &ParsedRuleBody) -> bool {
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_) => false,
+        // Phase 10A (ADR-0033): metrics primitives — same treatment as
+        // the avg/min/max family (no actual_ref) for the _over variants;
+        // Wilson recurses into p/n.
+        ParsedRuleBody::StdOver(_) | ParsedRuleBody::VarOver(_) | ParsedRuleBody::CountOver(_) => {
+            false
+        }
+        ParsedRuleBody::WilsonCiLower(b) | ParsedRuleBody::WilsonCiUpper(b) => {
+            uses_actual_ref(&b.p) || uses_actual_ref(&b.n)
+        }
         // Phase 3J: string-domain expressions never reference actuals.
         ParsedRuleBody::StrLiteral(_)
         | ParsedRuleBody::CurrentElement(_)
@@ -1495,6 +1537,19 @@ fn find_cross_coord_nesting(body: &ParsedRuleBody) -> Option<String> {
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_)
         | ParsedRuleBody::IsElement(_) => None,
+        // Phase 10A (ADR-0033): std_over/var_over/count_over are leaf
+        // cross-coord ops too (same bare-measure constraint per
+        // Amendment 1). Wilson is NOT itself cross-coord; its p/n
+        // sub-expressions need an MC1013 check though — a cross-coord
+        // op inside Wilson's args is fine in isolation, but if Wilson
+        // sits inside another cross-coord op we'd flag it via the
+        // outer walk. Mirror norm_cdf's recursive pattern.
+        ParsedRuleBody::StdOver(_) | ParsedRuleBody::VarOver(_) | ParsedRuleBody::CountOver(_) => {
+            None
+        }
+        ParsedRuleBody::WilsonCiLower(b) | ParsedRuleBody::WilsonCiUpper(b) => {
+            find_cross_coord_nesting(&b.p).or_else(|| find_cross_coord_nesting(&b.n))
+        }
         // Phase 3J: string-domain primitives are local — no cross-coord.
         ParsedRuleBody::StrLiteral(_)
         | ParsedRuleBody::CurrentElement(_)
@@ -2053,6 +2108,14 @@ fn uses_anchor_function(body: &ParsedRuleBody) -> bool {
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_) => false,
+        // Phase 10A (ADR-0033): _over variants don't reference anchors;
+        // Wilson recurses into p/n.
+        ParsedRuleBody::StdOver(_) | ParsedRuleBody::VarOver(_) | ParsedRuleBody::CountOver(_) => {
+            false
+        }
+        ParsedRuleBody::WilsonCiLower(b) | ParsedRuleBody::WilsonCiUpper(b) => {
+            uses_anchor_function(&b.p) || uses_anchor_function(&b.n)
+        }
         // Phase 3J: string-domain primitives don't reference anchors.
         ParsedRuleBody::StrLiteral(_)
         | ParsedRuleBody::CurrentElement(_)
@@ -2417,7 +2480,15 @@ fn walk_is_element_and_over(
                 });
             }
         }
-        ParsedRuleBody::AvgOver(b) | ParsedRuleBody::MinOver(b) | ParsedRuleBody::MaxOver(b) => {
+        ParsedRuleBody::AvgOver(b)
+        | ParsedRuleBody::MinOver(b)
+        | ParsedRuleBody::MaxOver(b)
+        // Phase 10A (ADR-0033): Std/Var/Count share the same
+        // (measure, dim) bare-identifier shape and the same MC1016 /
+        // MC1018 surface as the avg/min/max family above.
+        | ParsedRuleBody::StdOver(b)
+        | ParsedRuleBody::VarOver(b)
+        | ParsedRuleBody::CountOver(b) => {
             if !dim_names.contains_key(b.dimension.as_str()) {
                 errors.push(ValidationError::Schema {
                     message: format!(
@@ -2589,6 +2660,12 @@ fn walk_is_element_and_over(
             walk_is_element_and_over(&b.mu, rule_name, dim_names, known_measures, errors);
             walk_is_element_and_over(&b.sigma, rule_name, dim_names, known_measures, errors);
         }
+        // Phase 10A (ADR-0033): Wilson recurses into p/n. Std/Var/Count
+        // were handled in the merged AvgOver arm above.
+        ParsedRuleBody::WilsonCiLower(b) | ParsedRuleBody::WilsonCiUpper(b) => {
+            walk_is_element_and_over(&b.p, rule_name, dim_names, known_measures, errors);
+            walk_is_element_and_over(&b.n, rule_name, dim_names, known_measures, errors);
+        }
         // Phase 3J: string literal + param — atomic, no descent.
         // current_element — MC1023 check on the dim name.
         ParsedRuleBody::StrLiteral(_) | ParsedRuleBody::ParamRef(_) => {}
@@ -2681,6 +2758,10 @@ fn walk_predict_arity(
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_)
+        // Phase 10A (ADR-0033): _over leaves don't contain predict.
+        | ParsedRuleBody::StdOver(_)
+        | ParsedRuleBody::VarOver(_)
+        | ParsedRuleBody::CountOver(_)
         // Phase 3J: string-domain leaves + param ref
         | ParsedRuleBody::StrLiteral(_)
         | ParsedRuleBody::CurrentElement(_)
@@ -2778,6 +2859,11 @@ fn walk_predict_arity(
             walk_predict_arity(&b.p, rule_name, models, errors);
             walk_predict_arity(&b.mu, rule_name, models, errors);
             walk_predict_arity(&b.sigma, rule_name, models, errors);
+        }
+        // Phase 10A (ADR-0033): Wilson recurses into p/n.
+        ParsedRuleBody::WilsonCiLower(b) | ParsedRuleBody::WilsonCiUpper(b) => {
+            walk_predict_arity(&b.p, rule_name, models, errors);
+            walk_predict_arity(&b.n, rule_name, models, errors);
         }
     }
 }
@@ -2893,7 +2979,14 @@ fn expr_static_type(body: &ParsedRuleBody) -> ExprStaticType {
         | ParsedRuleBody::AvgOver(_)
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
-        | ParsedRuleBody::WAvgOver(_) => T::F64,
+        | ParsedRuleBody::WAvgOver(_)
+        // Phase 10A (ADR-0033): all five metrics primitives return F64
+        // (or Null, which is in the F64 domain per ADR-0031 Amendment 2).
+        | ParsedRuleBody::StdOver(_)
+        | ParsedRuleBody::VarOver(_)
+        | ParsedRuleBody::CountOver(_)
+        | ParsedRuleBody::WilsonCiLower(_)
+        | ParsedRuleBody::WilsonCiUpper(_) => T::F64,
         // `Ref` is statically F64 — measure values flow through eval as
         // F64 or Null; Phase 3J explicitly forbids Str-stored cells.
         ParsedRuleBody::Ref(_) => T::F64,
@@ -3311,9 +3404,27 @@ fn check_str_type_context_walk(
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_)
+        // Phase 10A (ADR-0033): _over leaves are bare measure refs
+        // (no Str-domain children to descend into).
+        | ParsedRuleBody::StdOver(_)
+        | ParsedRuleBody::VarOver(_)
+        | ParsedRuleBody::CountOver(_)
         | ParsedRuleBody::StrLiteral(_)
         | ParsedRuleBody::CurrentElement(_)
         | ParsedRuleBody::ParamRef(_) => {}
+        // Phase 10A (ADR-0033): Wilson — both args are numeric expressions;
+        // reject Str inputs and recurse into the sub-expressions.
+        ParsedRuleBody::WilsonCiLower(b) | ParsedRuleBody::WilsonCiUpper(b) => {
+            if expr_static_type(&b.p) == T::Str || expr_static_type(&b.n) == T::Str {
+                errors.push(ValidationError::Schema {
+                    message: format!(
+                        "rule {rule_name:?}: wilson_ci_* received a Str operand (MC1026)"
+                    ),
+                });
+            }
+            check_str_type_context_walk(&b.p, rule_name, errors);
+            check_str_type_context_walk(&b.n, rule_name, errors);
+        }
     }
 }
 
@@ -3447,6 +3558,10 @@ fn walk_param_refs(
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_)
+        // Phase 10A (ADR-0033): _over leaves don't contain param refs.
+        | ParsedRuleBody::StdOver(_)
+        | ParsedRuleBody::VarOver(_)
+        | ParsedRuleBody::CountOver(_)
         | ParsedRuleBody::StrLiteral(_)
         | ParsedRuleBody::CurrentElement(_) => {}
         ParsedRuleBody::Add(b) => walk_param_args(&b.add, rule_name, declared, errors),
@@ -3532,6 +3647,11 @@ fn walk_param_refs(
             walk_param_refs(&b.p, rule_name, declared, errors);
             walk_param_refs(&b.mu, rule_name, declared, errors);
             walk_param_refs(&b.sigma, rule_name, declared, errors);
+        }
+        // Phase 10A (ADR-0033): Wilson recurses into p/n.
+        ParsedRuleBody::WilsonCiLower(b) | ParsedRuleBody::WilsonCiUpper(b) => {
+            walk_param_refs(&b.p, rule_name, declared, errors);
+            walk_param_refs(&b.n, rule_name, declared, errors);
         }
     }
 }
@@ -3731,6 +3851,10 @@ fn walk_scenario_and_fallback(
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_)
+        // Phase 10A (ADR-0033): _over leaves don't contain scenario refs.
+        | ParsedRuleBody::StdOver(_)
+        | ParsedRuleBody::VarOver(_)
+        | ParsedRuleBody::CountOver(_)
         | ParsedRuleBody::StrLiteral(_)
         | ParsedRuleBody::CurrentElement(_)
         | ParsedRuleBody::ParamRef(_)
@@ -3853,6 +3977,11 @@ fn walk_scenario_and_fallback(
             walk_scenario_and_fallback(&b.mu, rule_name, scenario_elems, errors);
             walk_scenario_and_fallback(&b.sigma, rule_name, scenario_elems, errors);
         }
+        // Phase 10A (ADR-0033): Wilson recurses into p/n.
+        ParsedRuleBody::WilsonCiLower(b) | ParsedRuleBody::WilsonCiUpper(b) => {
+            walk_scenario_and_fallback(&b.p, rule_name, scenario_elems, errors);
+            walk_scenario_and_fallback(&b.n, rule_name, scenario_elems, errors);
+        }
     }
 }
 
@@ -3910,6 +4039,10 @@ fn body_uses_extrapolate(body: &ParsedRuleBody) -> bool {
         | ParsedRuleBody::MinOver(_)
         | ParsedRuleBody::MaxOver(_)
         | ParsedRuleBody::WAvgOver(_)
+        // Phase 10A (ADR-0033): _over leaves don't contain extrapolate.
+        | ParsedRuleBody::StdOver(_)
+        | ParsedRuleBody::VarOver(_)
+        | ParsedRuleBody::CountOver(_)
         | ParsedRuleBody::StrLiteral(_)
         | ParsedRuleBody::CurrentElement(_)
         | ParsedRuleBody::ParamRef(_) => false,
@@ -3981,6 +4114,10 @@ fn body_uses_extrapolate(body: &ParsedRuleBody) -> bool {
             body_uses_extrapolate(&b.p)
                 || body_uses_extrapolate(&b.mu)
                 || body_uses_extrapolate(&b.sigma)
+        }
+        // Phase 10A (ADR-0033): Wilson recurses into p/n.
+        ParsedRuleBody::WilsonCiLower(b) | ParsedRuleBody::WilsonCiUpper(b) => {
+            body_uses_extrapolate(&b.p) || body_uses_extrapolate(&b.n)
         }
     }
 }
