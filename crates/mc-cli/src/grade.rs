@@ -227,6 +227,55 @@ pub struct GradeCommand {
     pub format: GradeFormat,
 }
 
+/// Usage text for `mc model grade --help` (Phase 10B.1).
+fn help_text() -> String {
+    "\
+mc model grade <cartridge.yaml> — segmented holdout evaluation
+
+Groups a holdout set into segments and computes per-segment metrics
+(Phase 10A primitives), flagging segments that cross a threshold.
+
+USAGE:
+    mc model grade <path> --unit <dim> --metric <expr> [options]
+
+REQUIRED:
+    <path>                 cartridge YAML
+    --unit <dim>           dimension whose leaves are the analysis units
+    --metric \"<expr>\"      one or more metrics (repeatable); see GRAMMAR
+
+OPTIONS:
+    --holdout \"<filter>\"   restrict units (same grammar as `query --where`)
+    --group-by <key>       segment by a dimension or measure (repeatable)
+    --bucket <measure> <e0:e1:...>   band a continuous measure for grouping
+    --flag-if \"<metric> <op> <value>\"   flag segments crossing a threshold
+    --min-n <int>          mark segments below n; excluded from flagging (default 0)
+    --max-segments <int>   cap resolved segment count (default 50)
+    --wilson-null error|drop   Null Wilson indicator: hard error (default) or drop
+    --include-writes       fold in operational writes (default: Reproducible)
+    --format text|json     output format (default text)
+    -h, --help             show this help
+
+GRAMMAR (--metric):
+    name=reduction(ingredient[,ingredient])
+    reductions: count, mean, sum, ratio, std, min, max, wilson_lower, wilson_upper
+    (ratio takes 2 ingredients; all others take 1)
+
+NOTES:
+    - A continuous F64 measure --group-by REQUIRES a matching --bucket.
+    - Grouping a non-numeric (string/category) measure is not supported;
+      group by a dimension, or author a discrete numeric slice measure.
+
+EXAMPLE (EXP-048):
+    mc model grade mlb-totals.yaml --unit Game \\
+      --group-by bet_side --bucket bet_side 0:0.5:1.0 \\
+      --metric \"n=count(direction_correct)\" \\
+      --metric \"win_rate=mean(direction_correct)\" \\
+      --metric \"wr_lower_95=wilson_lower(direction_correct)\" \\
+      --flag-if \"wr_lower_95 < 0.50\" --format json
+"
+    .to_string()
+}
+
 /// Parse `mc model grade` arguments. Mirrors `sweep::parse` in structure.
 pub fn parse(args: &[String]) -> Result<GradeCommand, String> {
     let mut path: Option<String> = None;
@@ -245,6 +294,12 @@ pub fn parse(args: &[String]) -> Result<GradeCommand, String> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
+            // Phase 10B.1: per-command usage. Prints to stdout and exits 0,
+            // matching the top-level `mc --help` idiom in main.rs.
+            "--help" | "-h" => {
+                print!("{}", help_text());
+                std::process::exit(0);
+            }
             "--unit" => match iter.next() {
                 Some(v) => unit = Some(v.clone()),
                 None => return Err("--unit requires a dimension name".into()),
@@ -402,11 +457,24 @@ fn assign_bucket(value: f64, edges: &[f64]) -> BandAssignment {
         };
         if in_band {
             let close = if last { ']' } else { ')' };
-            let label = format!("[{},{}{}", format_f64(lo), format_f64(hi), close);
+            let label = format!("[{},{}{}", fmt_edge(lo), fmt_edge(hi), close);
             return BandAssignment::Band { label, lower: lo };
         }
     }
     BandAssignment::OutOfRange
+}
+
+/// Format a bucket edge for display: integers print bare, fractional values
+/// drop trailing zeros (`0.030000` → `0.03`). Phase 10B.1 cosmetic fix —
+/// `format_f64`'s fixed 6-decimal output is the metric-value contract and
+/// stays unchanged; bucket labels get this tighter rendering instead.
+fn fmt_edge(v: f64) -> String {
+    if v.is_finite() && v == v.trunc() && v.abs() < 1e15 {
+        format!("{}", v as i64)
+    } else {
+        let s = format!("{v:.6}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
 }
 
 // ===========================================================================
@@ -973,14 +1041,23 @@ fn resolve_group_component(
         GroupKind::Measure { name } => {
             let value = read_measure_at(cube, refs, principal, coord, name);
             match value {
-                ScalarValue::Str(s) => Ok((s.clone(), SortKey::Text(s), false)),
-                ScalarValue::Category(c) => {
-                    let label = format!("cat:{c}");
-                    Ok((label.clone(), SortKey::Text(label), false))
-                }
-                ScalarValue::Bool(b) => {
-                    let label = if b { "true" } else { "false" }.to_string();
-                    Ok((label.clone(), SortKey::Text(label), false))
+                // Phase 10B.1: grouping a non-numeric measure value by distinct
+                // value is NOT supported. The earlier silent "distinct value"
+                // path was untested and effectively unreachable — mc-model's
+                // `parse_value` only produces F64/I64/Bool from inputs, and
+                // `ScalarValue::Str` is eval-transient per value.rs (never a
+                // stored cell value). It was a false capability claim, so we
+                // hard-error with an actionable alternative instead, matching
+                // the never-silently-surprising philosophy of Amendments 2/3/6.
+                // If a future phase adds real categorical dtypes, categorical
+                // grouping returns here as an explicit, tested feature.
+                ScalarValue::Str(_) | ScalarValue::Category(_) | ScalarValue::Bool(_) => {
+                    Err(format!(
+                        "--group-by {key_name:?} evaluates to a non-numeric (string/category/bool) \
+                         measure value; grouping a non-numeric measure by distinct value is not \
+                         supported in this phase. Group by a dimension instead, or author a \
+                         discrete numeric slice measure and --bucket it."
+                    ))
                 }
                 ScalarValue::Null => Ok(("(null)".to_string(), SortKey::Special(2), false)),
                 ScalarValue::F64(v) => match buckets.get(key_name) {
@@ -1165,8 +1242,14 @@ fn format_text(cmd: &GradeCommand, report: &GradeReport) -> String {
     );
 
     // Header columns: group-by keys, n, each metric, flag.
+    // Phase 10B.1: suppress the built-in unit-count `n` column when the user
+    // already defined a metric named `n` (e.g. `--metric "n=count(...)"`, the
+    // canonical EXP-048 form) — otherwise the table renders two `n` columns.
+    let show_unit_n = shows_unit_n(report);
     let mut headers: Vec<String> = report.group_by.clone();
-    headers.push("n".to_string());
+    if show_unit_n {
+        headers.push("n".to_string());
+    }
     for name in &report.metric_names {
         headers.push(name.clone());
     }
@@ -1184,7 +1267,9 @@ fn format_text(cmd: &GradeCommand, report: &GradeReport) -> String {
     if report.group_by.is_empty() {
         total_row = vec!["TOTAL".to_string()];
     }
-    total_row.push(format!("{}", report.total.n_units));
+    if show_unit_n {
+        total_row.push(format!("{}", report.total.n_units));
+    }
     for (i, v) in report.total.metrics.iter().enumerate() {
         total_row.push(fmt_metric(*v, report.metric_is_count[i]));
     }
@@ -1242,13 +1327,21 @@ fn format_text(cmd: &GradeCommand, report: &GradeReport) -> String {
     out
 }
 
+/// True when the built-in unit-count column/key should be emitted: only when
+/// the user has NOT defined a metric named `n` (Phase 10B.1 dedup).
+fn shows_unit_n(report: &GradeReport) -> bool {
+    !report.metric_names.iter().any(|m| m == "n")
+}
+
 /// One text-table row for a segment (group-by displays, n, metrics, flag).
 fn segment_row(seg: &SegmentResult, report: &GradeReport) -> Vec<String> {
     let mut row: Vec<String> = seg.keys.iter().map(|(_, v)| v.clone()).collect();
     if report.group_by.is_empty() {
         row.push("(all)".to_string());
     }
-    row.push(format!("{}", seg.n_units));
+    if shows_unit_n(report) {
+        row.push(format!("{}", seg.n_units));
+    }
     for (i, v) in seg.metrics.iter().enumerate() {
         row.push(fmt_metric(*v, report.metric_is_count[i]));
     }
@@ -1303,7 +1396,7 @@ fn format_json(cmd: &GradeCommand, report: &GradeReport) -> String {
             if i > 0 {
                 out.push_str(", ");
             }
-            out.push_str(&format_f64(*e));
+            out.push_str(&fmt_edge(*e));
         }
         out.push(']');
     }
@@ -1376,14 +1469,25 @@ fn push_metric_value(out: &mut String, v: Option<f64>, is_count: bool) {
 }
 
 /// Emit `{ "n": N, "<metric>": v, ... }` for a segment/total.
+///
+/// Phase 10B.1: the built-in `"n"` (unit count) is suppressed when a metric
+/// named `n` exists, so the object never carries a duplicate `"n"` key.
 fn push_metrics_obj(out: &mut String, seg: &SegmentResult, report: &GradeReport) {
-    out.push_str("{ \"n\": ");
-    let _ = write!(out, "{}", seg.n_units);
+    out.push('{');
+    let mut first = true;
+    if shows_unit_n(report) {
+        let _ = write!(out, " \"n\": {}", seg.n_units);
+        first = false;
+    }
     for (i, name) in report.metric_names.iter().enumerate() {
-        out.push_str(", ");
+        if !first {
+            out.push(',');
+        }
+        out.push(' ');
         push_json_str(out, name);
         out.push_str(": ");
         push_metric_value(out, seg.metrics[i], report.metric_is_count[i]);
+        first = false;
     }
     out.push_str(" }");
 }

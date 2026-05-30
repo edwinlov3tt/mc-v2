@@ -414,6 +414,62 @@ fn t_continuous_groupby_without_bucket_errors() {
     assert!(err.contains("--bucket"), "suggests bucket: {err}");
 }
 
+// ---------------------------------------------------------------------------
+// Phase 10B.1: grouping a non-numeric measure by distinct value is a hard
+// error (not the old silent "distinct value" path). A `data_type: Bool`
+// input measure is the reachable trigger — `parse_value` produces a stored
+// `ScalarValue::Bool` cell, which `read_measure_at` returns and the group-key
+// resolver rejects.
+// ---------------------------------------------------------------------------
+
+fn bool_measure_model() -> (String, String) {
+    let yaml = format!(
+        "{MINIMAL_HEADER}\
+dimensions:
+  - {{ name: Scenario, kind: Scenario, elements: [ {{ name: base }} ] }}
+  - {{ name: Version, kind: Version, elements: [ {{ name: Working }} ] }}
+  - {{ name: Game, kind: Standard, elements: [] }}
+  - {{ name: Measure, kind: Measure, elements: [] }}
+measures:
+  - {{ name: is_home, role: Input, data_type: Bool, aggregation: Sum }}
+  - {{ name: pnl, role: Input, data_type: F64, aggregation: Sum }}
+"
+    );
+    let mut csv = String::from("Scenario,Version,Game,Measure,value\n");
+    for g in 0..4 {
+        let home = if g % 2 == 0 { "true" } else { "false" };
+        let _ = writeln!(csv, "base,Working,g{g},is_home,{home}");
+        let _ = writeln!(csv, "base,Working,g{g},pnl,1.0");
+    }
+    (yaml, csv)
+}
+
+#[test]
+fn t_string_measure_groupby_errors() {
+    let (yaml, csv) = bool_measure_model();
+    let (mut cube, refs, principal) = load(&yaml, &csv);
+    let cmd = GradeCommand {
+        path: "x.yaml".into(),
+        unit: "Game".into(),
+        holdout: None,
+        group_by: vec!["is_home".into()], // non-numeric measure → hard error
+        metrics: vec![metric("total=sum(pnl)")],
+        buckets: BTreeMap::new(),
+        flag_if: None,
+        min_n: 0,
+        max_segments: 50,
+        wilson_null: WilsonNullPolicy::Error,
+        include_writes: false,
+        format: GradeFormat::Text,
+    };
+    let err = grade_cube(&mut cube, &refs, principal, &cmd).unwrap_err();
+    assert!(err.contains("non-numeric"), "got: {err}");
+    assert!(
+        err.contains("not supported") && err.contains("dimension"),
+        "actionable alternative: {err}"
+    );
+}
+
 #[test]
 fn t_max_segments_cap_errors() {
     let (yaml, csv) = exp048_model();
@@ -764,6 +820,84 @@ fn t_json_shape_has_amendment5_fields() {
         "\"total\":",
     ] {
         assert!(json.contains(needle), "JSON missing {needle}:\n{json}");
+    }
+}
+
+#[test]
+fn t_duplicate_n_column_suppressed() {
+    // Phase 10B.1: the canonical EXP-048 form defines `--metric n=count(...)`.
+    // The built-in unit-count column/key must NOT also appear, or text shows
+    // two `n` columns and JSON carries a duplicate `"n"` key.
+    let (yaml, csv) = exp048_model();
+    let (mut cube, refs, principal) = load(&yaml, &csv);
+    let cmd = exp048_cmd("exp048.yaml", GradeFormat::Text);
+    let report = grade_cube(&mut cube, &refs, principal, &cmd).expect("grade runs");
+
+    // Text: header row has exactly one `n` cell.
+    let text = format_text(&cmd, &report);
+    let header_line = text.lines().find(|l| l.contains("bet_side")).expect("header");
+    let n_cols = header_line.split('|').filter(|c| c.trim() == "n").count();
+    assert_eq!(n_cols, 1, "exactly one `n` column, got header: {header_line:?}");
+
+    // JSON: each metrics object has exactly one `"n"` key.
+    let json = format_json(&cmd, &report);
+    let dup = json.matches("\"n\":").count();
+    // segments (2) + total (1) = 3 objects, one `n` each.
+    assert_eq!(dup, 3, "one \"n\" per metrics object (2 segments + total): {json}");
+
+    // And the metric `n` still carries the count (449 in the UNDER band).
+    let under = &report.segments[0];
+    assert!((under.metrics[0].unwrap() - 449.0).abs() < TOL_EXACT, "metric n preserved");
+}
+
+#[test]
+fn t_no_metric_named_n_keeps_builtin_column() {
+    // When the user does NOT define a metric named `n`, the built-in
+    // unit-count column/key is present (back-compat with the original shape).
+    let (yaml, csv) = exp048_model();
+    let (mut cube, refs, principal) = load(&yaml, &csv);
+    let mut buckets = BTreeMap::new();
+    buckets.insert("bet_side".to_string(), vec![0.0, 0.5, 1.0]);
+    let cmd = GradeCommand {
+        path: "exp048.yaml".into(),
+        unit: "Game".into(),
+        holdout: None,
+        group_by: vec!["bet_side".into()],
+        metrics: vec![metric("win_rate=mean(direction_correct)")],
+        buckets,
+        flag_if: None,
+        min_n: 0,
+        max_segments: 50,
+        wilson_null: WilsonNullPolicy::Error,
+        include_writes: false,
+        format: GradeFormat::Json,
+    };
+    let report = grade_cube(&mut cube, &refs, principal, &cmd).expect("grade runs");
+    let json = format_json(&cmd, &report);
+    assert!(json.contains("\"n\":"), "built-in n present when no metric named n");
+    let text = format_text(&cmd, &report);
+    let header_line = text.lines().find(|l| l.contains("bet_side")).expect("header");
+    assert!(
+        header_line.split('|').any(|c| c.trim() == "n"),
+        "built-in n column present: {header_line:?}"
+    );
+}
+
+#[test]
+fn t_bucket_label_trailing_zeros_trimmed() {
+    // Phase 10B.1 cosmetic: bucket band labels drop trailing zeros.
+    let edges = [0.0, 0.03, 0.10, 1.0];
+    match assign_bucket(0.05, &edges) {
+        BandAssignment::Band { label, .. } => {
+            assert_eq!(label, "[0.03,0.1)", "trimmed label, got {label:?}");
+        }
+        other => panic!("expected band, got {other:?}"),
+    }
+    match assign_bucket(0.0, &edges) {
+        BandAssignment::Band { label, .. } => {
+            assert_eq!(label, "[0,0.03)", "integer edge bare, got {label:?}");
+        }
+        other => panic!("expected band, got {other:?}"),
     }
 }
 
