@@ -1,7 +1,9 @@
 # ADR-0035: Phase 10F — `mc model simulate` (Chronological Bankroll Simulation)
 
-**Status:** Proposed
+**Status:** Accepted (with 16 acceptance amendments — see bottom; binding for implementation)
 **Date:** 2026-05-27
+**Accepted:** 2026-05-27 (project owner approved after dual external review pass)
+**Last amended:** 2026-05-27 — Claude Desktop + GPT-5.1 review (16 amendments); same-timestamp batch semantics, bankruptcy/ruin, 4-state-required, pinned RNG, metric edge cases. Same-timestamp prevalence verified: 3,273 of 7,272 bets (45%) share a timestamp.
 **Deciders:** project owner
 **Phase:** 10F (third command in the evaluation track; the first that consumes a bet-record file rather than the cube)
 **Crate(s) touched:** `mc-cli` (new `simulate` subcommand) + `mc-core` ONLY if a sizing/drawdown helper proves model-semantic (default: none — same discipline as ADR-0034 Amendment 4)
@@ -488,3 +490,303 @@ sizing are all deferred to keep this shippable).
 4. Parquet dependency: reuse `mc-drivers`/duckdb (heavy, already in the tree for Tessera) or a lighter parquet reader for mc-cli? Or jsonl-only for v1 and parquet via a Tessera pre-convert?
 5. Is cartridge-optional the right architecture, or should simulate be a top-level `mc simulate` (not under `mc model`) since it doesn't read the model?
 6. Monte Carlo seed: required when `--monte-carlo` set (current proposal), or default-seeded with a logged value?
+
+---
+
+## Acceptance amendments
+
+Filed 2026-05-27 after dual external review (Claude Desktop + GPT-5.1,
+high-effort thinking). Both returned **accept-with-amendments**. GPT
+proposed 10; Desktop endorsed all 10 and added 6. All 16 are **binding**
+for implementation and override the body where they conflict. None change
+the architecture (records-in, CLI-only, zero-mc-core, `mc model simulate`
+namespace, closed sizing vocabulary all stand) — they tighten safety
+semantics, edge cases, and ambiguities. The amendments concentrate on
+"what happens at the edges" (ties, bankruptcy, empty data, RNG, output
+invariants) — exactly where a betting tool produces wrong-but-plausible
+headline numbers.
+
+**Codebase grounding (verified before adoption):**
+- **Same-timestamp prevalence (Amendment 1 — the load-bearing one):**
+  in claw-core's real `exp028_bets.parquet`, **3,273 of 7,272 bets (45%)
+  share a `commence_time` with another bet; max 9 bets at one timestamp.**
+  This is not an edge case — arbitrary `bet_id` tiebreak ordering would
+  make the path-dependent bankroll non-deterministic on nearly half the
+  input. Amendment 1 is mandatory.
+- **DuckDB availability (Amendment 4):** `mc-cli` depends on `mc-drivers`
+  (Cargo.toml:20), which pins `duckdb = "=1.1.1"` (bundled, Rust-1.78-
+  compatible — Cargo.toml:48). Parquet input reuses this path; no new
+  Arrow/parquet dependency.
+
+### Amendment 1: Same-timestamp bets = simultaneous batch (CRITICAL)
+
+**Problem.** The body sorts by `(timestamp, bet_id)`, but bankroll sizing
+is path-dependent — if N bets share a timestamp, arbitrary `bet_id` order
+changes every stake. Verified: 45% of claw-core's bets share a timestamp.
+
+**Amendment.** Same-timestamp bets are a **simultaneous batch** by default:
+all stakes in the batch are computed from the bankroll **as of the batch's
+start** (before any of the batch's outcomes apply), then all outcomes are
+applied atomically to produce the bankroll for the next batch. This models
+"these bets were all placed at once from the same bankroll" — the honest
+reading of same-commence-time games. An optional `sequence` column (when
+present in the records) enables true sequential replay (each bet sees the
+bankroll after the prior bet), for consumers who genuinely placed bets in
+a known order within a timestamp. Update Decision 2 and Decision 5 with
+the batch-vs-sequential rule. **Batch sizing is the default; `sequence`
+opts into sequential.**
+
+### Amendment 2: 4-state outcome REQUIRED; binary behind explicit flag; --derive-pushes repair
+
+**Problem.** The body accepted `won`-0/1 with a warning. 295 pushes are
+folded into `won` in the real file. Warning-only repeats the ADR-0034
+Wilson-Null mistake — a wrong bankroll headline is worse than a hard error.
+
+**Amendment.** Canonical input **requires** a 4-state `outcome` column.
+Binary 0/1 input **hard-errors** unless `--outcome-mode legacy-binary` is
+explicitly passed (which scores 1→win, 0→loss and stamps `outcome_mode:
+"legacy-binary"` in the output so the approximation is visible). When both
+`actual_total` and `line` columns are present, support an explicit
+`--derive-pushes actual_total=line` repair path that reconstructs the
+4-state outcome (actual==line → push, else win/loss by side). Update
+Decision 3 and acceptance criterion 3.
+
+### Amendment 3: Bankruptcy / no-borrowing semantics
+
+**Problem.** The body never specified what happens when bankroll falls
+below the computed stake.
+
+**Amendment.** No margin, no borrowing:
+- Stake is **capped at current bankroll** (you can't bet more than you have).
+- Bankroll **cannot go negative**.
+- When bankroll reaches **≤ 0**, set `ruin: true` and `ruin_index: <bet
+  index>`; **skip all remaining bets** (they're not placed — the bankroll
+  is gone). The curve ends at the ruin row.
+- For batch semantics (Amendment 1): if the batch's total stake would
+  exceed bankroll, stakes are scaled down proportionally OR the batch is
+  capped — **default: scale proportionally** so the batch never stakes
+  more than the bankroll-at-batch-start.
+
+Add to Decision 5 and a new acceptance criterion.
+
+### Amendment 4: Parquet input via existing DuckDB; jsonl curve output in v1
+
+**Problem.** The body listed parquet-reader options as open. Verified:
+DuckDB is already in the tree via `mc-drivers`.
+
+**Amendment.** Parquet **input** uses the existing DuckDB path through
+`mc-drivers` — **no new Arrow/parquet dependency**. Curve **output**
+(`--emit-curve`) is **jsonl in v1** (dependency-free write). A
+DuckDB-backed parquet curve writer is deferred to v1.1 unless explicitly
+needed. Update Decision 4 and Decision 9. (The output curve still matches
+`exp029_bankroll_curve.parquet`'s *columns*; only the serialization is
+jsonl in v1.)
+
+### Amendment 5: Pinned RNG algorithm
+
+**Problem.** "Seeded determinism" without a named algorithm produces
+cross-platform inconsistency (different `rand` versions, different
+backends → different draws from the same seed).
+
+**Amendment.** Pin a stable, self-contained PRNG implemented in `mc-cli`
+(suggest **splitmix64** or **xoshiro256\*\***) — NOT the `rand` crate
+(avoids a dependency + version-drift). Seed is **required** when
+`--monte-carlo` is set. Same seed → byte-identical output on every
+platform. Document the algorithm choice in Decision 6. (If the implementer
+strongly prefers `rand`, that needs an explicit dependency justification
+surfaced in chat — default is the hand-rolled PRNG, consistent with the
+no-new-deps discipline.)
+
+### Amendment 6: Bootstrap resampling details
+
+**Problem.** Block-resampling semantics were thin (block definition,
+partial blocks, overlap, default length, percentile method).
+
+**Amendment.** Specify:
+- Resample **sample length = the filtered/windowed path length** (each
+  bootstrap replay has the same number of bets as the real path).
+- `iid`: draw bets with replacement from the filtered pool.
+- `block:<len>`: **non-overlapping fixed blocks** of length `len` drawn
+  from contiguous time-ordered bets; concatenate blocks then **truncate**
+  to the sample length.
+- Default block length `L = max(1, round(sqrt(N)))` where N = filtered
+  pool size.
+- Default `--resample iid`.
+- Percentile method: **nearest-rank** (fixed; document it so CIs are
+  reproducible).
+- References to moving-block-bootstrap variants are deferred.
+
+Update Decision 6.
+
+### Amendment 7: Metric edge cases
+
+**Problem.** `recovery_bets = ∞` is not JSON-safe; Sharpe/ROI undefined
+cases unspecified.
+
+**Amendment.** Define:
+- `recovery_bets`: integer when recovered; **null** when never recovered,
+  paired with `recovery_status: "recovered" | "unrecovered" |
+  "never_underwater"`. Never emit `∞`.
+- `sharpe`: per-bet return basis = `pnl / stake` per placed bet; uses
+  sample std (ddof=1, consistent with ADR-0033 Amendment 3); **null** when
+  `n_bets < 2` or stddev == 0 (`abs() < 1e-300`).
+- `roi` cumulative (see Amendment 13); `total_staked == 0` → ROI metrics
+  are **null**.
+- Pushes count as placed bets with zero return (contribute to `n_bets`,
+  zero to pnl); voids excluded from `n_bets` and pnl; ruin-skipped bets
+  excluded.
+
+Add to Decision 7.
+
+### Amendment 8: `stake_hint` is an explicit sizing rule, not auto-detect
+
+**Problem.** The body listed `stake_hint` as an optional column that
+bypasses `--sizing` — implicit behavior triggered by a column happening
+to exist. That's the footgun class the whole amendment set guards against.
+
+**Amendment.** Remove `stake_hint` from the auto-detected optional-column
+list. Pre-computed stakes are used **only** via an explicit
+`--sizing from_column:stake_hint` rule. A `stake_hint` column present in
+the records is otherwise ignored. Update Decision 4; remove from
+Decision 2's optional-column auto-detect.
+
+### Amendment 9: `--odds` grammar explicit; applies to BOTH sizing and settlement
+
+**Problem.** The body was ambiguous about whether `--odds` overrides odds
+for Kelly sizing only, or also for payout settlement.
+
+**Amendment.** `--odds` grammar: `--odds fixed:<decimal>` or
+`--odds column:<name>`. The resolved odds apply to **both** the Kelly
+stake computation AND the win-payout settlement (`win → stake × (odds −
+1)`). A mismatch between sizing-odds and settlement-odds would be a
+correctness bug; they're the same value. Update Decision 4 and Decision 5.
+
+### Amendment 10: `mc model simulate` namespace retained; documented as model-adjacent
+
+**Amendment.** Keep `mc model simulate` (the records are
+model-evaluation artifacts; the namespace is correct). Document in
+Decision 1 that this verb consumes a **model-adjacent artifact** (a
+bet-record file) rather than reading the cube directly — the cartridge,
+when supplied, is a validator/provenance source, not the primary input.
+A top-level `mc simulate` alias is deferred (additive, no demand yet).
+
+### Amendment 11: Cartridge validation = column-name provenance only
+
+**Problem.** Decision 1's "provenance check" language was ambiguous
+between loose (column names match measures), medium (names + types), and
+strict (cryptographic — records signed by the cartridge that produced
+them).
+
+**Amendment.** When a cartridge is supplied, validation is **column-name
+provenance only**: columns referenced by `--filter`, `--sizing`, and the
+metric calculations must correspond to declared measures in the cartridge;
+unknown reference → error. Type checking against measure dtypes is
+**best-effort** (warn on mismatch, don't hard-block — record files may
+encode differently). **Cryptographic provenance** (record file signed by
+the cartridge version that produced it) is deferred to future Grout
+integration. Update Decision 1.
+
+### Amendment 12: Filter/window order of operations locked
+
+**Problem.** `--filter` + `--window first:30` could mean "first 30 of
+filtered" or "filter the first 30 chronologically" — different bet sets.
+
+**Amendment.** **`--filter` applies first; `--window` selects from the
+filtered pool.** So `--filter "abs_edge_pp >= 0.10" --window first:30`
+yields the first 30 bets (chronologically) from the edge-filtered universe
+— the EXP-029e "first 30 bets" intent. Document in Decision 5 and add to
+acceptance criteria.
+
+### Amendment 13: `roi` is cumulative; `roi_per_bet` separate
+
+**Problem.** Decision 7 listed `roi` without defining it for the bankroll
+context. claw-core's headline "+196%" is cumulative ROI; grade's `roi`
+(via `ratio`) is per-bet (sum(pnl)/sum(stake)). Two different numbers.
+
+**Amendment.** In simulate, **`roi` = cumulative**: `(final_bank −
+start_bank) / start_bank` — the path-dependent, compounding headline
+number. Add `roi_per_bet = total_pnl / total_staked` as a **separate**
+metric for grade-compatibility. Document the distinction loudly in
+Decision 7 and the cookbook (the same metric name means different things
+in grade vs simulate — this MUST be unambiguous or the headline number
+disappears).
+
+### Amendment 14: Curve invariants
+
+**Problem.** `--emit-curve`'s output invariants were unstated (empty pool?
+pushes included? ruin?).
+
+**Amendment.** Curve invariants:
+- **One row per placed bet** — pushes INCLUDED (bankroll unchanged row);
+  voids and ruin-skipped bets EXCLUDED.
+- `bankroll_after` reflects state after this bet (unchanged for pushes).
+- For batch timestamps (Amendment 1): each bet in the batch gets a row;
+  `bankroll_after` on intra-batch rows reflects the batch-end bankroll
+  (since the batch applies atomically) — OR carries a `batch_id` so
+  consumers can see the grouping. **Default: stamp `batch_id`; intra-batch
+  `bankroll_after` = batch-end bankroll.**
+- Ruined simulations: curve ends at the ruin row.
+- Empty filtered/windowed pool → empty curve (header/schema only, zero
+  data rows) + a run-level warning.
+
+Update Decision 9.
+
+### Amendment 15: EXP-049 reproduction tolerance
+
+**Problem.** Acceptance criterion 12 said "within tolerance" without a
+number. Floating-point accumulation across 1,508 bets drifts.
+
+**Amendment.** EXP-049 reproduction: **final bankroll within 0.1%** of
+claw-core's reported value (floating-point accumulation tolerance); curve
+compared at **start, end, and 5 interior checkpoints** to within 0.01%
+each. Matches the precision regime of the reported headline (like
+ADR-0033's Wilson 1e-3 headline tolerance). Update acceptance criterion 12.
+
+**Caveat (load-bearing for the repro):** claw-core's `exp028_bets.parquet`
+is `won`-0/1 with pushes folded in. To reproduce EXP-049 exactly, the
+repro test must run in `--outcome-mode legacy-binary` (matching how the
+original number was computed) OR use `--derive-pushes` and accept that the
+push-accurate number will differ slightly from the legacy headline. The
+test should pin which mode it uses and reproduce THAT number. Document
+this in the test.
+
+### Amendment 16: Output JSON expansion
+
+**Amendment.** The JSON output (Decision 9) includes: `warnings` (array),
+`outcome_counts` ({win, loss, push, void} tallies), `skip_counts`
+({below_min_odds, ruin_skipped, ...}), `ruin` (bool) + `ruin_index`,
+`recovery_status`, `curve_path` (when `--emit-curve`), `input_format`
+(parquet/jsonl), `schema_mapping` (the resolved column aliases),
+`outcome_mode` (canonical/legacy-binary), and the full run config
+(sizing, filter, window, seed, odds). This is the codegen contract for
+claw-core's Worker — every invalid-evaluation state and every config
+input must be machine-readable. Update Decision 9.
+
+---
+
+## Consolidated acceptance-criteria revisions
+
+Body's 24 ACs stand, with these amendment-driven changes + additions:
+
+- **AC #3** (outcome): 4-state required; binary hard-errors unless `--outcome-mode legacy-binary`; `--derive-pushes` repair (Amdt 2)
+- **AC #6** (single-path): same-timestamp = simultaneous batch by default; `sequence` column → sequential (Amdt 1)
+- **AC #10** (sharpe): sample-std, null on n<2 / zero-stddev (Amdt 7)
+- **AC #12** (EXP-049 repro): within 0.1% final / 0.01% checkpoints; pins outcome-mode (Amdt 15)
+- **AC #14** (curve): invariants per Amdt 14
+- **AC #16** (zero mc-core): unchanged; PRNG is hand-rolled in mc-cli (Amdt 5)
+
+New ACs:
+- **AC #25:** bankruptcy/ruin — stake capped at bankroll; ruin sets `ruin:true`, skips remaining; batch over-stake scales proportionally (Amdt 3)
+- **AC #26:** pinned PRNG (splitmix64/xoshiro256\*\*); same seed → byte-identical across platforms (Amdt 5)
+- **AC #27:** bootstrap details — sample length = path length, non-overlapping blocks truncated, default iid, nearest-rank percentiles (Amdt 6)
+- **AC #28:** `--odds fixed:|column:` applies to both sizing and settlement (Amdt 9)
+- **AC #29:** `--filter` first, `--window` second (Amdt 12)
+- **AC #30:** `roi` cumulative; `roi_per_bet` separate metric (Amdt 13)
+- **AC #31:** `--sizing from_column:stake_hint` explicit; bare stake_hint column ignored (Amdt 8)
+- **AC #32:** JSON exposes warnings/outcome_counts/skip_counts/ruin/recovery_status/schema_mapping/outcome_mode/run-config (Amdt 16)
+- **AC #33:** cartridge validation = column-name provenance only; crypto provenance deferred (Amdt 11)
+
+---
+
+*End of amendments. Body of ADR above is preserved for audit-trail
+purposes; amendments win on conflicts.*
