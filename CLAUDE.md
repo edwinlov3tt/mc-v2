@@ -463,6 +463,42 @@ if it's listed in §10), confirm it fails, then implement. This catches:
 - Missing constructors / builder methods.
 - Naming drift (you typoed `Concolidator` instead of `Consolidator`).
 
+### 4.5 Inline-YAML in tests — never paste from a handoff verbatim
+
+**The trap (Phase 10A, 2026-05-27).** A handoff document used `{{ }}`
+double-brace placeholders in its YAML examples (a templating convention
+to signal "fill this in"). The implementer copy-pasted a YAML block
+straight from the handoff into a `#[test]` as an inline `r#"..."#`
+literal. The double braces are invalid YAML inline-map syntax —
+`{ name: "x" }` is a map, `{{ name: "x" }}` is a parse error. The test
+failed with "invalid type: map, expected field identifier" and the
+failure slipped past the implementer's own verification, surfacing only
+on the PM's post-merge `cargo test --workspace`.
+
+**The countermeasures.**
+
+1. **When you write inline YAML in a Rust test, every cube you author
+   must actually parse.** The moment you add a test with an inline
+   `r#"model_format_version: 1 ..."#` literal, run *that test by name*
+   (`cargo test <test_name>`) before moving on — don't batch it into a
+   "run everything at the end" pass where one parse error hides in the
+   noise. A test that builds a cube and then asserts is two distinct
+   failure surfaces: the cube failing to *load* is a different bug from
+   the assertion failing, and the load failure is the cheaper one to
+   catch early.
+
+2. **Handoff YAML is reference, not paste-bait.** If a handoff (or this
+   file, or an ADR) shows YAML with `{{ }}`, `<placeholder>`, `...`,
+   `# fill in`, or any other template marker, those are *not* literal
+   syntax. Retype the YAML against the real schema
+   (`docs/specs/mosaic-model-schema.json`) — inline maps use single
+   braces `{ name: "x", role: "Input" }`. When in doubt, copy a known-good
+   cube from an existing passing test in the same file, then modify it.
+
+3. **Authors of handoffs: use single braces in YAML examples**, or mark
+   `{{ }}` explicitly as "templating — replace with single braces when
+   you write the actual test." Don't ship paste-bait.
+
 ---
 
 ## 5. Strict requirements — Implementation
@@ -673,6 +709,52 @@ Before the final "Phase 1 done" claim, walk every one of the 10 items in
 Report this checklist explicitly in the chat when claiming done. Do not
 say "all done" without it.
 
+### 6.7 The "all green" claim must be backed by a captured log — not an assertion
+
+**The trap (Phase 10A, 2026-05-27).** An implementer reported "all 49
+test groups green" and "23-item acceptance gate — all PASS." A
+load-bearing integration test was in fact failing to parse (see §4.5).
+The "all green" claim was an *assertion about a belief*, not a *quote of
+an observed result*. The PM's post-merge `cargo test --workspace` caught
+it — which means the gate worked, but one layer too late.
+
+**The rule: a completion claim quotes the command and its actual output.**
+Never write "tests pass" — write the literal tail of the run:
+
+```
+$ cargo test --workspace 2>&1 | tail -3
+test result: ok. 94 passed; 0 failed; ...
+```
+
+Specifically, before claiming any task or phase done:
+
+1. **Run `cargo test --workspace` as the LAST thing you do** — after the
+   final edit, not before it. A green run from three edits ago is not
+   evidence about the current tree. If you edited anything since the last
+   full run, the claim is stale; re-run.
+
+2. **Quote the pass/fail line with the actual count.** "All N test groups
+   green" with no number, or a number you didn't read off a real run, is
+   not acceptable. The grep `cargo test --workspace 2>&1 | grep -E "test
+   result: (FAILED|ok)" | grep -v "0 failed"` should return zero lines —
+   paste that you ran it.
+
+3. **A test that constructs-then-asserts has two failure surfaces.** If
+   your suite includes tests that build a cube from inline YAML, confirm
+   none of them failed at the *load* step (which presents as a panic in
+   the test, not an assertion mismatch). The §4.5 bug was exactly this:
+   the assertion never ran because the cube never loaded.
+
+4. **If you didn't run it, say so.** "I believe these pass but did not
+   run the full workspace suite after my last edit" is an honest and
+   useful statement. "All green" when you didn't watch it go green is
+   test-fudging by omission (§2.6).
+
+The PM's post-merge workspace run is a backstop, not the primary gate.
+The primary gate is the implementer quoting a real run. Both exist
+because Phase 10A proved the backstop alone catches bugs one merge too
+late.
+
 ---
 
 ## 7. Decision trees for common pitfalls
@@ -856,6 +938,12 @@ Files:    [list of files touched]
 
 Notes: [anything the human should know]
 ```
+
+The `Tests:` line is **not** a self-assessment — it is a quote of a real
+run you executed *after your last edit* (§6.7). Fill in `[N]/[N]` from
+the actual `test result: ok. N passed; 0 failed` line. If you cannot
+quote a real number from a real run, you are not done. "Tests: probably
+fine" is not a valid value for that field.
 
 ---
 
