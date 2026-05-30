@@ -344,6 +344,125 @@ significant figures; tighter tolerance would flake on the rounding).
 
 ---
 
+## `mc model grade` — segmented holdout evaluation (Phase 10B, ADR-0034)
+
+`grade` groups a holdout set by an attribute and computes the per-segment
+metrics above in one command, instead of a ~120-line Python script. It is
+the command form of the EXP-048 segment table: it *composes* the Phase 10A
+primitives by restricting their per-leaf evaluation to each segment.
+
+```
+mc model grade <cartridge.yaml> \
+  --unit <dimension> \
+  --holdout "<filter>" \
+  --group-by <key> [--group-by <key> ...] \
+  --metric "<name>=<reduction>(<ingredient>[,<ingredient>])" [--metric ...] \
+  [--bucket <measure> <e0>:<e1>:...:<eN>] \
+  [--flag-if "<metric> <op> <value>"] \
+  [--min-n <int>] [--max-segments <int>] \
+  [--wilson-null error|drop] [--include-writes] \
+  [--format text|json]
+```
+
+### Reductions (9, closed vocabulary)
+
+`count`, `mean`, `sum`, `ratio(num,den)`, `std` (ddof=1), `min`, `max`,
+`wilson_lower`, `wilson_upper`. Every reduction except `ratio` takes
+exactly one ingredient; `ratio` takes two. Ingredients must be measures
+defined in the cartridge. For anything outside this vocabulary, declare a
+per-unit derived measure and pass it as an ingredient (same rule as §1).
+
+### Group keys
+
+A `--group-by <key>` is a **dimension** (one segment per element), or a
+**measure**. Because Mosaic measures carry no discrete/low-cardinality
+metadata, a measure group key follows this rule:
+
+- A **string/categorical** measure value groups by distinct value directly.
+- A **continuous F64** measure REQUIRES `--bucket` — grouping a float by
+  distinct value is a float-equality hazard and would explode into
+  thousands of singletons. Omitting `--bucket` for an F64 key is a hard
+  error.
+
+Buckets are left-closed / right-open, last band right-closed:
+`--bucket Edge_NB 0:0.03:0.10:1.0` → `[0,0.03)`, `[0.03,0.10)`,
+`[0.10,1.0]`. Values outside every band land in a surfaced
+`(out-of-range)` segment (counted in TOTAL, never silently dropped).
+`--max-segments` (default 50) caps the resolved segment count.
+
+### Holdout filter (reuses the `--where` grammar)
+
+`--holdout` uses the same `Filter` grammar as `mc model query --where`
+(`And`/`Or`/`Not`, `==`/`!=`/`>`/`>=`/`<`/`<=`, dimension and measure
+atoms) — **not** the `--coord` dimension-pin syntax. Worked examples:
+
+```bash
+# Dimension pin (string equality is safe):
+--holdout 'Scenario == "balanced"'
+
+# Measure range (the correct way to pin a continuous F64 measure):
+--holdout 'line >= 8.99 and line <= 9.01'
+```
+
+A **bare `==` / `!=` against a numeric literal on a measure**
+(`line == 9.0`) is a hard error: float equality is hazardous and no
+discrete-marking exists. Use a range or an explicit tolerance instead.
+
+### Wilson Null-indicator safety (hard error by default)
+
+`wilson_lower(m)` / `wilson_upper(m)` compute `n` as the segment's
+non-Null trial count and `p` as the mean. Per the §2/§3 convention the
+indicator must be `1.0`/`0.0`, **never Null**. If `m` has any Null in a
+segment, grade **hard-errors by default** (a too-narrow CI is the wrong
+failure in a betting context). `--wilson-null drop` excludes the Null
+units (changing `n`) and emits a warning instead.
+
+### `ratio`, TOTAL, and `--min-n`
+
+`ratio(num, den)` returns Null (never `inf`/`NaN`/`0`) when the
+denominator sum is zero/empty, with a diagnostic in `warnings` and the
+segment listed in `denominator_zero_segments` (zero-check via
+`abs() < 1e-300`, not `== 0.0`). The always-present **TOTAL** row
+aggregates *every* holdout unit — inclusive of `--min-n`-excluded and
+`(out-of-range)` segments (`--min-n` affects flag eligibility only, not
+measurement). Only units failing the `--holdout` filter are absent from
+TOTAL.
+
+### EXP-048 worked example
+
+Grouping the 2025 `line=9.0` holdout by bet side reproduces the EXP-048
+smoking gun — 98.5% of bets are UNDERs hitting 65.70% with a Wilson 95% CI
+of [61.19, 69.94]:
+
+```bash
+mc model grade mlb-totals.yaml \
+  --unit Game \
+  --holdout 'Scenario == "balanced" and line >= 8.99 and line <= 9.01' \
+  --group-by bet_side --bucket bet_side 0:0.5:1.0 \
+  --metric "n=count(direction_correct)" \
+  --metric "win_rate=mean(direction_correct)" \
+  --metric "wr_lower_95=wilson_lower(direction_correct)" \
+  --metric "wr_upper_95=wilson_upper(direction_correct)" \
+  --flag-if "wr_lower_95 < 0.50" \
+  --format json
+```
+
+The Wilson bounds match the `metrics.rs` continuous-`p` reference to the
+1e-3 headline tolerance (the published rates are reported to four
+significant figures).
+
+### Reproducibility note (Amendment 10)
+
+grade defaults to `LoadPolicy::Reproducible`: it starts from the
+version-controlled model state, **excluding** operational
+`.tessera/writes.jsonl` post-hoc writes. `--include-writes` folds them in.
+grade reads cube state as of load time and performs no live re-evaluation
+against changing data files during a run. For exact reproducibility
+against a historical snapshot, pin to a known cube revision before running
+grade; an explicit `--at-revision` flag is deferred to demand.
+
+---
+
 ## Cross-links
 
 - [ADR-0033](../decisions/0033-phase-10a-evaluation-metrics-library.md) — Phase 10A acceptance + amendments
