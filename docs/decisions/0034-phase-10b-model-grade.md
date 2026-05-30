@@ -1,7 +1,9 @@
 # ADR-0034: Phase 10B — `mc model grade` (Segmented Holdout Evaluation)
 
-**Status:** Proposed
+**Status:** Accepted (with 12 acceptance amendments — see bottom; binding for implementation)
 **Date:** 2026-05-27
+**Accepted:** 2026-05-27 (project owner approved after dual external review pass)
+**Last amended:** 2026-05-27 — Claude Desktop + GPT-5.1 review feedback folded in (12 amendments); safety semantics tightened, filter grammar grounded in existing `Filter` type
 **Deciders:** project owner
 **Phase:** 10B (second phase of the evaluation-primitives track; first command built on the 10A metrics library)
 **Crate(s) touched:** `mc-cli` (new `grade` subcommand) + possibly `mc-core` (grouped-aggregation helper); no daemon changes, no kernel-interface breaking changes
@@ -427,3 +429,274 @@ output formats add up. Still a focused single-command phase.
 against EXP-048, the next phase follows demand: parameter sweeps →
 Phase 10C (backtest); batch sensitivity → Phase 10D (`sweep --games`);
 chronological bankroll → Phase 10E/F (walk-forward + simulate).
+
+---
+
+## Acceptance amendments
+
+Filed 2026-05-27 after dual external review (Claude Desktop + GPT-5.1,
+high-effort thinking). Both reviewers returned **accept-with-amendments**.
+GPT proposed 8 amendments; Desktop endorsed all 8 and added 4. All 12 are
+**binding** for implementation and override the body where they conflict.
+None change the core architecture (map-reduce framing, closed reduction
+vocabulary, EXP-048 reproduction, CLI-only scope all stand) — they
+tighten safety semantics and specify ambiguous behaviors. Each closes a
+specific failure mode that would otherwise produce silently-wrong
+analytics or implementation churn.
+
+**Codebase grounding (verified before adoption):** the existing `Filter`
+type (`crates/mc-cli/src/query.rs:413`) ALREADY supports measure-value
+predicates — `FilterAtom::Measure(String)` + `CmpOp::Eq` etc. `--where
+"line == 9.0"` works today. This means grade does NOT invent a filter
+grammar; it reuses `Filter`. It also means the float-equality hazard
+(`CmpOp::Eq` on an F64 measure) is real and present today, which is
+exactly what Amendments 1+2 guard. `sweep.rs:184` confirms the
+`LoadPolicy::Reproducible` precedent for Amendment 8.
+
+### Amendment 1: `--holdout` reuses the existing `Filter` grammar; numeric-equality guarded
+
+**Problem.** The body said `--holdout` "uses `mc model query --coord`
+syntax" but then used measure-value predicates (`line=9.0`). `--coord`
+(`parse_coord_string`) is dimension-pin-only; measure predicates need
+the richer grammar.
+
+**Amendment.** `--holdout` reuses the existing `Filter` grammar
+(`crates/mc-cli/src/query.rs:413`, the same grammar `--where` uses), NOT
+the `--coord` dimension-pin syntax. That grammar already handles both:
+- **Dimension pins:** `Time == "2025"` (FilterAtom::Dimension)
+- **Measure predicates:** `line == 9.0` (FilterAtom::Measure)
+
+with `And`/`Or`/`Not`/`Compare`. grade evaluates the filter per unit leaf
+to decide inclusion. **Numeric-equality guard:** `CmpOp::Eq` / `Neq`
+against an F64 measure value is hazardous (float `==`). grade applies the
+same rule as Amendment 2 — equality on a continuous F64 measure requires
+the measure be marked discrete/low-cardinality in the cartridge, OR the
+caller uses a range predicate (`line >= 8.75 and line < 9.25`), OR an
+explicit tolerance. A bare `line == 9.0` on an unmarked F64 measure is a
+hard error with the suggested alternatives. Document the grammar in
+Decision 7 with worked examples for both the dimension-pin and
+measure-predicate cases.
+
+### Amendment 2: Measure-value `--group-by` requires `--bucket` for continuous measures; `--max-segments` cap
+
+**Problem.** "One segment per distinct value" is correct for `bet_side`
+(2 values) and dangerous for `Edge_NB` (thousands of distinct floats →
+thousands of singleton segments; float-equality grouping is a CLAUDE.md
+violation).
+
+**Amendment.** For a measure `--group-by` key:
+- If the measure is marked **discrete/low-cardinality** in cartridge
+  metadata → group by distinct value directly.
+- If the measure is **continuous/F64 (unmarked)** → `--bucket` is
+  REQUIRED. Grouping a continuous measure without a bucket is a hard
+  error: "`Edge_NB` is a continuous measure; provide `--bucket Edge_NB
+  <edges>` to group it, or mark it discrete in the cartridge."
+- Add `--max-segments <n>` (default **50**). If the resolved segment
+  count (including cartesian products from multi-level grouping) exceeds
+  the cap, hard-error with the count and the cap. Prevents accidental
+  segment explosion.
+
+Update Decision 2 (the rule) and Decision 6 (the cap behavior).
+
+### Amendment 3: Wilson Null indicator — hard error by default, not warning
+
+**Problem.** Decision 3 *warned* when a Wilson indicator had Nulls in a
+segment. ADR-0033's cookbook explicitly requires "1.0 or 0.0, never Null"
+for Wilson indicators. In a betting context a too-narrow CI silently
+produces a too-confident "this edge is real" claim — the wrong failure
+mode.
+
+**Amendment.** `wilson_lower(m)` / `wilson_upper(m)` **hard-error by
+default** when `m` contains any Null within a segment being reduced:
+"`wilson_lower(direction_correct)`: 3 of 449 units in segment {bet_side:
+UNDER} have Null direction_correct. Wilson n requires a non-Null 1.0/0.0
+indicator for every unit. Fix the indicator (use `if(cond, 1.0, 0.0)` —
+never Null), or pass `--wilson-null drop` to exclude Null units (changes
+n)." The `--wilson-null drop|error` flag defaults to `error`. Update
+Decision 3 and acceptance criterion 9.
+
+### Amendment 4: Grouped-reduction stays in `mc-cli` — no `mc-core` change unless proven necessary
+
+**Problem.** The body said "possibly `mc-core` (grouped-aggregation
+helper)" and Step 4 suggested a core helper. Grouping/segmentation is
+CLI/reporting semantics, not model semantics; promoting it to the kernel
+violates ADR-0025 kernel discipline.
+
+**Amendment.** The grouped-reduction engine lives entirely in `mc-cli`.
+Amend Decision 1's crate list and Step 4: "**no `mc-core` change unless
+implementation surfaces a missing *model-semantic* primitive that kernel
+discipline justifies promoting** — and if so, that promotion is a
+separate surfaced decision, not a silent add." grade composes the
+existing 10A primitives by restricting the leaf set per segment; the
+per-leaf eval traversal already exists in `mc-core` and is *called*, not
+extended.
+
+### Amendment 5: Expand the JSON schema for automation
+
+**Problem.** The Decision 5 JSON had only `segments`/`metrics`/`total`/
+`flagged_count` — too thin to consume the behaviors the ADR introduces.
+
+**Amendment.** The JSON output adds:
+- Per-segment `status`: `ok | below_min_n | out_of_range | excluded_from_flags`
+- Per-segment `null_counts`: `{measure_name: count}` (units with Null for each ingredient)
+- `warnings`: array of structured warning objects, at both segment and run level
+- `bucket` metadata: `{measure_name: [edge0, edge1, ...]}` when buckets are used
+- `denominator_zero_segments`: array of segment keys where a `ratio` denominator was zero/Null
+- Reserve `subtotals: []` (absent or empty in v1; see Amendment — Q6 deferral) for additive growth
+
+Update Decision 5 with the full schema. The JSON is the contract
+downstream consumers (claw-core's Worker) codegen against — it must
+expose every invalid-evaluation state, not just the happy path.
+
+### Amendment 6: `ratio(num, den)` denominator semantics
+
+**Problem.** Decision 3 didn't specify `ratio` behavior when the
+denominator sum is zero, Null, or all-Null in a segment.
+
+**Amendment.** `ratio(num, den)` per segment:
+- `sum(den) == 0`, or `sum(den)` is Null, or all `den` values Null →
+  metric value is **Null**, with a structured diagnostic appended to
+  `warnings` and the segment listed in `denominator_zero_segments`.
+- **Never** produce `inf`, `NaN`, or a silent `0`.
+- Float-zero check uses the kernel's `value.abs() < 1e-300` convention
+  (per CLAUDE.md §7), not `== 0.0`.
+
+Update Decision 3 and acceptance criterion 7.
+
+### Amendment 7: Add `min(m)` and `max(m)` to the reduction vocabulary
+
+**Problem.** The 7-reduction vocabulary omitted min/max, though
+`min_over`/`max_over` exist as 10A-adjacent primitives and are useful
+sanity checks.
+
+**Amendment.** Add `min(m)` and `max(m)` (→ `min_over`/`max_over` scoped
+to segment). The vocabulary is now 9 reductions: `count`, `mean`, `sum`,
+`ratio`, `std`, `min`, `max`, `wilson_lower`, `wilson_upper`.
+`median`/`percentile` remain deferred (no closed-form primitive; needs a
+sort — defer to demand). Update Decision 3 table and acceptance
+criterion 6.
+
+### Amendment 8: Default to `LoadPolicy::Reproducible`
+
+**Problem.** The body didn't specify a load policy. grade is an
+experiment (closer to `sweep` than `query`); it should start from
+version-controlled model state, not operational reality patched by
+`.tessera/writes.jsonl`.
+
+**Amendment.** grade defaults to `LoadPolicy::Reproducible` (matching
+`sweep.rs:184`). Post-hoc operational writes are excluded by default. Add
+an optional `--include-writes` flag for callers who explicitly want
+operational state folded in. Document in Decision 7 alongside the holdout
+filter.
+
+### Amendment 9: TOTAL row is inclusive of min-n-excluded segments
+
+**Problem.** Decision 5 (TOTAL = ungrouped aggregate) and Decision 6
+(`--min-n` excludes small segments) interact ambiguously: does TOTAL
+include below-min-n segment units?
+
+**Amendment.** **TOTAL aggregates ALL holdout units regardless of segment
+min-n status.** `--min-n` affects only *flag evaluation*, not
+*measurement*. A segment may be `excluded_from_flags` while its units
+still contribute to TOTAL. Rationale: TOTAL reads as "everything" and
+enables the "this segment has 7 units; total has 456" comparison. Add an
+explicit note to Decision 6 and acceptance criterion 12.
+
+(Units excluded by `--bucket` out-of-range, by contrast, ARE surfaced as
+their own `(out-of-range)` segment and DO contribute to TOTAL — they're
+not dropped, just labeled. Only units failing the `--holdout` filter are
+absent from TOTAL.)
+
+### Amendment 10: Reproducibility / snapshot note
+
+**Problem.** The reproducibility claim depends on what cube state is
+frozen and when, which wasn't specified. For a betting tool where "we
+beat the market by 7%" is defensible only if the data is provably the
+same, this matters.
+
+**Amendment.** Add to Decision 7: "grade reads cube state as of load time;
+it performs no live re-evaluation against changing data files during the
+run. For exact reproducibility against a historical snapshot, callers
+should pin to a known cube revision (snapshot/rollback machinery) before
+running grade. A future `--at-revision <rev>` flag for explicit snapshot
+pinning is deferred." This prevents a "why did my grade results change
+overnight" surprise when underlying data files are updated between runs.
+
+### Amendment 11: Formal metric-expression grammar
+
+**Problem.** Step 2's "tiny parser for `name=reduction(ingredients)`"
+undersold the design surface (whitespace, quoting, special chars in
+measure names, error UX).
+
+**Amendment.** Specify the grammar formally in Decision 3:
+
+```
+metric_expr    := IDENT '=' reduction
+reduction      := REDUCTION_NAME '(' ingredient (',' ingredient)* ')'
+ingredient     := MEASURE_NAME
+REDUCTION_NAME := count | mean | sum | ratio | std | min | max
+                | wilson_lower | wilson_upper
+```
+
+- **Whitespace** is tolerated around `=`, `,`, and parens; not within
+  identifiers. `"win_rate = mean(direction_correct)"` and
+  `"win_rate=mean(direction_correct)"` both parse.
+- **Identifiers** (metric names, measure names) are bare — no quotes in
+  the grammar. CLI shell quoting (to escape `=`/`()`) is independent and
+  the parser sees the unquoted string.
+- **Measure names** follow the cartridge's existing identifier rules
+  (whatever `parse_bare_identifier` accepts); grade validates each
+  ingredient exists as a measure in the cartridge.
+- **Arity:** `ratio` requires exactly 2 ingredients; all others exactly
+  1. Wrong arity is a parse error.
+- **Error UX:** unknown reduction → `"unknown reduction 'avgg'; expected
+  one of: count, mean, sum, ratio, std, min, max, wilson_lower,
+  wilson_upper"`.
+
+### Amendment 12: Lock multi-level segment ordering
+
+**Problem.** Acceptance criterion 15 required deterministic ordering but
+didn't specify the order across multiple group-by levels.
+
+**Amendment.** Multi-level grouping produces **lexicographic ordering by
+group-by flag order — first flag varies slowest, last varies fastest**
+(the leftmost grouping is the major partition, matching standard
+reporting convention). For `--group-by bet_side --group-by dome_status`:
+
+```
+OVER,  dome=0
+OVER,  dome=1
+UNDER, dome=0
+UNDER, dome=1
+```
+
+Within a single key, segments sort ascending by key value (string sort
+for categorical, numeric sort for bucket bands by lower edge). Add to
+Decision 5 and acceptance criterion 15.
+
+---
+
+## Consolidated acceptance-criteria revisions
+
+The body's 23 ACs stand, with these amendment-driven changes:
+
+- **AC #6** (reductions): now 9 reductions including `min`/`max` (Amdt 7)
+- **AC #7** (ratio): denominator-zero/Null → Null + diagnostic, never inf/NaN/0 (Amdt 6)
+- **AC #9** (Wilson): hard-error on Null indicator by default; `--wilson-null drop` escape hatch (Amdt 3)
+- **AC #12** (TOTAL): inclusive of min-n-excluded segments (Amdt 9)
+- **AC #14** (JSON): validates against the expanded schema (Amdt 5)
+- **AC #15** (ordering): lexicographic by group-by flag order, first slowest (Amdt 12)
+- **AC #17** (CLI-only): unchanged — but no `mc-core` change at all unless a model-semantic primitive is surfaced (Amdt 4)
+
+New ACs:
+- **AC #24:** `--holdout` reuses the `Filter` grammar; F64-measure equality requires discrete-marking / range / tolerance, else hard error (Amdt 1)
+- **AC #25:** continuous-measure `--group-by` without `--bucket` is a hard error; `--max-segments` (default 50) caps segment count (Amdt 2)
+- **AC #26:** grade defaults to `LoadPolicy::Reproducible`; `--include-writes` opt-in (Amdt 8)
+- **AC #27:** metric-expression grammar parses per Amendment 11, with the specified error UX
+- **AC #28:** JSON exposes per-segment status, null_counts, warnings, bucket metadata, denominator_zero_segments (Amdt 5)
+- **AC #29:** reproducibility note documented; load-time snapshot semantics explicit (Amdt 10)
+
+---
+
+*End of amendments. Body of ADR above is preserved for audit-trail
+purposes; amendments win on conflicts.*
