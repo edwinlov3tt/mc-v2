@@ -26,6 +26,7 @@ use mc_model::{
 mod build_benchmarks;
 mod context_events;
 mod diff;
+mod grade;
 mod ledger_export;
 mod loader;
 mod mcp;
@@ -72,6 +73,10 @@ fn main() {
                     },
                     "sweep" => match sweep::parse(&args[3..]) {
                         Ok(cmd) => std::process::exit(sweep::run(cmd)),
+                        Err(e) => fatal(&e),
+                    },
+                    "grade" => match grade::parse(&args[3..]) {
+                        Ok(cmd) => std::process::exit(grade::run(cmd)),
                         Err(e) => fatal(&e),
                     },
                     "diff" => match diff::parse(&args[3..]) {
