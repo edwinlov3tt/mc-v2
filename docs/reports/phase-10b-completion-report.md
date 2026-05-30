@@ -133,10 +133,23 @@ max-segments cap, min-n inclusivity, dimension grouping, ratio
 denom-zero, Wilson hard-error + drop, holdout filter, JSON shape,
 determinism).
 
-`cargo test --workspace` completed clean (exit 0 — no regressions in any
-crate). `cargo fmt --check --all`, `cargo clippy --all-targets
---workspace -- -D warnings`, and the forbidden-pattern greps are quoted
-in the surfacing message accompanying this report.
+Full gate run (quoted from real output):
+
+```
+cargo fmt --check --all                              → exit 0
+cargo clippy --all-targets --workspace -- -D warnings → Finished, 0 warnings
+cargo test --workspace                                → 94 test groups ok, 0 failed
+  (mc-cli unit: test result: ok. 29 passed; 0 failed)
+forbidden grep (== 0.0 / println! / eprintln! in grade.rs) → 0 matches
+```
+
+Three clippy lints surfaced during hardening and were all fixed (not
+suppressed): `clippy::useless_vec` (test array), `clippy::neg_cmp_op_on_
+partial_ord` (`!(a < b)` → `b <= a` on bucket edges), and
+`clippy::write_with_newline` (`write!(…"\n")` → `writeln!`).
+
+Pushed to `origin/phase-10b/model-grade` (commit `951118e`); the branch
+is ready for owner review + merge.
 
 ---
 
