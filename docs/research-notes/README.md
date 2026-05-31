@@ -27,6 +27,7 @@ Phase 1A rationale that was previously scattered across the brief, the completio
 - [`weighted-average-consolidation.md`](./weighted-average-consolidation.md) — why CPC / CVR / Close_Rate / AOV / COGS_Rate don't simple-sum, and the funnel-position weight chain.
 - [`two-caching-layers-in-read.md`](./two-caching-layers-in-read.md) — derived-leaf cache + consolidated cache, dirty bit as invalidator, trace-bypass rule.
 - [`snapshot-as-deep-clone.md`](./snapshot-as-deep-clone.md) — why Phase 1 snapshots are full clones rather than COW.
+- [`evaluation-oracle-validation-push-bug.md`](./evaluation-oracle-validation-push-bug.md) — validation evidence: `mc model simulate` caught a 38% overstatement in claw-core's published numbers on first production use. The concrete payoff of the evaluation-primitives track (and the LNM-substrate thesis): a deterministic, reviewed oracle catches the unknown unknowns a hand-rolled script silently carries.
 
 ## Expected next notes
 
