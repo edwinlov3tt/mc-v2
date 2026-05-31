@@ -1,7 +1,9 @@
 # ADR-0036: Phase 10C — `mc model backtest` (Parameter Sweep × Holdout Evaluation)
 
-**Status:** Proposed
+**Status:** Accepted — SPIKE-GATED (Phase 10C.0 prototype must pass before 10C.1 implementation; 8 acceptance amendments — see bottom; binding)
 **Date:** 2026-05-27
+**Accepted:** 2026-05-27 (project owner approved after dual codebase-access review — Codex + Claude Code)
+**Last amended:** 2026-05-27 — both reviewers had source access and confirmed the PRIMARY axis (`param:` sweep) has no setter, parameters are explicitly outside dirty propagation (cube.rs:3069), and snapshot doesn't cover reference_data. 10C is now spike-gated: a param-recompute prototype (10C.0) decides whether this is zero-kernel-change or needs a kernel fix. `--simulate` deferred. See amendments.
 **Deciders:** project owner
 **Phase:** 10C (fourth command in the evaluation track; claw-core's confirmed #2 ask)
 **Crate(s) touched:** `mc-cli` (new `backtest` subcommand) + `mc-core`/`mc-model` ONLY if a model-semantic primitive surfaces (default: none — same discipline as ADR-0034 Amendment 4 / ADR-0035 Amendment 4)
@@ -412,3 +414,202 @@ is exactly the no-refit case.
 4. Multi-axis cartesian only, or is a "zip" mode (parallel axes, not product) needed for any script?
 5. Is `--max-grid 1000` the right default ceiling, and should grid explosion be a hard error or a confirm-prompt?
 6. Does the multi-domain mandate need a SECOND non-betting cartridge in the test suite (e.g. both marketing AND forecasting) to truly prove neutrality, or is one sufficient?
+
+---
+
+## Acceptance amendments
+
+Filed 2026-05-27 after dual review by **Codex and Claude Code — both with
+direct codebase access**, which made this the sharpest review in the
+track. Where prior reviews found spec gaps, this one found that the
+*primary mechanism may not exist and may not be zero-kernel-change*. Both
+reviewers independently verified the load-bearing claims against source;
+the PM re-confirmed all five before adopting. The headline consequence:
+**10C is restructured as spike-first.** A prototype (10C.0) gates the
+implementation (10C.1), because whether this is a ~400-LOC composition or
+a kernel change is currently unknown and provable in one experiment.
+
+**Source-confirmed findings (PM-verified):**
+- **No `param(name)` setter exists.** `sweep.rs` overrides only
+  `Coefficient` + `Cell` (set-coord); `whatif` does input overrides.
+  There is no parameter override anywhere — yet `param:` is declared the
+  "primary, most domain-neutral" axis (Decision 2). The body's "override
+  machinery already exists" is FALSE for the primary axis.
+- **Parameters are explicitly outside dirty propagation.** cube.rs:3069
+  verbatim: *"no dependency-graph participation (constants don't
+  participate in dirty propagation)."* So a swept param's dependent
+  derived cells may serve STALE cache from the prior grid cell.
+- **Snapshot/rollback doesn't cover reference_data.** snapshot.rs clones
+  only the cell store; `rollback_to` won't reset a param/coefficient. The
+  body's "transient overrides, cube never mutated" claim doesn't hold for
+  the reference_data axes via the snapshot mechanism.
+- **`--simulate` can't see a cube sweep.** simulate reads an external
+  `--bets` file (`simulate_command.rs:19`), not the cube. Sweeping a cube
+  param doesn't change those records → every grid cell replays identical
+  records → identical objective. The headline betting use case (EXP-033
+  threshold→ROI) needs the swept value to FILTER records, a different
+  mechanism entirely.
+- **RMSE is unwritable with the 9 reductions.** They produce
+  `mean(squared_error)`, not `sqrt(mean(...))` — yet RMSE is a marquee
+  multi-domain proof point (AC #22). The flagship forecasting example
+  literally can't be expressed.
+
+### Amendment 1 (CRITICAL — restructures the phase): Spike-first. 10C.0 prototype gates 10C.1.
+
+Before any command implementation, ship **Phase 10C.0 — a param-recompute
+prototype**:
+- A minimal failing-then-passing test: take a cube with a `param(x)`-
+  dependent derived measure, override `param(x)` to two different values
+  WITHOUT reloading, read the derived measure both times, assert it
+  **moves**.
+- If it moves correctly (the eval path re-reads parameters and the cache
+  busts) → 10C is zero-kernel-change as hoped; proceed to 10C.1 as a
+  composition.
+- If it serves stale cache (likely, given cube.rs:3069) → the fix is in
+  `mc-core`: either (a) reference_data mutation busts the derived/
+  consolidated cache, or (b) snapshot is extended to cover reference_data
+  and each grid cell does snapshot→override→eval→restore. **Either way
+  AC #17 (zero kernel change) is FALSE and the 3-4 session estimate is
+  wrong.** 10C.0 must report which world we're in.
+
+**AC #17 (zero kernel change) is hereby downgraded from a claim to a
+hypothesis that 10C.0 tests.** The honest position: we don't yet know if
+backtest is composition or kernel work. 10C.0 settles it in one
+experiment. No 10C.1 ADR-acceptance-to-implement until 10C.0 reports.
+
+### Amendment 2: Per-cell clean-state invariant + reference_data reset
+
+Each grid cell MUST start from a clean evaluation state:
+- Cell-store axes (`input:`) are dirty-tracked and restored by
+  `rollback_to` (works today).
+- reference_data axes (`param:`, `coef:`) are NOT covered by rollback —
+  per cell, they must be **explicitly reset/re-applied** (re-set the
+  swept value, restore the original after), AND any cache of
+  param/coef-dependent derived cells must be invalidated. The mechanism
+  is whatever 10C.0 establishes (cache-bust on reference_data mutation,
+  or snapshot-covers-reference_data). The invariant: **no grid cell
+  reuses another cell's derived results.** A test must prove a 2-axis
+  grid (one cell-store axis × one reference_data axis) gives independent
+  results per cell.
+
+### Amendment 3: `values:` list axis + range stays; `--dry-run`
+
+The `start:stop:step` grammar is too numeric for the multi-domain claim.
+Add a **value-list form**: `param:decay=[0.1,0.2,0.35]` (non-uniform
+numeric grids; the float-equality the list implies is fine — it's
+enumerated values, not a computed comparison). Range form
+(`start:stop:step`) stays for uniform sweeps. Categorical/variant axes
+are Amendment 5. Also add **`--dry-run`**: print resolved axes, total
+grid count, and the first/last few cells WITHOUT evaluating — the cheap
+guard before a 1000-cell run.
+
+### Amendment 4: Defer `--simulate` from v1 entirely
+
+`--simulate` doesn't function as designed (it reads an external file a
+cube sweep can't change) AND it's the only betting vocabulary in a
+"domain-neutral" command's surface. **Remove it from v1.** v1 is purely
+reduction-based and provably domain-neutral. The path-dependent-objective
+need (sweep a threshold → bankroll surface) is real but requires the
+swept value to filter bet records — a different mechanism. Defer to a
+future amendment or a `backtest --records` mode that's designed for it,
+once 10C.1's reduction core ships. This also removes the Q3/Gap-F
+neutrality leak: v1's command surface carries zero domain vocabulary.
+
+### Amendment 5: Add a `variant:` axis OR walk back the training-hyperparameter claims
+
+EXP-021 (Lasso α) and EXP-026 (stacked variants) sweep a *training
+hyperparameter* — α changes which coefficients survive, which requires
+REFIT, which Mosaic doesn't do. Two options:
+- **(a) `variant:` axis** — sweep over a set of pre-fit model artifacts
+  (`variant:model=[mlb_v10_a01, mlb_v10_a05, mlb_v10_a10]`), each a
+  separately-trained fitted_model the cartridge declares. Python trains
+  the variants; backtest evaluates each. This is the clean
+  Python-trains-Mosaic-evaluates expression of a hyperparameter sweep.
+- **(b) Walk back the claims** — remove EXP-021/026 from the "replaces 7
+  scripts" table; backtest replaces ~4-5 cleanly (032/033/039/042/044/
+  045 minus the refit cases).
+
+**Decision: do (b) for v1** (honest scope — backtest replaces the
+no-refit scripts) and note `variant:` as a fast-follow if demand
+surfaces. The "replaces 7 scripts" claim is corrected to "replaces 5-6
+no-refit scripts; training-hyperparameter sweeps (EXP-021/026) need the
+deferred `variant:` axis." EXP-032 STAYS — it's `param(dispersion_alpha)`,
+a genuine no-refit param sweep (a good keep-example).
+
+### Amendment 6: Grouped objective — best-per-segment
+
+The body defines one global best cell, but grouped backtests (EXP-039:
+threshold × line-bucket) need the **best parameter value PER segment**.
+Add `--best-by total|segment` (default `total`). With `--best-by segment`
++ `--group-by`, the objective is optimized within each segment and the
+output reports the best grid cell per segment. EXP-039's "best threshold
+per line bucket" needs this.
+
+### Amendment 7: Metric expressiveness + objective edge cases
+
+- **Add `rmse(m)` to the reduction vocabulary** (→ `sqrt(mean(m))` where
+  m is a squared-error measure), OR change the forecasting example to MSE
+  (`mse=mean(squared_error)`). **Decision: add `rmse(m)`** — it's a
+  one-line reduction (`mean(m).sqrt()`), RMSE is genuinely the standard
+  forecasting metric, and a marquee multi-domain example shouldn't be
+  inexpressible. The vocabulary becomes 10 reductions. (This is an
+  additive change to grade's vocabulary too — coordinate so both stay in
+  sync; it lands in the shared `eval_common` from Amendment 8.)
+- **Objective edge cases:** Null metrics are excluded from best-cell
+  selection; an all-Null objective hard-errors ("objective <m> is Null in
+  every grid cell"); ties break by first grid cell in the deterministic
+  enumeration order.
+
+### Amendment 8: Lift grade's engine into shared `eval_common`; fix xref; MC-objective rule
+
+- **Shared code, not subprocess, not duplication** (both reviewers
+  agree). Lift grade's metric parser + reduction engine + Filter
+  application into a shared `eval_common` module that both `grade` and
+  `backtest` call. backtest's per-cell evaluation IS grade's evaluation.
+  `rmse` (Amdt 7) lands here so both verbs get it.
+- **Wrong xref fixed:** the body cites "Reproducible (ADR-0035 A8)" for
+  the load policy; ADR-0035 A8 is `stake_hint`. The Reproducible default
+  is ADR-0034's precedent (and sweep.rs:184). Corrected to ADR-0034 / the
+  sweep precedent.
+- **MC-objective rule (if `--simulate` ever returns):** objective is
+  always the deterministic single-path metric; Monte Carlo bands are
+  reportorial only. Picking "best" on a noisy resampled band overfits to
+  the seed. (Moot for v1 since `--simulate` is deferred, but recorded so
+  the future amendment inherits it.)
+
+---
+
+## Consolidated acceptance-criteria revisions
+
+The body's 23 ACs are restructured into **10C.0 (spike) gates 10C.1
+(implementation):**
+
+**Phase 10C.0 — the spike (must pass before 10C.1):**
+- **AC-spike-1:** a param-recompute test proves a `param(x)`-dependent
+  derived measure MOVES when `param(x)` is overridden to two values
+  without reload (Amdt 1). Reports zero-kernel-change vs kernel-fix-needed.
+- **AC-spike-2:** if kernel work is needed, it's scoped + estimated before
+  10C.1 proceeds; AC #17 is updated to reflect reality.
+
+**Phase 10C.1 — implementation (post-spike), body ACs as amended:**
+- AC #1-6, #8-9, #11-14, #16, #18-21, #23: per body
+- AC #7 (metrics): 10 reductions incl. `rmse` (Amdt 7); no hardcoded domain metric
+- AC #10 (`--simulate`): **DEFERRED — not in v1** (Amdt 4)
+- AC #15 (multi-domain test): unchanged, mandatory; the non-betting example now uses `rmse` (Amdt 7) so it's actually expressible
+- AC #17 (zero kernel change): **downgraded to a hypothesis 10C.0 tests** (Amdt 1)
+- AC #22 (dual cookbook example): forecasting example uses `rmse` (Amdt 7)
+- **AC #24:** `values:[...]` list axis + `--dry-run` (Amdt 3)
+- **AC #25:** per-cell clean-state invariant — reference_data axes reset per cell; 2-axis grid gives independent results (Amdt 2)
+- **AC #26:** `--best-by total|segment` for grouped objectives (Amdt 6)
+- **AC #27:** objective edge cases — Null excluded, all-Null hard-errors, ties→first (Amdt 7)
+- **AC #28:** "replaces 5-6 no-refit scripts" (corrected from 7); EXP-021/026 need deferred `variant:` axis (Amdt 5)
+- **AC #29:** grade + backtest share `eval_common`; xref corrected (Amdt 8)
+
+---
+
+*End of amendments. Body above preserved for audit trail; amendments win
+on conflicts. The body's framing (multi-domain spine, compose-don't-
+reinvent) stands — both reviewers confirmed the default reduction path is
+genuinely domain-neutral. What changed: the primary axis needs a spike to
+confirm it works, `--simulate` is deferred, and the proof examples are
+corrected to be actually expressible.*
