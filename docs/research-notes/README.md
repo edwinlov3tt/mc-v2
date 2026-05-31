@@ -29,6 +29,7 @@ Phase 1A rationale that was previously scattered across the brief, the completio
 - [`snapshot-as-deep-clone.md`](./snapshot-as-deep-clone.md) — why Phase 1 snapshots are full clones rather than COW.
 - [`evaluation-oracle-validation-push-bug.md`](./evaluation-oracle-validation-push-bug.md) — validation evidence: `mc model simulate` caught a 38% overstatement in claw-core's published numbers on first production use. The concrete payoff of the evaluation-primitives track (and the LNM-substrate thesis): a deterministic, reviewed oracle catches the unknown unknowns a hand-rolled script silently carries.
 - [`binary-size-and-deployment-split.md`](./binary-size-and-deployment-split.md) — the kernel+model layer is already 885 KB; the 55 MB `mc` monolith is ~40 MB bundled DuckDB. A capability-split (`mc` lite / `mc-data` / `mc-server`) along existing crate seams gets a ~5 MB evaluation binary. Pre-ADR; captured for when distribution actually matters (it doesn't yet).
+- [`backtest-simulate-composition.md`](./backtest-simulate-composition.md) — the one clear next-phase signal after claw-core adopted backtest (EXP-056): sweep a knob → bankroll/drawdown surface, because per-bet-ROI-optimal ≠ bankroll-optimal (EXP-049). Un-defers ADR-0036 Amdt 4. Has a real unsolved mechanism (simulate reads an external record file a cube sweep can't change — 3 candidate bridges). Medium priority, not blocking; ADR when claw-core hits the wall.
 
 ## Expected next notes
 
