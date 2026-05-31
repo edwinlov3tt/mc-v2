@@ -23,8 +23,8 @@ use mc_model::{
     ValidationError, SCHEMA_VERSION,
 };
 
-mod build_benchmarks;
 mod backtest;
+mod build_benchmarks;
 mod context_events;
 mod diff;
 mod eval_common;

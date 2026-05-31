@@ -185,7 +185,11 @@ pub fn parse(args: &[String]) -> Result<BacktestCommand, String> {
                 };
                 let edges_str = match iter.next() {
                     Some(v) => v.clone(),
-                    None => return Err(format!("--bucket {measure} requires edges (e.g. 0:0.5:1.0)")),
+                    None => {
+                        return Err(format!(
+                            "--bucket {measure} requires edges (e.g. 0:0.5:1.0)"
+                        ))
+                    }
                 };
                 let edges = crate::eval_common::parse_bucket_edges(&edges_str)
                     .map_err(|e| format!("--bucket {measure}: {e}"))?;
@@ -384,7 +388,11 @@ fn parse_points(spec: &str) -> Result<Vec<f64>, String> {
 }
 
 /// Resolve one `--sweep` spec against the loaded cube.
-fn resolve_axis(spec: &str, cube: &mc_core::Cube, refs: &mc_model::ModelRefs) -> Result<Axis, String> {
+fn resolve_axis(
+    spec: &str,
+    cube: &mc_core::Cube,
+    refs: &mc_model::ModelRefs,
+) -> Result<Axis, String> {
     let (kind_str, rest) = spec
         .split_once(':')
         .ok_or_else(|| format!("--sweep {spec:?}: missing axis kind (param:/coef:/input:)"))?;
@@ -414,18 +422,22 @@ fn resolve_axis(spec: &str, cube: &mc_core::Cube, refs: &mc_model::ModelRefs) ->
             })
         }
         "coef" => {
-            let (model, coef) = target.split_once('.').ok_or_else(|| {
-                format!("--sweep coef:{target}: expected coef:<model>.<name>")
-            })?;
-            let model_data = cube.reference_data.fitted_models.get(model).ok_or_else(|| {
-                format!("--sweep coef:{target}: no fitted model named {model:?}")
-            })?;
+            let (model, coef) = target
+                .split_once('.')
+                .ok_or_else(|| format!("--sweep coef:{target}: expected coef:<model>.<name>"))?;
+            let model_data = cube
+                .reference_data
+                .fitted_models
+                .get(model)
+                .ok_or_else(|| format!("--sweep coef:{target}: no fitted model named {model:?}"))?;
             let index = model_data
                 .coefficients
                 .iter()
                 .position(|(name, _)| name == coef)
                 .ok_or_else(|| {
-                    format!("--sweep coef:{target}: coefficient {coef:?} not found in model {model:?}")
+                    format!(
+                        "--sweep coef:{target}: coefficient {coef:?} not found in model {model:?}"
+                    )
                 })?;
             let original = model_data.coefficients[index].1;
 
@@ -433,18 +445,18 @@ fn resolve_axis(spec: &str, cube: &mc_core::Cube, refs: &mc_model::ModelRefs) ->
             // nominal reference (conventionally 1.0, documenting "1.0 = the
             // fitted value") and the points are multipliers applied to the
             // fitted coefficient (EXP-042 stress test). No 'x' → absolute.
-            let (points, multiplier) = if let Some((nominal, mult_spec)) = value_spec.split_once('x')
-            {
-                nominal.trim().parse::<f64>().map_err(|_| {
-                    format!(
+            let (points, multiplier) =
+                if let Some((nominal, mult_spec)) = value_spec.split_once('x') {
+                    nominal.trim().parse::<f64>().map_err(|_| {
+                        format!(
                         "--sweep coef:{target}: multiplier form is <nominal>x<lo>:<hi>:<step>; \
                          {nominal:?} before 'x' is not a number"
                     )
-                })?;
-                (parse_points(mult_spec)?, true)
-            } else {
-                (parse_points(value_spec)?, false)
-            };
+                    })?;
+                    (parse_points(mult_spec)?, true)
+                } else {
+                    (parse_points(value_spec)?, false)
+                };
             Ok(Axis {
                 spec: spec.to_string(),
                 label: format!("coef:{model}.{coef}"),
@@ -902,7 +914,15 @@ fn format_text_total(cmd: &BacktestCommand, result: &BacktestResult) -> String {
         let best_cell = &result.cells[bi];
         let coords = fmt_cell_values_from_labels(&result.axis_labels, &best_cell.values);
         let val = fmt_opt(best_cell.total_metrics[oi], result.metric_is_count[oi]);
-        let _ = writeln!(out, "\nbest ({} {}): {{ {}, {}={} }}", goal_word(cmd.goal), obj, coords, obj, val);
+        let _ = writeln!(
+            out,
+            "\nbest ({} {}): {{ {}, {}={} }}",
+            goal_word(cmd.goal),
+            obj,
+            coords,
+            obj,
+            val
+        );
     }
     out
 }
@@ -1035,7 +1055,12 @@ fn format_json(cmd: &BacktestCommand, result: &BacktestResult) -> String {
         out.push_str(", \"n\": ");
         let _ = write!(out, "{}", cell.total_n);
         out.push_str(", \"metrics\": ");
-        push_metrics_obj(&mut out, &result.metric_names, &cell.total_metrics, &result.metric_is_count);
+        push_metrics_obj(
+            &mut out,
+            &result.metric_names,
+            &cell.total_metrics,
+            &result.metric_is_count,
+        );
         if !cmd.group_by.is_empty() {
             out.push_str(", \"segments\": [");
             for (si, seg) in cell.segments.iter().enumerate() {
@@ -1047,7 +1072,12 @@ fn format_json(cmd: &BacktestCommand, result: &BacktestResult) -> String {
                 out.push_str(", \"n\": ");
                 let _ = write!(out, "{}", seg.n_units);
                 out.push_str(", \"metrics\": ");
-                push_metrics_obj(&mut out, &result.metric_names, &seg.metrics, &result.metric_is_count);
+                push_metrics_obj(
+                    &mut out,
+                    &result.metric_names,
+                    &seg.metrics,
+                    &result.metric_is_count,
+                );
                 out.push_str(" }");
             }
             out.push(']');
@@ -1136,7 +1166,12 @@ fn push_best_json(out: &mut String, cmd: &BacktestCommand, result: &BacktestResu
                 out.push_str("{ \"sweep_values\": ");
                 push_sweep_values(out, &result.axis_labels, &cell.values);
                 out.push_str(", \"metrics\": ");
-                push_metrics_obj(out, &result.metric_names, &cell.total_metrics, &result.metric_is_count);
+                push_metrics_obj(
+                    out,
+                    &result.metric_names,
+                    &cell.total_metrics,
+                    &result.metric_is_count,
+                );
                 out.push_str(" }");
             }
         },
@@ -1160,7 +1195,11 @@ fn push_best_json(out: &mut String, cmd: &BacktestCommand, result: &BacktestResu
 
 /// Write the surface as jsonl: one line per grid cell, or per cell × segment
 /// when grouped. The downstream-plotting contract (Decision 6).
-fn write_emit_grid(path: &str, cmd: &BacktestCommand, result: &BacktestResult) -> Result<(), String> {
+fn write_emit_grid(
+    path: &str,
+    cmd: &BacktestCommand,
+    result: &BacktestResult,
+) -> Result<(), String> {
     let mut out = String::new();
     for cell in &result.cells {
         if cmd.group_by.is_empty() {
@@ -1169,7 +1208,12 @@ fn write_emit_grid(path: &str, cmd: &BacktestCommand, result: &BacktestResult) -
             out.push_str(", \"n\": ");
             let _ = write!(out, "{}", cell.total_n);
             out.push_str(", \"metrics\": ");
-            push_metrics_obj(&mut out, &result.metric_names, &cell.total_metrics, &result.metric_is_count);
+            push_metrics_obj(
+                &mut out,
+                &result.metric_names,
+                &cell.total_metrics,
+                &result.metric_is_count,
+            );
             out.push_str("}\n");
         } else {
             for seg in &cell.segments {
@@ -1180,7 +1224,12 @@ fn write_emit_grid(path: &str, cmd: &BacktestCommand, result: &BacktestResult) -
                 out.push_str(", \"n\": ");
                 let _ = write!(out, "{}", seg.n_units);
                 out.push_str(", \"metrics\": ");
-                push_metrics_obj(&mut out, &result.metric_names, &seg.metrics, &result.metric_is_count);
+                push_metrics_obj(
+                    &mut out,
+                    &result.metric_names,
+                    &seg.metrics,
+                    &result.metric_is_count,
+                );
                 out.push_str("}\n");
             }
         }

@@ -650,8 +650,150 @@ byte-identical bands on every platform.
 
 ---
 
+## `mc model backtest` — parameter sweep × holdout evaluation (Phase 10C, ADR-0036)
+
+`backtest` sweeps one or more axes across a grid and, **at each grid cell**,
+runs the full `grade` holdout evaluation — then reports the metric surface
+and flags the best cell by an objective. It is `grade` run N times with a
+different swept value each time: it shares `grade`'s evaluation engine
+verbatim (the shared `eval_common` module), so every reduction, the holdout
+`Filter` grammar, and `--group-by`/`--bucket` behave identically. The new
+machinery is the `--sweep` axis spec, the cartesian grid, and objective
+selection.
+
+```
+mc model backtest <cartridge.yaml> \
+  --unit <dimension> \
+  --sweep <axis-spec> [--sweep <axis-spec> ...] \
+  --holdout "<filter>" \
+  --metric "<name>=<reduction>(<ingredient>[,<ingredient>])" [--metric ...] \
+  [--group-by <key> ...] [--bucket <measure> <edges>] \
+  [--objective <metric>] [--goal maximize|minimize] [--best-by total|segment] \
+  [--min-n <int>] [--max-segments <int>] [--max-grid <int>] \
+  [--format text|json] [--emit-grid <path.jsonl>] [--dry-run]
+```
+
+### The three axis kinds (all domain-neutral)
+
+| Kind | Spec | What varies |
+|---|---|---|
+| **parameter** | `param:<name>=<spec>` | a `parameters:` scalar (`param(name)`) — the primary, most domain-neutral axis |
+| **coefficient** | `coef:<model>.<name>=<spec>` (absolute) or `coef:<model>.<name>=<nom>x<lo>:<hi>:<step>` (multiplier) | a fitted-model weight; the `<nom>x` form (conventionally `1.0x`) stress-tests `original × multiplier` |
+| **input** | `input:<measure>@<k=v,...>=<spec>` | an Input value at a coordinate (transient, like `whatif`) |
+
+`<spec>` is a **range** `start:stop:step` (uniform) or a **value list**
+`[v1,v2,v3]` (non-uniform; the literals are enumerated grid points, not a
+float comparison). Repeated `--sweep` flags form the **cartesian product**;
+the grid is enumerated in a fixed order (first axis slowest). `--max-grid`
+(default 1000) hard-errors on grid explosion. `--dry-run` prints the resolved
+axes, the grid count, and the first/last few cells **without** evaluating —
+the cheap guard before a long run.
+
+### Objective + goal (pick the best cell)
+
+`--objective <metric> --goal maximize|minimize` flags the best grid cell.
+Omit `--objective` to get the full surface with no winner (the "show me the
+whole curve" case). The engine doesn't know which metrics are good-high vs
+good-low — **you** declare it via `--goal` (default `maximize`; pass
+`minimize` for error metrics like RMSE/MAE). Null metric values are excluded
+from selection; an all-Null objective hard-errors; ties resolve to the first
+cell in grid order. `--best-by segment` (with `--group-by`) optimizes the
+objective **within each segment** and reports the best cell per segment.
+
+> **Zero kernel change (the 10C.0 spike).** A swept `param`/`coef` lives in
+> `reference_data`, which is outside dirty propagation. backtest applies the
+> spike-proven order per cell — `snapshot/rollback_to` → apply the swept
+> value → evaluate — so each cell starts from clean state and the swept
+> value's dependent derived cells recompute (never serve the prior cell's
+> stale cache). This is pure CLI composition; `mc-core` is untouched.
+
+### Example A (betting): edge threshold → ROI surface (EXP-033)
+
+The cartridge declares `param(edge_threshold)` and a per-bet
+`qualified = if(edge >= param(edge_threshold), 1.0, 0.0)`, plus
+`q_pnl = qualified * pnl` and `q_stake = qualified * stake`. Sweep the
+threshold; ROI is a generic `ratio` over the qualified bets:
+
+```bash
+mc model backtest mlb-bets.yaml --unit Bet \
+  --sweep "param:edge_threshold=0:0.10:0.05" \
+  --metric "n=sum(qualified)" \
+  --metric "roi=ratio(q_pnl,q_stake)" \
+  --objective roi --goal maximize
+```
+
+```
+param:edge_threshold | n | roi      | best
+---------------------+---+----------+-----
+0                    | 5 | 0.800000 |
+0.050000             | 4 | 1.250000 |
+0.100000             | 2 | 2        | *
+
+best (max roi): { param:edge_threshold=0.100000, roi=2 }
+```
+
+As the threshold rises, fewer bets qualify but the surviving edge is higher —
+the surface is the sensitivity, and the flagged cell is the optimal cutoff.
+Nothing here is betting-specific in the engine: `roi` is just
+`ratio(<author-pnl>, <author-stake>)`.
+
+### Example B (non-betting): forecast blend → RMSE surface
+
+The same command, a forecasting cartridge. A `param(blend)` weights a model
+forecast against a baseline; `squared_error = (forecast - actual)^2`. Sweep
+the blend and minimize **RMSE** (`rmse(m) = sqrt(mean(m))`, the 10th
+reduction, added in 10C so the marquee forecasting metric is expressible):
+
+```bash
+mc model backtest demand-forecast.yaml --unit Period \
+  --sweep "param:blend=0:1:0.25" \
+  --metric "rmse=rmse(squared_error)" \
+  --objective rmse --goal minimize
+```
+
+```
+param:blend | n | rmse      | best
+------------+---+-----------+-----
+0           | 2 | 15.811388 |
+0.250000    | 2 | 11.858541 |
+0.500000    | 2 | 7.905694  |
+0.750000    | 2 | 3.952847  |
+1           | 2 | 0         | *
+
+best (min rmse): { param:blend=1, rmse=0 }
+```
+
+Identical command shape, zero betting vocabulary — the multi-domain mandate
+made concrete. The reduction vocabulary is the only thing the engine ships;
+every metric is composed from it over author-named measures.
+
+### Reductions (10, closed vocabulary)
+
+`backtest` and `grade` share one vocabulary: `count`, `mean`, `sum`,
+`ratio(num,den)`, `std` (ddof=1), `min`, `max`, `wilson_lower`,
+`wilson_upper`, and **`rmse`** (`sqrt(mean(m))`, where `m` is a per-unit
+squared-error measure). For anything outside this set, declare a per-unit
+derived measure and pass it as an ingredient (same rule as §1).
+
+### Output
+
+Text is the surface table above. `--format json` emits a `schema_version`
+envelope with the run config (`axes`, `metrics`, `objective`, `goal`,
+`best_by`), the full `grid` array (`{sweep_values, n, metrics, segments?}`),
+the flagged `best`, and `warnings` — the codegen contract. `--emit-grid
+<path>` writes the surface as **jsonl** (one row per grid cell, or per cell ×
+segment when grouped) for downstream plotting (the α-vs-ROI curve, the
+threshold × bucket heatmap). v1 is reduction-only: `--simulate` and the
+`variant:` (pre-fit model artifact) axis are deferred. backtest replaces the
+5–6 no-refit claw-core sweep scripts; training-hyperparameter sweeps that
+require a refit are out of scope (Mosaic evaluates fitted models; Python
+trains them).
+
+---
+
 ## Cross-links
 
+- [ADR-0036](../decisions/0036-phase-10c-model-backtest.md) — Phase 10C backtest acceptance + 8 amendments
 - [ADR-0035](../decisions/0035-phase-10f-model-simulate.md) — Phase 10F simulate acceptance + 17 amendments
 - [ADR-0033](../decisions/0033-phase-10a-evaluation-metrics-library.md) — Phase 10A acceptance + amendments
 - [ADR-0031](../decisions/0031-nbinom-sf-formula-function.md) — Null-on-invalid-input precedent (Amendment 2)

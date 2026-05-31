@@ -484,8 +484,15 @@ pub(crate) fn evaluate(
         let mut any_oor = false;
 
         for (key_name, kind) in spec.group_by.iter().zip(kinds.iter()) {
-            let (display, sort, oor) =
-                resolve_group_component(coord, key_name, kind, spec.buckets, cube, refs, principal)?;
+            let (display, sort, oor) = resolve_group_component(
+                coord,
+                key_name,
+                kind,
+                spec.buckets,
+                cube,
+                refs,
+                principal,
+            )?;
             if oor {
                 any_oor = true;
             }
