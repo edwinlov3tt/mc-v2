@@ -375,14 +375,25 @@ per-unit derived measure and pass it as an ingredient (same rule as §1).
 ### Group keys
 
 A `--group-by <key>` is a **dimension** (one segment per element), or a
-**measure**. Because Mosaic measures carry no discrete/low-cardinality
-metadata, a measure group key follows this rule:
+**numeric measure** grouped via `--bucket`. Because Mosaic measures carry
+no discrete/low-cardinality metadata, a measure group key follows this
+rule:
 
-- A **string/categorical** measure value groups by distinct value directly.
-- A **continuous F64** measure REQUIRES `--bucket` — grouping a float by
-  distinct value is a float-equality hazard and would explode into
-  thousands of singletons. Omitting `--bucket` for an F64 key is a hard
+- A **continuous F64/I64** measure REQUIRES `--bucket` — grouping a number
+  by distinct value is a float-equality hazard and would explode into
+  thousands of singletons. Omitting `--bucket` for a numeric key is a hard
   error.
+- A **non-numeric (string/category/bool)** measure is **not** groupable in
+  this phase (a hard error). The kernel treats strings as eval-transient
+  and never stores them as cell values, so there is no stable distinct
+  value to group on. Group by a **dimension** for categorical axes, or
+  author a **discrete numeric slice measure** (e.g. `is_home` as `1.0`/`0.0`)
+  and `--bucket` it. Real categorical grouping is a demand-driven
+  fast-follow if a cartridge surfaces genuine categorical cell values.
+
+**Authoring tip:** if you intend to grade *by* an attribute, model it as a
+dimension or as a discrete numeric slice measure — not as a string —
+because grade's segmentation is numeric-bucket or dimension based.
 
 Buckets are left-closed / right-open, last band right-closed:
 `--bucket Edge_NB 0:0.03:0.10:1.0` → `[0,0.03)`, `[0.03,0.10)`,
