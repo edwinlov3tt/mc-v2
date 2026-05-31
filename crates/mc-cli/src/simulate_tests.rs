@@ -694,14 +694,20 @@ fn t_curve_excludes_voids_includes_pushes() {
 // --------------------------------------------------------------------------
 
 #[test]
-fn t_exp049_reproduction_sequential_legacy_binary() {
+fn t_exp049_reproduction_legacy_and_push_accurate() {
     let real =
         "/Users/edwinlovettiii/Projects/claw-core/training/mlb/artifacts/exp028_bets.parquet";
     if !std::path::Path::new(real).exists() {
         eprintln!("skipping EXP-049 repro: {real} not present");
         return;
     }
-    let v = sim_ok(&[
+    let filter = "abs_edge_pp >= 0.10 AND season == 2025";
+
+    // (a) LEGACY published number — reproduces claw-core's HISTORICAL headline,
+    // which is now known to OVERSTATE by ~38% due to push mis-scoring (integer-
+    // line pushes counted as wins). Pinned for audit fidelity, NOT correctness.
+    // Requires --no-derive-pushes to suppress the new auto-derive default.
+    let legacy = sim_ok(&[
         "--bets",
         real,
         "--start-bankroll",
@@ -709,22 +715,236 @@ fn t_exp049_reproduction_sequential_legacy_binary() {
         "--sizing",
         "quarter_kelly:cap=0.025,shrink=0.02",
         "--filter",
-        "abs_edge_pp >= 0.10 AND season == 2025",
+        filter,
         "--replay",
         "sequential",
+        "--outcome-mode",
+        "legacy-binary",
+        "--no-derive-pushes",
+        "--format",
+        "json",
+    ]);
+    let legacy_final = metric_f64(&legacy, "final_bank");
+    assert!(
+        (legacy_final - 2962.1596994721717).abs() / 2962.1596994721717 < 1e-3,
+        "legacy EXP-049 final_bank {legacy_final} not within 0.1% of 2962.16"
+    );
+    assert_eq!(legacy["metrics"]["n_bets"], 376);
+    assert_eq!(legacy["metrics"]["wins"], 222); // includes 24 phantom push-wins
+    assert!((metric_f64(&legacy, "max_drawdown") - 0.2905842740982206).abs() < 1e-4);
+
+    // (b) PUSH-ACCURATE number — the CORRECT result. Auto-derive is now the
+    // default (actual_total + line columns present), so no outcome flag is
+    // needed; pushes are reclassified out of the win column. ~$1,829 (−38%).
+    let correct = sim_ok(&[
+        "--bets",
+        real,
+        "--start-bankroll",
+        "1000",
+        "--sizing",
+        "quarter_kelly:cap=0.025,shrink=0.02",
+        "--filter",
+        filter,
+        "--format",
+        "json",
+    ]);
+    assert_eq!(correct["outcome_mode"], "derived-pushes");
+    let correct_final = metric_f64(&correct, "final_bank");
+    assert!(
+        (correct_final - 1829.3675124850377).abs() / 1829.3675124850377 < 1e-3,
+        "push-accurate EXP-049 final_bank {correct_final} not within 0.1% of 1829.37"
+    );
+    // Pushes detected and excluded from the win count.
+    assert!(correct["metrics"]["pushes"].as_u64().unwrap() > 0);
+    assert!(
+        correct["metrics"]["wins"].as_u64().unwrap() < 222,
+        "push-accurate wins should drop below the legacy 222"
+    );
+    // The correction is ~38% — vastly larger than any batch/sequential delta.
+    assert!(correct_final < legacy_final * 0.7);
+}
+
+// --------------------------------------------------------------------------
+// Phase 10F.1 — push-accuracy default + EXP-029 gaps (Amendments 18-19)
+// --------------------------------------------------------------------------
+
+/// A binary `won` fixture with score/line columns. Bet 1: actual==line (a
+/// push the binary `won=1` mis-scores as a win). Bet 2: a genuine win.
+fn push_fixture(key: &str) -> String {
+    write_jsonl(
+        key,
+        &[
+            r#"{ "bet_id": "1", "timestamp": "2025-01-01T00:00:00Z", "p_bet_side": 0.6, "decimal_odds": 2.0, "won": 1, "actual_total": 8.0, "line": 8.0 }"#,
+            r#"{ "bet_id": "2", "timestamp": "2025-01-02T00:00:00Z", "p_bet_side": 0.6, "decimal_odds": 2.0, "won": 1, "actual_total": 9.0, "line": 8.0 }"#,
+        ],
+    )
+}
+
+#[test]
+fn t_auto_derive_pushes_is_default() {
+    // AC #35: binary won + actual_total/line present → push-accurate by default,
+    // NO outcome flag passed. Bet 1 (actual==line) becomes a push.
+    let path = push_fixture("autoderive");
+    let v = sim_ok(&[
+        "--bets",
+        &path,
+        "--start-bankroll",
+        "1000",
+        "--sizing",
+        "flat:pct=0.1",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(v["outcome_mode"], "derived-pushes");
+    assert_eq!(v["metrics"]["pushes"], 1);
+    assert_eq!(v["metrics"]["wins"], 1);
+    // push neutral; flat:pct=0.1 → win pays 100 → 1100 (push leaves 1000→same).
+    assert!((metric_f64(&v, "final_bank") - 1100.0).abs() < 1e-6);
+}
+
+#[test]
+fn t_no_derive_pushes_opt_out() {
+    // AC #35: --no-derive-pushes forces prior behavior (legacy-binary scores
+    // the push as a win → no pushes, higher bankroll).
+    let path = push_fixture("optout");
+    let v = sim_ok(&[
+        "--bets",
+        &path,
+        "--start-bankroll",
+        "1000",
+        "--sizing",
+        "flat:pct=0.1",
+        "--outcome-mode",
+        "legacy-binary",
+        "--no-derive-pushes",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(v["outcome_mode"], "legacy-binary");
+    assert_eq!(v["metrics"]["pushes"], 0);
+    assert_eq!(v["metrics"]["wins"], 2); // the push is scored as a win
+                                         // both "wins" pay 100 → 1200.
+    assert!((metric_f64(&v, "final_bank") - 1200.0).abs() < 1e-6);
+}
+
+#[test]
+fn t_win_rate_excludes_pushes() {
+    // AC #36: win_rate = wins/(wins+losses), pushes out of num AND denom.
+    // 1 push + 1 win + 1 loss → win_rate = 1/2 = 0.5 (NOT 1/3 or 2/3).
+    let path = write_jsonl(
+        "winrate",
+        &[
+            r#"{ "bet_id": "1", "timestamp": "2025-01-01T00:00:00Z", "p_bet_side": 0.6, "decimal_odds": 2.0, "outcome": "win" }"#,
+            r#"{ "bet_id": "2", "timestamp": "2025-01-02T00:00:00Z", "p_bet_side": 0.6, "decimal_odds": 2.0, "outcome": "push" }"#,
+            r#"{ "bet_id": "3", "timestamp": "2025-01-03T00:00:00Z", "p_bet_side": 0.6, "decimal_odds": 2.0, "outcome": "loss" }"#,
+        ],
+    );
+    let v = sim_ok(&[
+        "--bets",
+        &path,
+        "--start-bankroll",
+        "1000",
+        "--sizing",
+        "flat:pct=0.1",
+        "--format",
+        "json",
+    ]);
+    assert!((metric_f64(&v, "win_rate") - 0.5).abs() < 1e-9);
+    assert_eq!(v["metrics"]["n_bets"], 3); // pushes counted as placed
+}
+
+#[test]
+fn t_legacy_binary_escalated_warning() {
+    // AC #37: legacy-binary WITHOUT derivable score columns → escalated warning
+    // (INACCURATE, names the compounding risk).
+    let path = write_jsonl(
+        "escalate",
+        &[
+            r#"{ "bet_id": "1", "timestamp": "2025-01-01T00:00:00Z", "p_bet_side": 0.6, "decimal_odds": 2.0, "won": 1 }"#,
+        ],
+    );
+    let v = sim_ok(&[
+        "--bets",
+        &path,
+        "--start-bankroll",
+        "1000",
+        "--sizing",
+        "flat:pct=0.1",
         "--outcome-mode",
         "legacy-binary",
         "--format",
         "json",
     ]);
-    // claw-core EXP-049 V1.0 baseline: 2962.1596994721717 (sequential, legacy).
-    let final_bank = metric_f64(&v, "final_bank");
+    let warnings = v["warnings"].as_array().unwrap();
+    let joined: String = warnings.iter().filter_map(|w| w.as_str()).collect();
     assert!(
-        (final_bank - 2962.1596994721717).abs() / 2962.1596994721717 < 1e-3,
-        "EXP-049 final_bank {final_bank} not within 0.1% of 2962.16"
+        joined.contains("INACCURATE"),
+        "warning not escalated: {joined}"
     );
-    assert_eq!(v["metrics"]["n_bets"], 376);
-    assert_eq!(v["metrics"]["wins"], 222);
-    // peak/drawdown match: claw-core max_drawdown 29.0584%.
-    assert!((metric_f64(&v, "max_drawdown") - 0.2905842740982206).abs() < 1e-4);
+    assert!(joined.contains("COMPOUNDS"));
+}
+
+#[test]
+fn t_max_stake_absolute_dollar_cap() {
+    // AC #39: --max-stake clamps in absolute dollars AFTER fractional sizing.
+    // flat_current:pct=0.5 → 500, but --max-stake 100 → stake 100.
+    let path = write_jsonl(
+        "maxstake",
+        &[
+            r#"{ "bet_id": "1", "timestamp": "2025-01-01T00:00:00Z", "p_bet_side": 0.6, "decimal_odds": 2.0, "outcome": "win" }"#,
+        ],
+    );
+    let curve = std::env::temp_dir().join("mc_sim_maxstake_curve.jsonl");
+    let v = sim_ok(&[
+        "--bets",
+        &path,
+        "--start-bankroll",
+        "1000",
+        "--sizing",
+        "flat_current:pct=0.5",
+        "--max-stake",
+        "100",
+        "--emit-curve",
+        curve.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert!((metric_f64(&v, "final_bank") - 1100.0).abs() < 1e-6);
+    let body = std::fs::read_to_string(&curve).expect("curve");
+    let first: Value = serde_json::from_str(body.lines().next().unwrap()).unwrap();
+    assert!(
+        (first["stake"].as_f64().unwrap() - 100.0).abs() < 1e-6,
+        "{first}"
+    );
+}
+
+#[test]
+fn t_window_first_is_count_based_post_filter() {
+    // AC #40: --window first:<n> selects the first N placed bets chronologically
+    // AFTER --filter, count-based (not date-based).
+    let path = write_jsonl(
+        "firstn",
+        &[
+            r#"{ "bet_id": "1", "timestamp": "2025-01-01T00:00:00Z", "p_bet_side": 0.6, "decimal_odds": 2.0, "outcome": "win", "edge": 0.05 }"#,
+            r#"{ "bet_id": "2", "timestamp": "2025-06-01T00:00:00Z", "p_bet_side": 0.6, "decimal_odds": 2.0, "outcome": "win", "edge": 0.20 }"#,
+            r#"{ "bet_id": "3", "timestamp": "2025-06-02T00:00:00Z", "p_bet_side": 0.6, "decimal_odds": 2.0, "outcome": "win", "edge": 0.20 }"#,
+            r#"{ "bet_id": "4", "timestamp": "2025-06-03T00:00:00Z", "p_bet_side": 0.6, "decimal_odds": 2.0, "outcome": "win", "edge": 0.20 }"#,
+        ],
+    );
+    // edge>=0.10 drops bet 1; first:2 → bets 2,3 (count-based, chronological).
+    let v = sim_ok(&[
+        "--bets",
+        &path,
+        "--start-bankroll",
+        "1000",
+        "--sizing",
+        "flat:pct=0.1",
+        "--filter",
+        "edge >= 0.10",
+        "--window",
+        "first:2",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(v["metrics"]["n_bets"], 2);
 }

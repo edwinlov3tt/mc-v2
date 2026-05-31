@@ -373,6 +373,23 @@ enum OutcomeKind {
     Mixed,
 }
 
+/// The default score/line column pair simulate auto-derives pushes from
+/// (Amendment 18). claw-core's schema uses `actual_total`/`line`. Returns
+/// the pair only when BOTH are present — a file without them cannot derive
+/// pushes and falls to legacy-binary + the escalated warning (not an error).
+fn can_derive_pushes(columns: &[String]) -> Option<DerivePushes> {
+    let actual = "actual_total";
+    let line = "line";
+    if columns.iter().any(|c| c == actual) && columns.iter().any(|c| c == line) {
+        Some(DerivePushes {
+            actual_col: actual.to_string(),
+            line_col: line.to_string(),
+        })
+    } else {
+        None
+    }
+}
+
 /// Top-level reader entry: read, resolve columns, normalize, validate.
 #[allow(clippy::too_many_arguments)]
 pub fn read_records(
@@ -380,9 +397,8 @@ pub fn read_records(
     cli_columns: &BTreeMap<String, String>,
     mode_req: OutcomeModeRequest,
     derive: Option<&DerivePushes>,
-    sequence_present_hint: bool,
+    no_derive: bool,
 ) -> Result<ReadResult, String> {
-    let _ = sequence_present_hint;
     let (table, format) = read_raw_table(path)?;
     if table.rows.is_empty() {
         return Err(format!("bet-record file {path} has zero rows"));
@@ -416,23 +432,53 @@ pub fn read_records(
         schema_mapping.insert(canonical.to_string(), src.clone());
     }
 
-    // Decide the effective outcome mode.
+    // Decide the effective outcome mode (Amendment 18). Push-accuracy is the
+    // DEFAULT whenever it's derivable. Precedence for derivation:
+    //   --no-derive-pushes > explicit --derive-pushes a=b > auto-derive-default
+    // and only over a binary outcome column (a 4-state enum is authoritative).
     let mut warnings: Vec<String> = Vec::new();
-    let effective_mode = if derive.is_some() {
+    let kind = detect_outcome_kind(&table.rows, &outcome_col);
+    let binary_ish = matches!(kind, OutcomeKind::Binary | OutcomeKind::Mixed);
+
+    let effective_derive: Option<DerivePushes> = if no_derive {
+        // --no-derive-pushes wins over everything: reproduce prior behavior.
+        None
+    } else if let Some(d) = derive {
+        // Explicit pair must be present (named non-default columns).
+        if !table.columns.iter().any(|c| c == &d.actual_col)
+            || !table.columns.iter().any(|c| c == &d.line_col)
+        {
+            return Err(format!(
+                "--derive-pushes needs both {:?} and {:?} columns; present: {}",
+                d.actual_col,
+                d.line_col,
+                table.columns.join(", ")
+            ));
+        }
+        Some(d.clone())
+    } else if binary_ish {
+        // Auto-derive default: only meaningful over a binary outcome column.
+        can_derive_pushes(&table.columns)
+    } else {
+        None
+    };
+
+    let effective_mode = if effective_derive.is_some() {
         OutcomeMode::DerivedPushes
     } else {
-        match detect_outcome_kind(&table.rows, &outcome_col) {
+        match kind {
             OutcomeKind::Enum => OutcomeMode::Canonical,
             OutcomeKind::Binary => {
                 if mode_req == OutcomeModeRequest::LegacyBinary {
                     OutcomeMode::LegacyBinary
                 } else {
                     return Err(format!(
-                        "outcome column {outcome_col:?} is binary 0/1. The 4-state outcome \
-                         (win/loss/push/void) is required by default. Re-run with \
-                         `--outcome-mode legacy-binary` (scores 1→win/0→loss; pushes & voids \
-                         are approximated) or `--derive-pushes actual_total=line` to \
-                         reconstruct pushes from the score columns."
+                        "outcome column {outcome_col:?} is binary 0/1 and no push-derivable \
+                         score columns (actual_total + line) were found. The 4-state outcome \
+                         (win/loss/push/void) is required by default. Provide a 4-state outcome \
+                         column, pass `--derive-pushes <actual>=<line>` to name your score/line \
+                         columns, or `--outcome-mode legacy-binary` to score 1→win/0→loss \
+                         (INACCURATE: any integer-line push is mis-scored)."
                     ));
                 }
             }
@@ -442,7 +488,6 @@ pub fn read_records(
                 ))
             }
             OutcomeKind::Mixed => {
-                // Mixed enum+binary: only allowed under legacy-binary or derive.
                 if mode_req == OutcomeModeRequest::LegacyBinary {
                     OutcomeMode::LegacyBinary
                 } else {
@@ -453,30 +498,27 @@ pub fn read_records(
     };
 
     if effective_mode == OutcomeMode::LegacyBinary {
+        // Escalated (Amendment 18 §2): legacy-binary is INACCURATE, not just
+        // approximate, when undetected pushes are scored as wins/losses.
         warnings.push(
-            "outcome scored as legacy-binary (1→win, 0→loss); pushes and voids cannot be \
-             distinguished and are approximated as win/loss. For push-accurate bankroll, \
-             provide a 4-state outcome column or use --derive-pushes."
+            "outcome scored as legacy-binary (1→win, 0→loss): pushes are counted as \
+             wins/losses, so the bankroll is INACCURATE — not merely approximate. Any \
+             integer-line game landing exactly on the line is a push being mis-scored; for \
+             direction-skewed models (mostly-OVER or mostly-UNDER) the error COMPOUNDS across \
+             the season. `win_rate` may also be inflated by these undetected pushes. \
+             legacy-binary is intended only for reproducing a known-published number; for an \
+             accurate bankroll provide a 4-state outcome column or score/line columns \
+             (actual_total + line) so pushes auto-derive."
                 .to_string(),
         );
     }
-    if effective_mode == OutcomeMode::DerivedPushes {
-        if let Some(d) = derive {
-            if !table.columns.iter().any(|c| c == &d.actual_col)
-                || !table.columns.iter().any(|c| c == &d.line_col)
-            {
-                return Err(format!(
-                    "--derive-pushes needs both {:?} and {:?} columns; present: {}",
-                    d.actual_col,
-                    d.line_col,
-                    table.columns.join(", ")
-                ));
-            }
-            warnings.push(format!(
-                "pushes reconstructed where {}=={} (4-state outcome derived from binary score)",
-                d.actual_col, d.line_col
-            ));
-        }
+    if let Some(d) = &effective_derive {
+        warnings.push(format!(
+            "pushes auto-derived where ({} - {}).abs() < 1e-9 → push (4-state outcome \
+             reconstructed from the binary score + line columns); pushes are neutral \
+             (stake returned).",
+            d.actual_col, d.line_col
+        ));
     }
 
     let seq_present = table.columns.iter().any(|c| c == "sequence");
@@ -520,8 +562,13 @@ pub fn read_records(
                 "record {idx}: decimal_odds={decimal_odds} must be > 1.0 ({odds_col})"
             ));
         }
-        let outcome = normalize_outcome(&row, &outcome_col, effective_mode, derive)
-            .map_err(|e| format!("record {idx}: {e}"))?;
+        let outcome = normalize_outcome(
+            &row,
+            &outcome_col,
+            effective_mode,
+            effective_derive.as_ref(),
+        )
+        .map_err(|e| format!("record {idx}: {e}"))?;
         let sequence = if seq_present {
             row.get("sequence").and_then(RecordValue::as_num)
         } else {

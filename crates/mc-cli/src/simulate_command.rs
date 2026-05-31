@@ -34,6 +34,8 @@ pub struct SimulateCommand {
     pub columns: BTreeMap<String, String>,
     pub outcome_mode: OutcomeModeRequest,
     pub derive: Option<DerivePushes>,
+    pub no_derive: bool,
+    pub max_stake: Option<f64>,
     pub replay: ReplayMode,
     pub metrics: Vec<String>,
 }
@@ -79,7 +81,10 @@ OPTIONS:
     --window all|first:<n>|range:<start>:<end>   filter FIRST, window SECOND
     --replay batch|sequential   same-timestamp discipline (default batch)
     --outcome-mode canonical|legacy-binary   default canonical (4-state req'd)
-    --derive-pushes <actual>=<line>   reconstruct pushes from score columns
+    --derive-pushes <actual>=<line>   name non-default score/line columns
+    --no-derive-pushes       opt out of push auto-derivation (default: on when
+                             actual_total + line columns are present)
+    --max-stake <amount>     absolute-dollar stake cap (after sizing + cap=)
     --odds fixed:<d>|column:<name>   override odds for sizing AND settlement
     --columns <canon>=<src>,...   column aliasing override
     --monte-carlo <n>        run N resampled simulations
@@ -116,6 +121,8 @@ pub fn parse(args: &[String]) -> Result<SimulateCommand, String> {
     let mut columns: BTreeMap<String, String> = BTreeMap::new();
     let mut outcome_mode = OutcomeModeRequest::Canonical;
     let mut derive: Option<DerivePushes> = None;
+    let mut no_derive = false;
+    let mut max_stake: Option<f64> = None;
     let mut replay = ReplayMode::Batch;
     let mut metrics: Vec<String> = Vec::new();
 
@@ -200,6 +207,17 @@ pub fn parse(args: &[String]) -> Result<SimulateCommand, String> {
                     line_col: l.trim().to_string(),
                 });
             }
+            "--no-derive-pushes" => no_derive = true,
+            "--max-stake" => {
+                let v = next_val(&mut iter, "--max-stake")?;
+                let n: f64 = v
+                    .parse()
+                    .map_err(|_| format!("--max-stake expects a number, got {v:?}"))?;
+                if n <= 0.0 {
+                    return Err("--max-stake must be > 0".into());
+                }
+                max_stake = Some(n);
+            }
             "--replay" => {
                 let v = next_val(&mut iter, "--replay")?;
                 replay = match v.as_str() {
@@ -277,6 +295,8 @@ pub fn parse(args: &[String]) -> Result<SimulateCommand, String> {
         columns,
         outcome_mode,
         derive,
+        no_derive,
+        max_stake,
         replay,
         metrics,
     })
@@ -354,7 +374,7 @@ fn run_inner(cmd: &SimulateCommand) -> Result<String, String> {
         &cmd.columns,
         cmd.outcome_mode,
         cmd.derive.as_ref(),
-        cmd.replay == ReplayMode::Sequential,
+        cmd.no_derive,
     )?;
     let mut warnings = read.warnings.clone();
 
@@ -421,6 +441,7 @@ fn run_inner(cmd: &SimulateCommand) -> Result<String, String> {
         &cmd.sizing,
         &cmd.odds,
         cmd.replay,
+        cmd.max_stake,
     );
     let metrics = compute_metrics(&result);
 
@@ -439,6 +460,7 @@ fn run_inner(cmd: &SimulateCommand) -> Result<String, String> {
             runs,
             &resample,
             seed,
+            cmd.max_stake,
         ))
     } else {
         None
@@ -782,6 +804,8 @@ fn format_json(
         "seed": cmd.seed.map(|s| json!(s)).unwrap_or(Value::Null),
         "monte_carlo": cmd.monte_carlo.map(|n| json!(n)).unwrap_or(Value::Null),
         "resample": cmd.resample_str,
+        "max_stake": cmd.max_stake.map(|s| json!(s)).unwrap_or(Value::Null),
+        "no_derive_pushes": cmd.no_derive,
     });
 
     let mut root = Map::new();
