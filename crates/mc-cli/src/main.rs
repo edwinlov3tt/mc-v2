@@ -23,9 +23,11 @@ use mc_model::{
     ValidationError, SCHEMA_VERSION,
 };
 
+mod backtest;
 mod build_benchmarks;
 mod context_events;
 mod diff;
+mod eval_common;
 mod grade;
 mod ledger_export;
 mod loader;
@@ -78,6 +80,10 @@ fn main() {
                     },
                     "grade" => match grade::parse(&args[3..]) {
                         Ok(cmd) => std::process::exit(grade::run(cmd)),
+                        Err(e) => fatal(&e),
+                    },
+                    "backtest" => match backtest::parse(&args[3..]) {
+                        Ok(cmd) => std::process::exit(backtest::run(cmd)),
                         Err(e) => fatal(&e),
                     },
                     "simulate" => match simulate::parse(&args[3..]) {
