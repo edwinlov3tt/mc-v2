@@ -679,13 +679,26 @@ strict (cryptographic — records signed by the cartridge that produced
 them).
 
 **Amendment.** When a cartridge is supplied, validation is **column-name
-provenance only**: columns referenced by `--filter`, `--sizing`, and the
-metric calculations must correspond to declared measures in the cartridge;
-unknown reference → error. Type checking against measure dtypes is
-**best-effort** (warn on mismatch, don't hard-block — record files may
-encode differently). **Cryptographic provenance** (record file signed by
-the cartridge version that produced it) is deferred to future Grout
-integration. Update Decision 1.
+provenance only**, and it is **warn-only, never a hard error**. The
+validator notes any referenced column that does NOT correspond to a
+declared cartridge measure, but does not block the run. **Cryptographic
+provenance** (record file signed by the cartridge version that produced
+it) is deferred to future Grout integration. Update Decision 1.
+
+**Reconciliation (added 2026-05-27 post-implementation — A11 self-correction).**
+This amendment originally said "unknown reference → error" in one
+sentence while saying "warn, don't hard-block" in the next — an internal
+contradiction. The 10F implementer correctly flagged it: Decision 1's own
+worked example passes a cartridge while `--filter`-ing on `abs_edge_pp`
+and stratifying on `season` — both bet-record columns that are NOT cube
+measures. Hard-erroring on unknown references would break the documented
+invocation. **The resolution is warn-only, full stop:** bet-record columns
+legitimately exceed the cartridge's measure set (the records carry
+outcomes, odds, edges the cube never had), so an "unknown column" is the
+normal case, not an error. The cartridge-when-present is a provenance
+*hint* surfaced in `schema_mapping` + warnings, not a gate. As-shipped
+behavior (warn-only) is the correct behavior; this text is corrected to
+match. AC #33 reflects warn-only.
 
 ### Amendment 12: Filter/window order of operations locked
 
@@ -833,7 +846,7 @@ New ACs:
 - **AC #30:** `roi` cumulative; `roi_per_bet` separate metric (Amdt 13)
 - **AC #31:** `--sizing from_column:stake_hint` explicit; bare stake_hint column ignored (Amdt 8)
 - **AC #32:** JSON exposes warnings/outcome_counts/skip_counts/ruin/recovery_status/schema_mapping/outcome_mode/run-config (Amdt 16)
-- **AC #33:** cartridge validation = column-name provenance only; crypto provenance deferred (Amdt 11)
+- **AC #33:** cartridge validation = column-name provenance only, **warn-only never hard-error** (bet-record columns legitimately exceed cube measures); crypto provenance deferred (Amdt 11, reconciled post-implementation)
 - **AC #34:** `--replay batch|sequential` (default batch); sequential = stable-sort timestamp, compound in `sequence`-col-or-file order; batch is A1 default. EXP-049 repro uses sequential (Amdt 17)
 
 ---
