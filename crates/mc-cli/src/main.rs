@@ -35,6 +35,7 @@ mod narrate_trends;
 mod query;
 mod query_ledger;
 mod show_benchmarks;
+mod simulate;
 mod sweep;
 mod tessera;
 mod trace;
@@ -77,6 +78,10 @@ fn main() {
                     },
                     "grade" => match grade::parse(&args[3..]) {
                         Ok(cmd) => std::process::exit(grade::run(cmd)),
+                        Err(e) => fatal(&e),
+                    },
+                    "simulate" => match simulate::parse(&args[3..]) {
+                        Ok(cmd) => std::process::exit(simulate::run(cmd)),
                         Err(e) => fatal(&e),
                     },
                     "diff" => match diff::parse(&args[3..]) {
