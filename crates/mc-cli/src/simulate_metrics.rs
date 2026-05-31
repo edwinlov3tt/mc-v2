@@ -204,6 +204,7 @@ fn replay_indices(
     start_bankroll: f64,
     sizing: &SizingRule,
     odds_src: &OddsSource,
+    max_stake: Option<f64>,
 ) -> (f64, f64) {
     let mut bank = start_bankroll;
     let mut path: Vec<f64> = Vec::with_capacity(indices.len());
@@ -214,7 +215,11 @@ fn replay_indices(
             _ => continue,
         };
         let stake = match sizing.size(rec, odds, start_bankroll, bank) {
-            SizeOutcome::Stake(s) => s.min(bank),
+            // A19: absolute-dollar --max-stake cap, then the bankroll cap.
+            SizeOutcome::Stake(s) => match max_stake {
+                Some(ms) => s.min(ms).min(bank),
+                None => s.min(bank),
+            },
             SizeOutcome::Skip(_) => continue,
         };
         let (_, new_bank) = apply_outcome(rec.outcome, stake, odds, bank);
@@ -248,6 +253,7 @@ fn block_starts(n: usize, len: usize) -> Vec<usize> {
 }
 
 /// Run the Monte Carlo resampling wrapper.
+#[allow(clippy::too_many_arguments)]
 fn run_monte_carlo(
     pool: &[BetRecord],
     start_bankroll: f64,
@@ -256,6 +262,7 @@ fn run_monte_carlo(
     runs: usize,
     resample: &Resample,
     seed: u64,
+    max_stake: Option<f64>,
 ) -> MonteCarloResult {
     let n = pool.len();
     let mut rng = SplitMix64::new(seed);
@@ -295,7 +302,8 @@ fn run_monte_carlo(
                 seq
             }
         };
-        let (final_bank, max_dd) = replay_indices(pool, &indices, start_bankroll, sizing, odds_src);
+        let (final_bank, max_dd) =
+            replay_indices(pool, &indices, start_bankroll, sizing, odds_src, max_stake);
         let roi = if start_bankroll.abs() < ZERO_EPS {
             0.0
         } else {

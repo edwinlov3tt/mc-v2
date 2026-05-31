@@ -491,7 +491,8 @@ mc model simulate [<cartridge.yaml>] \
   --sizing <rule>[:param=value,...] \
   [--filter "<predicate>"] [--window all|first:<n>|range:<a>:<b>] \
   [--replay batch|sequential] [--outcome-mode canonical|legacy-binary] \
-  [--derive-pushes <actual>=<line>] [--odds fixed:<d>|column:<name>] \
+  [--derive-pushes <actual>=<line>] [--no-derive-pushes] \
+  [--odds fixed:<d>|column:<name>] [--max-stake <amount>] \
   [--monte-carlo <n>] [--resample iid|block:<len>] [--seed <int>] \
   [--metric <name> ...] [--format text|json] [--emit-curve <path>]
 ```
@@ -556,35 +557,85 @@ readings:
 The two diverge whenever a timestamp holds multiple bets. **V1.1 gating should
 prefer the batch number** since that's what's actually achievable.
 
-### Bankruptcy / ruin
+### Bankruptcy / ruin, and `--max-stake`
 
 No margin, no borrowing: a stake is capped at the current bankroll, the
 bankroll never goes negative, and reaching ≤ 0 sets `ruin: true` /
 `ruin_index` and skips all remaining bets (the curve ends at the ruin row).
+`--max-stake <amount>` adds an **absolute-dollar** cap applied *after* the
+sizing rule and the fractional `cap=` modifier:
+`stake = min(sized, cap × bankroll, max_stake)` — the account-limit stress
+from EXP-029d (e.g. "no bet exceeds $500 regardless of bankroll"). Note the
+distinction: `cap=` is a *fraction* of bankroll; `--max-stake` is *dollars*.
 
-### Worked example: the EXP-049 headline ($1k → $2,962, +196%)
+### Push accuracy is the default (read this — it's a ~38% correction)
 
-claw-core's V1.0 baseline headline was computed **sequentially** in
-**legacy-binary** mode (their `won` column is 0/1 with 295 pushes folded in).
-To reproduce it exactly against the *unmodified* file:
+**If your records carry score + line columns (`actual_total` + `line`), you
+get push-accurate bankroll by DEFAULT** — simulate auto-derives pushes
+(`(actual − line).abs() < 1e-9` → push, stake returned, neutral) regardless of
+`--outcome-mode`. This matters enormously: claw-core's first production run
+found their published `won`-0/1 headline scored integer-line pushes as wins,
+and their UNDER-heavy model compounded those phantom wins all season —
+**$2,962 published → $1,829 push-accurate, a 38% overstatement** (≈500× larger
+than the batch-vs-sequential correction). `win_rate = wins/(wins+losses)`
+always excludes pushes from both numerator and denominator.
+
+- `--no-derive-pushes` opts out (restores legacy scoring — for reproducing a
+  historical published number).
+- `--derive-pushes <actual>=<line>` names a non-default score/line pair.
+- **Schema-specific note:** auto-derive keys off the canonical
+  `actual_total` / `line` column names. Other schemas (e.g. NBA
+  `final_total` / `closing_line`) will **not** auto-derive — they fall to
+  legacy-binary plus an escalated *"bankroll is INACCURATE"* warning. Pass
+  `--derive-pushes <actual>=<line>` explicitly to get push-accuracy on those
+  schemas. (This is why a different consumer might not get the default
+  claw-core got.)
+- A binary `won` file with **no** derivable score columns hard-errors by
+  default (4-state required); `--outcome-mode legacy-binary` is the explicit,
+  loudly-warned escape hatch for reproducing legacy numbers.
+
+### Worked example: EXP-049 — the published vs the correct number
+
+claw-core's V1.0 baseline *published* headline was computed **sequentially**
+in **legacy-binary** mode (pushes-as-wins). To reproduce that historical —
+now known-overstated — figure against the *unmodified* file, you must opt out
+of the push correction:
 
 ```
 mc model simulate \
   --bets exp028_bets.parquet --start-bankroll 1000 \
   --sizing quarter_kelly:cap=0.025,shrink=0.02 \
   --filter "abs_edge_pp >= 0.10 AND season == 2025" \
-  --replay sequential --outcome-mode legacy-binary \
+  --replay sequential --outcome-mode legacy-binary --no-derive-pushes \
   --metric final_bank --metric roi --metric max_drawdown
-# → final 2962.16, roi +196.22%, 376 bets, max drawdown 29.06%
+# → final 2962.16, +196.22%, 376 bets, 222 wins, max drawdown 29.06%  (PUBLISHED — overstated)
 ```
 
-The **batch** default on the same inputs yields **$2,964.16** — the realistic
-number, differing because same-night slates compound differently. Both are
-correct; they answer different questions (legacy reproduction vs. achievable).
-By default simulate **requires** a 4-state `outcome`; bare 0/1 hard-errors
-unless `--outcome-mode legacy-binary` (which stamps `outcome_mode` and warns
-that pushes are approximated) or `--derive-pushes actual_total=line`
-(reconstructs the 295 pushes for a push-accurate bankroll).
+The **correct** number needs no outcome flags at all — push-accuracy is the
+default (the file has `actual_total` + `line`):
+
+```
+mc model simulate \
+  --bets exp028_bets.parquet --start-bankroll 1000 \
+  --sizing quarter_kelly:cap=0.025,shrink=0.02 \
+  --filter "abs_edge_pp >= 0.10 AND season == 2025" \
+  --metric final_bank --metric n_bets
+# → final 1829.37 (−38%), 376 bets (198 win / 152 loss / 26 push)  (CORRECT)
+```
+
+The 26 reclassified pushes (24 of them phantom UNDER "wins") are the whole
+difference. `--replay sequential` vs the default `batch` shifts the number by
+~$2; the push correction shifts it by ~$1,130 — pick your outcome handling
+before you worry about replay mode.
+
+### Windows: `first:<n>` is count-based, `range` is date-based
+
+`--filter` applies first; `--window` selects from the filtered pool.
+`--window first:<n>` takes the first **N placed bets chronologically** (a
+count — EXP-029e's "first 30 bets" risk study, which composes with
+`--monte-carlo` for the early-window drawdown distribution), whereas
+`--window range:<a>:<b>` selects by **date** bounds (inclusive). They answer
+different questions: count vs calendar.
 
 ### Monte Carlo bands
 

@@ -860,6 +860,7 @@ fn replay(
     sizing: &SizingRule,
     odds_src: &OddsSource,
     mode: ReplayMode,
+    max_stake: Option<f64>,
 ) -> ReplayResult {
     let mut res = ReplayResult {
         start_bankroll,
@@ -915,7 +916,15 @@ fn replay(
                 }
             };
             match sizing.size(rec, odds, start_bankroll, basis) {
-                SizeOutcome::Stake(s) => staked.push((k, s, odds)),
+                // A19: --max-stake is an absolute-dollar cap applied AFTER the
+                // sizing rule + fractional cap= (which size() already applied).
+                SizeOutcome::Stake(s) => {
+                    let s = match max_stake {
+                        Some(ms) => s.min(ms),
+                        None => s,
+                    };
+                    staked.push((k, s, odds))
+                }
                 SizeOutcome::Skip(reason) => {
                     *res.skip_counts.entry(reason.key().to_string()).or_insert(0) += 1;
                 }
