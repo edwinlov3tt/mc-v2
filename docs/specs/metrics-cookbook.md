@@ -474,8 +474,134 @@ grade; an explicit `--at-revision` flag is deferred to demand.
 
 ---
 
+## `mc model simulate` — chronological bankroll replay (Phase 10F, ADR-0035)
+
+Where `grade` is order-independent map-reduce, `simulate` is **path-dependent
+replay**: it consumes a *bet-record file* (not the cube), sizes each bet from
+the bankroll state at that moment, walks the bankroll forward in time order,
+and reports `final_bank` / `roi` / `max_drawdown` / `recovery_bets` / `sharpe`
+(plus optional Monte Carlo bands). The headline numbers that gate a model's
+go-live ("$1k → $2,962, +196%") are bankroll numbers — `grade` structurally
+cannot produce them.
+
+```
+mc model simulate [<cartridge.yaml>] \
+  --bets <records.parquet|records.jsonl> \
+  --start-bankroll <amount> \
+  --sizing <rule>[:param=value,...] \
+  [--filter "<predicate>"] [--window all|first:<n>|range:<a>:<b>] \
+  [--replay batch|sequential] [--outcome-mode canonical|legacy-binary] \
+  [--derive-pushes <actual>=<line>] [--odds fixed:<d>|column:<name>] \
+  [--monte-carlo <n>] [--resample iid|block:<len>] [--seed <int>] \
+  [--metric <name> ...] [--format text|json] [--emit-curve <path>]
+```
+
+### Bet-record format (the load-bearing contract)
+
+One row per placed bet. simulate reads **parquet** (via the bundled DuckDB
+`read_parquet` path — no new dependency) or **jsonl**.
+
+| Canonical column | Type | Meaning | claw-core alias |
+|---|---|---|---|
+| `bet_id` | string/int | unique id | `game_pk` |
+| `timestamp` | RFC3339 / epoch | chronological key | `commence_time` |
+| `p_bet_side` | f64 ∈ [0,1] | model win prob (drives Kelly) | — |
+| `decimal_odds` | f64 > 1.0 | payout multiple | — |
+| `outcome` | `win`/`loss`/`push`/`void` | result | `won` (0/1, legacy) |
+
+Optional columns (`abs_edge_pp`, `side`, `season`, …) are available to
+`--filter`. Aliases resolve automatically; override with
+`--columns bet_id=game_pk,...` or a `<records>.schema.json` sidecar.
+
+### Sizing vocabulary
+
+`flat:pct=X` · `flat_current:pct=X` · `kelly:fraction=F` · `quarter_kelly`
+· `half_kelly` · `from_column:<col>`. Universal modifiers:
+`cap=X` (fraction of bankroll), `shrink=X` (subtract from `p` before Kelly —
+a CI haircut), `min_odds=X`, `floor=X`. Pinned Kelly: `b = d − 1`,
+`f = (b·p − (1−p)) / b` clamped to `[0, ∞)`, `stake_pct = min(F·f, cap)`.
+Negative-edge bets are skipped, never bet.
+
+### `roi` means something different here than in grade
+
+In **grade**, `roi` (via `ratio`) is **per-bet**: `sum(pnl) / sum(stake)`.
+In **simulate**, `roi` is **cumulative / compounding**:
+`(final_bank − start) / start` — the path-dependent headline. simulate also
+exposes `roi_per_bet` (the grade-compatible number) separately. They are two
+different numbers; using the wrong one makes the +196% headline vanish.
+
+### `max_drawdown` / `recovery_bets` are simulate-only
+
+These were deferred from Phase 10A (ADR-0033) precisely because they need a
+time-ordered scan over the bankroll curve, which is simulate's native shape —
+grade's order-independent reductions cannot express them. `recovery_bets` is
+an integer when the trough recovers to its prior peak, `null` otherwise,
+always paired with `recovery_status` (`recovered` / `unrecovered` /
+`never_underwater`) — never `∞`. `sharpe` uses sample std (ddof=1, consistent
+with ADR-0033 Amendment 3) and is `null` on `n_bets < 2` or zero variance.
+
+### Same-timestamp replay: `batch` (default) vs `sequential`
+
+45% of real MLB bets share a `commence_time` (a same-night slate). Two honest
+readings:
+
+- **`--replay batch` (default)** — all bets on a slate are sized from the
+  bankroll *as of the slate's start* (none have resolved when you place them),
+  outcomes applied atomically. The *financially achievable* number. A batch
+  whose total stake exceeds the bankroll is scaled down proportionally.
+- **`--replay sequential`** — compound each bet in order (the `sequence`
+  column if present, else stable file order; never re-sorted by `bet_id`).
+  Reproduces legacy headlines that iterated a dataframe row-by-row.
+
+The two diverge whenever a timestamp holds multiple bets. **V1.1 gating should
+prefer the batch number** since that's what's actually achievable.
+
+### Bankruptcy / ruin
+
+No margin, no borrowing: a stake is capped at the current bankroll, the
+bankroll never goes negative, and reaching ≤ 0 sets `ruin: true` /
+`ruin_index` and skips all remaining bets (the curve ends at the ruin row).
+
+### Worked example: the EXP-049 headline ($1k → $2,962, +196%)
+
+claw-core's V1.0 baseline headline was computed **sequentially** in
+**legacy-binary** mode (their `won` column is 0/1 with 295 pushes folded in).
+To reproduce it exactly against the *unmodified* file:
+
+```
+mc model simulate \
+  --bets exp028_bets.parquet --start-bankroll 1000 \
+  --sizing quarter_kelly:cap=0.025,shrink=0.02 \
+  --filter "abs_edge_pp >= 0.10 AND season == 2025" \
+  --replay sequential --outcome-mode legacy-binary \
+  --metric final_bank --metric roi --metric max_drawdown
+# → final 2962.16, roi +196.22%, 376 bets, max drawdown 29.06%
+```
+
+The **batch** default on the same inputs yields **$2,964.16** — the realistic
+number, differing because same-night slates compound differently. Both are
+correct; they answer different questions (legacy reproduction vs. achievable).
+By default simulate **requires** a 4-state `outcome`; bare 0/1 hard-errors
+unless `--outcome-mode legacy-binary` (which stamps `outcome_mode` and warns
+that pushes are approximated) or `--derive-pushes actual_total=line`
+(reconstructs the 295 pushes for a push-accurate bankroll).
+
+### Monte Carlo bands
+
+`--monte-carlo <n> --seed <int>` (seed required) resamples the
+filtered/windowed pool `n` times and reports P5/P25/P50/P75/P95 bands
+(nearest-rank) for `final_bank`, `roi`, and `max_drawdown`, plus
+`p_underwater`. `--resample iid` (default) draws with replacement;
+`--resample block:<len>` draws non-overlapping contiguous blocks (default
+`len = round(√N)`) to preserve streaks. The PRNG is a pinned splitmix64
+implemented in `mc-cli` (no `rand` crate); the same seed yields
+byte-identical bands on every platform.
+
+---
+
 ## Cross-links
 
+- [ADR-0035](../decisions/0035-phase-10f-model-simulate.md) — Phase 10F simulate acceptance + 17 amendments
 - [ADR-0033](../decisions/0033-phase-10a-evaluation-metrics-library.md) — Phase 10A acceptance + amendments
 - [ADR-0031](../decisions/0031-nbinom-sf-formula-function.md) — Null-on-invalid-input precedent (Amendment 2)
 - [research note: built-in evaluation primitives](../research-notes/built-in-evaluation-primitives.md) — the 5 commands this cookbook unblocks
