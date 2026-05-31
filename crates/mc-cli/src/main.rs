@@ -24,6 +24,7 @@ use mc_model::{
 };
 
 mod build_benchmarks;
+mod backtest;
 mod context_events;
 mod diff;
 mod eval_common;
@@ -79,6 +80,10 @@ fn main() {
                     },
                     "grade" => match grade::parse(&args[3..]) {
                         Ok(cmd) => std::process::exit(grade::run(cmd)),
+                        Err(e) => fatal(&e),
+                    },
+                    "backtest" => match backtest::parse(&args[3..]) {
+                        Ok(cmd) => std::process::exit(backtest::run(cmd)),
                         Err(e) => fatal(&e),
                     },
                     "simulate" => match simulate::parse(&args[3..]) {
