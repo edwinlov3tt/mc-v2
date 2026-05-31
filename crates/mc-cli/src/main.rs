@@ -26,6 +26,7 @@ use mc_model::{
 mod build_benchmarks;
 mod context_events;
 mod diff;
+mod eval_common;
 mod grade;
 mod ledger_export;
 mod loader;

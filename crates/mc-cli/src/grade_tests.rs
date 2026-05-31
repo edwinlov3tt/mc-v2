@@ -8,6 +8,20 @@
 // from an assertion mismatch.
 
 use super::*;
+// Phase 10C.1 (ADR-0036 Amdt 8): the metric grammar, reductions, bucket
+// assignment, Filter guard, and segment-sort moved to `eval_common`. grade
+// re-uses them; these tests reach the engine primitives directly from there.
+// (Names grade's own non-test code uses — parse_metric_expr, MetricExpr,
+// SegmentStatus, etc. — arrive via `super::*` and are not re-imported here.)
+use crate::eval_common::{
+    assign_bucket, cmp_sort_vecs, guard_filter_f64_equality, reduce_max, reduce_mean, reduce_min,
+    reduce_std, reduce_sum, BandAssignment, Reduction, SortKey,
+};
+// The holdout-filter guard tests construct `Filter` ASTs directly; these
+// come from `query` (grade's non-test code only needs `CmpOp`, which arrives
+// via `super::*`). The Wilson compute fns live in `mc-core`.
+use crate::query::{Filter, FilterAtom, FilterValue};
+use mc_core::rule::{wilson_ci_lower_compute, wilson_ci_upper_compute};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 const TOL_HEADLINE: f64 = 1e-3;
