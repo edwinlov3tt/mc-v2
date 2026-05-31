@@ -72,6 +72,18 @@ New logic:
   `can_derive_pushes(&table.columns) -> Option<(actual_col, line_col)>`
   that checks for the default pair when no explicit `--derive-pushes` was
   given.
+- **Push-equality test — use the epsilon, NOT bare float `==` (CLAUDE.md
+  §3.1; raised in claw-core's review).** The ADR shorthand "actual ==
+  line" is conceptual. Both values are f64; bare `==` is forbidden and
+  would clippy-flag. Implement as `(actual - line).abs() < 1e-9`. This is
+  exactly right for the domain: integer lines (9.0) can push; half-integer
+  lines (8.5) can never push (no game scores 8.5 runs), so the epsilon
+  yields zero false positives. Do NOT write the literal `==` the ADR text
+  implies.
+- **Column-name default (`actual_total`/`line`) is claw-core-specific.**
+  A cube with other names won't auto-derive — it falls to legacy-binary +
+  the escalated warning (correct, not a bug). Those consumers pass
+  `--derive-pushes <a>=<b>` explicitly. Cookbook (Step 8) must say so.
 - **New default behavior:** if push-derivation is possible AND
   `--no-derive-pushes` was NOT passed → `OutcomeMode::DerivedPushes`
   (using the detected or explicit column pair), regardless of
@@ -139,9 +151,16 @@ Update the EXP-049 reproduction test:
 ### Step 8: Cookbook + gates
 Update the `mc model simulate` cookbook section: document push
 auto-derivation as the default, `--no-derive-pushes`, `--max-stake`,
-count-based `--window first`. Note the push-accuracy guidance ("if your
-records carry score + line columns, you get push-accurate bankroll by
-default; legacy-binary is for reproducing historical published numbers").
+count-based `--window first`. Two notes that MUST be present:
+- **Push-accuracy guidance:** "if your records carry score + line columns
+  (`actual_total`/`line`), you get push-accurate bankroll by default;
+  legacy-binary is for reproducing historical published numbers."
+- **Schema-specific column note (claw-core review #2):** "auto-derive
+  keys off the canonical `actual_total`/`line` names. Other schemas
+  (e.g. NBA `final_total`/`closing_line`) won't auto-derive and fall to
+  legacy-binary — pass `--derive-pushes <actual>=<line>` explicitly to
+  get push-accuracy." This stops the next consumer wondering why they
+  didn't get the default claw-core got.
 
 All gates (CLAUDE.md §6) — and per §6.7, run `cargo test --workspace` as
 the LAST action and quote the real result line. (And the 10B.1 lesson:
@@ -166,7 +185,13 @@ don't commit/push off an unconfirmed gate run; re-run after any fix.)
 
 ## Common pitfalls
 
-1. **Making auto-derive too aggressive.** Only auto-derive when the score
+1. **Writing bare float `==` for the push test.** The ADR says "actual ==
+   line" conceptually; the IMPLEMENTATION is `(actual - line).abs() <
+   1e-9` (§3.1 forbids float `==`; clippy will flag it). claw-core's
+   review caught this collision in the ADR text — don't reproduce it in
+   code. Half-integer lines can't push, so the epsilon has zero false
+   positives.
+2. **Making auto-derive too aggressive.** Only auto-derive when the score
    columns are ACTUALLY present. A file without `actual_total`/`line`
    can't derive pushes — that path still needs legacy-binary (with the
    escalated warning) or the canonical hard-error. Don't error a file

@@ -853,10 +853,33 @@ Wilson-Null hard-error).
 1. **Auto-derive pushes when both score columns are present.** If the
    records carry columns that can express a push (default detection:
    `actual_total` + `line`, or whatever the records' canonical score/line
-   columns are), simulate **auto-derives pushes** (`actual == line` →
-   push) regardless of `--outcome-mode`. Opt out with an explicit
+   columns are), simulate **auto-derives pushes** (`actual` equals `line`
+   → push) regardless of `--outcome-mode`. Opt out with an explicit
    `--no-derive-pushes`. The existing `--derive-pushes <actual>=<line>`
    stays as the way to name non-default column pairs.
+
+   **Push-equality test — NO bare float `==` (CLAUDE.md §3.1; raised by
+   claw-core's review).** The amendment shorthand "actual == line" is
+   conceptual, NOT the implementation. Both values are f64; bare `==` on
+   f64 is forbidden by §3.1 and would be a clippy/review flag. Implement
+   the push test as `(actual - line).abs() < 1e-9` (the kernel's standard
+   float-equality epsilon). This is exactly correct for the domain:
+   sportsbook totals are integers or half-integers; an integer line
+   (9.0) can push (actual run total is an integer), while a half-integer
+   line (8.5) can NEVER push (no game scores 8.5 runs) — so only integer
+   lines trigger, with zero false positives. The epsilon test handles
+   the f64 representation cleanly (9.0 is exactly representable; the
+   epsilon absorbs any accumulation noise without admitting half-integer
+   false matches).
+
+   **Column-name default is claw-core-schema-specific.** Auto-derive keys
+   off the canonical `actual_total` + `line` names. A cube with different
+   names (NBA `final_total`/`closing_line`, etc.) will NOT auto-derive and
+   falls to legacy-binary + the escalated warning (§2) — which is correct
+   (warn, don't silently mis-score), not a bug. Those consumers pass
+   `--derive-pushes <actual>=<line>` explicitly. The cookbook MUST note
+   this so the next consumer understands why they didn't get the default
+   claw-core got.
 
 2. **`legacy-binary` without derivable pushes warns harder.** When a
    binary `won` column is scored as win/loss AND no push-derivation is
@@ -944,7 +967,7 @@ New ACs:
 - **AC #34:** `--replay batch|sequential` (default batch); sequential = stable-sort timestamp, compound in `sequence`-col-or-file order; batch is A1 default. EXP-049 repro uses sequential (Amdt 17)
 
 Phase 10F.1 ACs (push-correctness patch — Amdts 18-19):
-- **AC #35:** when score columns are present, pushes are auto-derived by default (`actual == line` → push) regardless of `--outcome-mode`; opt out with `--no-derive-pushes`. A `won`-style binary file WITH score columns produces a push-accurate bankroll without the user asking (Amdt 18)
+- **AC #35:** when score columns are present, pushes are auto-derived by default (`(actual − line).abs() < 1e-9` → push; NO bare float `==`, §3.1) regardless of `--outcome-mode`; opt out with `--no-derive-pushes`. A `won`-style binary file WITH score columns produces a push-accurate bankroll without the user asking. Auto-derive keys off canonical `actual_total`/`line` names; other schemas pass `--derive-pushes` explicitly (Amdt 18)
 - **AC #36:** `win_rate = wins / (wins + losses)` — pushes excluded from numerator AND denominator; legacy-binary-without-derivable-pushes carries a JSON caveat that win_rate may be push-inflated (Amdt 18)
 - **AC #37:** legacy-binary-without-derivable-pushes warning escalates to state the bankroll is inaccurate (not merely approximate) and names the compounding risk for direction-skewed models (Amdt 18)
 - **AC #38:** EXP-049 push-accurate paired assertion — `--derive-pushes` (or default auto-derive) on claw-core's 2025 window yields ~$1,829, asserted as the correct figure alongside the legacy $2,962 (Amdt 18)
