@@ -1,9 +1,9 @@
 # ADR-0035: Phase 10F — `mc model simulate` (Chronological Bankroll Simulation)
 
-**Status:** Accepted (with 16 acceptance amendments — see bottom; binding for implementation)
+**Status:** Accepted (with 17 acceptance amendments — see bottom; binding for implementation)
 **Date:** 2026-05-27
 **Accepted:** 2026-05-27 (project owner approved after dual external review pass)
-**Last amended:** 2026-05-27 — Claude Desktop + GPT-5.1 review (16 amendments); same-timestamp batch semantics, bankruptcy/ruin, 4-state-required, pinned RNG, metric edge cases. Same-timestamp prevalence verified: 3,273 of 7,272 bets (45%) share a timestamp.
+**Last amended:** 2026-05-27 — Amdt 17 (`--replay batch|sequential` flag) added during 10F implementation pre-flight; the EXP-049 headline was computed sequentially while A1 makes batch the default. Amdts 1-16 from Claude Desktop + GPT-5.1 dual review. Same-timestamp prevalence verified: 3,273 of 7,272 bets (45%) share a timestamp.
 **Deciders:** project owner
 **Phase:** 10F (third command in the evaluation track; the first that consumes a bet-record file rather than the cube)
 **Crate(s) touched:** `mc-cli` (new `simulate` subcommand) + `mc-core` ONLY if a sizing/drawdown helper proves model-semantic (default: none — same discipline as ADR-0034 Amendment 4)
@@ -75,6 +75,7 @@ mc model simulate [<cartridge.yaml>] \
   --sizing <rule>[:param=value,...] \
   [--filter "<predicate>"] \
   [--odds <override>] \
+  [--replay batch|sequential] \
   [--monte-carlo <n>] [--resample iid|block:<len>] \
   [--window all|first:<n>|range:<a>:<b>] \
   [--metric <name> ...] \
@@ -762,6 +763,54 @@ this in the test.
 claw-core's Worker — every invalid-evaluation state and every config
 input must be machine-readable. Update Decision 9.
 
+### Amendment 17: `--replay batch|sequential` flag (surfaced during 10F implementation)
+
+**Problem (surfaced by the implementer pre-flight).** A1 makes
+simultaneous-batch the default. But claw-core's $2,962.16 EXP-049
+headline was computed **sequentially** — their Python iterated the
+dataframe in row order, compounding each bet even within a same-timestamp
+slate. Batch passes the 0.1% final-bank tolerance (0.067% on 2025) but
+will NOT match the 0.01% interior checkpoints or claw-core's
+peak/max_drawdown, because the curves diverge whenever a timestamp holds
+multiple bets (45% of bets). The EXP-049 repro test (AC #12) cannot
+reproduce the famous number under the batch default.
+
+**The finding underneath.** Batch is the *more financially honest* model,
+not merely the more deterministic one (A1's rationale). Same-commence-time
+games are simultaneous — you size all bets on a 7:05pm slate from your
+current bankroll because none have resolved when you place them.
+Sequential intra-slate compounding pretends you knew bet 1's outcome
+before sizing bet 2. claw-core's headline is therefore slightly inflated;
+the batch number is the achievable one.
+
+**Amendment.** Add an explicit `--replay batch|sequential` flag,
+**default `batch`** (A1 preserved untouched):
+- `batch`: A1 simultaneous-batch semantics — the realistic default.
+- `sequential`: stable-sort by timestamp, compound each bet in order.
+  Intra-timestamp order = the `sequence` column if present (A1's
+  mechanism), else **stable file row order** (NOT re-sorted by `bet_id`
+  — preserves input order; deterministic for a given file).
+
+The `--replay` flag and the `sequence` column are complementary, not
+redundant: `sequence` answers "within a batch, what order?" (fine-grained);
+`--replay sequential` answers "compound within timestamps at all?"
+(global toggle — claw-core's actual need). `sequential` mode composes the
+`sequence` column underneath it when present.
+
+**EXP-049 repro (AC #12) runs `--replay sequential --outcome-mode
+legacy-binary`** against claw-core's *real, unmodified* file →
+reproduces $2,962.16 + interior checkpoints + peak/max_drawdown exactly.
+No doctored fixture, no forcing claw-core to add a column to reproduce
+their own number.
+
+**Cookbook documents both numbers**: the batch number (realistic, what's
+achievable — the recommended default for new analysis) and the sequential
+number (reproduces legacy headlines). Note that V1.1 gating may want to
+re-baseline against the batch number since that's the achievable one.
+
+Small additive scope (~15 lines + the flag). Update Decision 1 (command
+shape), Decision 5 (replay), and the cookbook.
+
 ---
 
 ## Consolidated acceptance-criteria revisions
@@ -771,7 +820,7 @@ Body's 24 ACs stand, with these amendment-driven changes + additions:
 - **AC #3** (outcome): 4-state required; binary hard-errors unless `--outcome-mode legacy-binary`; `--derive-pushes` repair (Amdt 2)
 - **AC #6** (single-path): same-timestamp = simultaneous batch by default; `sequence` column → sequential (Amdt 1)
 - **AC #10** (sharpe): sample-std, null on n<2 / zero-stddev (Amdt 7)
-- **AC #12** (EXP-049 repro): within 0.1% final / 0.01% checkpoints; pins outcome-mode (Amdt 15)
+- **AC #12** (EXP-049 repro): runs `--replay sequential --outcome-mode legacy-binary` against claw-core's real file → reproduces $2,962.16 within 0.1% final / 0.01% checkpoints + peak/max_drawdown (Amdt 15 + Amdt 17)
 - **AC #14** (curve): invariants per Amdt 14
 - **AC #16** (zero mc-core): unchanged; PRNG is hand-rolled in mc-cli (Amdt 5)
 
@@ -785,6 +834,7 @@ New ACs:
 - **AC #31:** `--sizing from_column:stake_hint` explicit; bare stake_hint column ignored (Amdt 8)
 - **AC #32:** JSON exposes warnings/outcome_counts/skip_counts/ruin/recovery_status/schema_mapping/outcome_mode/run-config (Amdt 16)
 - **AC #33:** cartridge validation = column-name provenance only; crypto provenance deferred (Amdt 11)
+- **AC #34:** `--replay batch|sequential` (default batch); sequential = stable-sort timestamp, compound in `sequence`-col-or-file order; batch is A1 default. EXP-049 repro uses sequential (Amdt 17)
 
 ---
 

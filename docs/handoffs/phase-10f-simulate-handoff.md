@@ -40,6 +40,11 @@ bankroll numbers grade structurally cannot produce. Also finally homes
    - **A5**: pinned hand-rolled PRNG (splitmix64/xoshiro256\*\*), NOT the
      rand crate.
    - **A13**: `roi` = cumulative (final/start − 1); `roi_per_bet` separate.
+   - **A17**: `--replay batch|sequential` flag (default batch = A1). The
+     EXP-049 repro runs `--replay sequential --outcome-mode legacy-binary`
+     to reproduce claw-core's $2,962.16 from their REAL file. Batch is the
+     more-financially-honest default (no intra-slate compounding);
+     sequential reproduces legacy headlines.
 2. **ADR-0035 body** — the records-in pivot, 9 decisions (interpret
    through amendments).
 3. **ADR-0034 (grade)** — the order-independent sibling. Same CLI
@@ -73,7 +78,7 @@ bankroll numbers grade structurally cannot produce. Also finally homes
 | 3 | Bet-record reader: parquet (via DuckDB/mc-drivers) + jsonl + column aliasing + sidecar schema (A4, Decision 2) |
 | 4 | Outcome normalization: 4-state enum + `--outcome-mode legacy-binary` + `--derive-pushes` (A2) |
 | 5 | Sizing-rule parser + pinned Kelly formula + modifiers (Decision 4) + `from_column:stake_hint` (A8) |
-| 6 | Same-timestamp batch grouping (A1) — DEFAULT batch, `sequence` → sequential |
+| 6 | Same-timestamp batch grouping (A1) + `--replay batch\|sequential` flag (A17) — DEFAULT batch; sequential reproduces legacy headlines |
 | 7 | Single-path replay + bankruptcy/ruin (A3) + filter-then-window order (A12) |
 | 8 | Metrics incl. drawdown scans + edge cases (A7) + cumulative roi (A13) |
 | 9 | Monte Carlo: pinned PRNG (A5) + iid/block resample (A6) |
@@ -150,12 +155,17 @@ actual_total=line` reconstructs 4-state when both columns present.
 Modifiers cap/shrink/min_odds/floor. `from_column:stake_hint` is an
 EXPLICIT rule (A8) — bare stake_hint column ignored.
 
-### Step 4: Same-timestamp batch grouping (A1 — load-bearing)
-Sort by `(timestamp, bet_id)`. Group consecutive same-timestamp bets
-into batches. DEFAULT: batch — all stakes computed from bankroll-at-
-batch-start, outcomes applied atomically, bankroll updated once per
-batch. If `sequence` column present → sequential (bankroll updates per
-bet). Batch over-stake → scale stakes proportionally (A3).
+### Step 4: Same-timestamp batch grouping + `--replay` (A1 — load-bearing; A17)
+Sort by timestamp (stable — preserve file order within a timestamp; do
+NOT re-sort by `bet_id`, per A17). `--replay batch` (DEFAULT, A1): group
+consecutive same-timestamp bets into batches — all stakes computed from
+bankroll-at-batch-start, outcomes applied atomically, bankroll updated
+once per batch; batch over-stake → scale stakes proportionally (A3).
+`--replay sequential` (A17): compound each bet in order; intra-timestamp
+order = `sequence` column if present, else stable file row order. The
+`--replay` flag is the global toggle; the `sequence` column refines
+intra-batch order under sequential. EXP-049 repro uses `--replay
+sequential` (A17 + A15).
 
 ### Step 5: Single-path replay + ruin (A3, A12)
 Filter FIRST, window SECOND (A12). Then: bankroll=start; for each batch
@@ -207,7 +217,7 @@ Report each explicitly when claiming done. Consolidated per the ADR's
 - [ ] AC #3: 4-state required; binary hard-errors unless `--outcome-mode legacy-binary`; `--derive-pushes` (A2)
 - [ ] AC #6: same-timestamp = simultaneous batch default; `sequence` → sequential (A1)
 - [ ] AC #10: sharpe sample-std, null on n<2/zero-stddev (A7)
-- [ ] AC #12: EXP-049 repro within 0.1% final / 0.01% checkpoints; pins outcome-mode (A15)
+- [ ] AC #12: EXP-049 repro runs `--replay sequential --outcome-mode legacy-binary` against claw-core's real file → $2,962.16 within 0.1% final / 0.01% checkpoints + peak/max_drawdown (A15 + A17)
 - [ ] AC #14: curve invariants per A14
 - [ ] AC #16: zero mc-core; PRNG hand-rolled in mc-cli (A5)
 - [ ] AC #25: bankruptcy/ruin — cap at bankroll, ruin skips remaining, batch over-stake scales (A3)
@@ -219,6 +229,7 @@ Report each explicitly when claiming done. Consolidated per the ADR's
 - [ ] AC #31: `--sizing from_column:stake_hint` explicit; bare column ignored (A8)
 - [ ] AC #32: JSON exposes warnings/outcome_counts/skip_counts/ruin/recovery_status/schema_mapping/outcome_mode/run-config (A16)
 - [ ] AC #33: cartridge validation = column-name provenance only (A11)
+- [ ] AC #34: `--replay batch|sequential` (default batch); sequential = stable-sort timestamp + compound in sequence-col-or-file order (A17)
 - [ ] Build gates: fmt, clippy -D warnings, build, **`cargo test --workspace` quoted result line (§6.7)**, determinism ×10
 - [ ] No float `==` (§3.1); zero-checks via `abs() < 1e-300`; no new deps (A5 — PRNG hand-rolled)
 
@@ -227,8 +238,15 @@ Report each explicitly when claiming done. Consolidated per the ADR's
 ## Common pitfalls (forewarned)
 
 1. **Ignoring same-timestamp batching.** 45% of real bets share a
-   timestamp. Sequential-by-bet_id ordering makes the headline number
-   non-deterministic. Batch is the default (A1) — this is THE bug to avoid.
+   timestamp. Batch is the default (A1) — all same-timestamp stakes sized
+   off one bankroll snapshot. THE bug to avoid.
+1b. **Re-sorting by `bet_id` within a timestamp (A17).** Sort must be
+   STABLE on timestamp — preserve file row order within a tie, do NOT
+   re-sort by `bet_id`. Sequential replay (`--replay sequential`)
+   compounds in file order (or `sequence`-column order if present).
+   Re-sorting by bet_id would make `--replay sequential` reproduce a
+   DIFFERENT number than claw-core's row-order headline — breaking the
+   EXP-049 repro for a subtle reason.
 2. **Running binary `won` by default.** Hard-error unless
    `--outcome-mode legacy-binary` (A2). Silent push-conflation is the
    ADR-0034-Wilson mistake again.
