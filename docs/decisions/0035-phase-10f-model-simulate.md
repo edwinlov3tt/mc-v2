@@ -1,9 +1,9 @@
 # ADR-0035: Phase 10F — `mc model simulate` (Chronological Bankroll Simulation)
 
-**Status:** Accepted (with 17 acceptance amendments — see bottom; binding for implementation)
+**Status:** Accepted; Phase 10F shipped (`6e2d3e9` merged `7462c22`); Phase 10F.1 patch pending (Amdts 18-19). 19 acceptance amendments total — see bottom.
 **Date:** 2026-05-27
 **Accepted:** 2026-05-27 (project owner approved after dual external review pass)
-**Last amended:** 2026-05-27 — Amdt 17 (`--replay batch|sequential` flag) added during 10F implementation pre-flight; the EXP-049 headline was computed sequentially while A1 makes batch the default. Amdts 1-16 from Claude Desktop + GPT-5.1 dual review. Same-timestamp prevalence verified: 3,273 of 7,272 bets (45%) share a timestamp.
+**Last amended:** 2026-05-27 — Amdts 18-19 (Phase 10F.1) added after claw-core's first production use surfaced a **38% overstatement** from push mis-scoring (their `won`-0/1 column scored integer-line pushes as wins). 18 = auto-derive-pushes default + win_rate excludes pushes + harder legacy-binary warning; 19 = `--max-stake` + count-based `--window first:n` (EXP-029d/e gaps). Amdt 17 (`--replay`) added during 10F pre-flight. Amdts 1-16 from dual review. Same-timestamp prevalence: 3,273/7,272 (45%).
 **Deciders:** project owner
 **Phase:** 10F (third command in the evaluation track; the first that consumes a bet-record file rather than the cube)
 **Crate(s) touched:** `mc-cli` (new `simulate` subcommand) + `mc-core` ONLY if a sizing/drawdown helper proves model-semantic (default: none — same discipline as ADR-0034 Amendment 4)
@@ -824,6 +824,100 @@ re-baseline against the batch number since that's the achievable one.
 Small additive scope (~15 lines + the flag). Update Decision 1 (command
 shape), Decision 5 (replay), and the cookbook.
 
+### Amendment 18: Auto-derive pushes when score columns present; legacy-binary stops being the silent default (surfaced by claw-core production use — Phase 10F.1)
+
+**The catch that motivated this.** claw-core ran the shipped simulate on
+their real `exp028_bets.parquet` (a `won`-0/1 file → `legacy-binary`
+mode) and `--derive-pushes` surfaced a **38% overstatement** in their own
+published numbers. Integer-line games landing exactly on the line
+(`actual_total == line`) are pushes (stake returned, neutral) — but their
+`won` column scored them as WINS for UNDER bets (24 of 26 in 2025). The
+model is UNDER-heavy, so phantom-push-wins compounded all season:
+2025 V1.0 went from a published $2,962 (legacy-binary, pushes-as-wins) to
+**$1,829 push-accurate (−38%)**. The error propagated through 8
+experiments. (For contrast: the batch-vs-sequential correction from A1/A17
+was ~$2 / 0.07% on the same data — the push correction is ~500× larger.)
+
+**The defect this exposes.** A2 correctly made 4-state canonical and
+`legacy-binary` an explicit opt-in. But once a user IS in `legacy-binary`
+(which any `won`-0/1 file forces), pushes-as-wins is silent AND
+`--derive-pushes` is opt-in — so when the data to detect pushes is *right
+there* (`actual_total` + `line` columns both present, as in claw-core's
+file), simulate makes the user ASK for the correct number instead of
+giving it by default. That's the "silently-wrong default" footgun the
+whole amendment set guards against (cf. A2, A3, and ADR-0034's
+Wilson-Null hard-error).
+
+**Amendment.** Push-accuracy becomes the default whenever it's derivable:
+
+1. **Auto-derive pushes when both score columns are present.** If the
+   records carry columns that can express a push (default detection:
+   `actual_total` + `line`, or whatever the records' canonical score/line
+   columns are), simulate **auto-derives pushes** (`actual == line` →
+   push) regardless of `--outcome-mode`. Opt out with an explicit
+   `--no-derive-pushes`. The existing `--derive-pushes <actual>=<line>`
+   stays as the way to name non-default column pairs.
+
+2. **`legacy-binary` without derivable pushes warns harder.** When a
+   binary `won` column is scored as win/loss AND no push-derivation is
+   possible (score columns absent), the warning escalates: it states that
+   pushes are being counted as wins/losses and that the bankroll is
+   therefore **inaccurate, not just approximate** — with the magnitude
+   framing ("any integer-line push is mis-scored; for UNDER-heavy models
+   this compounds"). Legacy-binary remains available for *reproducing a
+   known-published number* (it's how AC #12 reproduces the $2,962
+   headline), but it is no longer the path of least resistance for a file
+   that *could* be push-accurate.
+
+3. **`win_rate` excludes pushes.** In any mode, `win_rate = wins /
+   (wins + losses)` — pushes are NOT counted in the denominator OR as
+   wins (they're neutral). Under legacy-binary-without-derivation (pushes
+   invisible), `win_rate` carries a caveat in the JSON that it may be
+   inflated by undetected pushes. This also flags the knock-on claw-core
+   reported: their "59.68% WR" headline (EXP-026/028) used the same `won`
+   column and is a few points high — a push-accurate WR re-baseline is
+   the fix on their side.
+
+**Reproducibility caveat (load-bearing for AC #12).** The EXP-049
+reproduction test (AC #12) reproduces claw-core's *published* $2,962
+headline, which was computed pushes-as-wins. So AC #12 MUST run with
+`--no-derive-pushes --outcome-mode legacy-binary` to match the
+known-wrong-but-published number, and the test comment must say so
+explicitly: "reproduces the legacy published number, which is now known
+to overstate by ~38% due to push mis-scoring; push-accurate is $1,829.
+This test pins reproduction of the historical figure, not the correct
+one." The push-accurate number ($1,829) gets its own assertion as the
+*correct* result.
+
+**Scope:** Phase 10F.1 patch (mc-cli only, ~40 lines in
+`simulate_reader.rs`'s outcome-mode decision + the warning text + the
+win_rate denominator). Same instance as 10F (the reader/outcome code is
+in its context). Bundled with the two EXP-029-family gaps below.
+
+### Amendment 19: `--max-stake` (EXP-029d) and `--window first:<n>` (EXP-029e) — close the EXP-029-family gaps
+
+**Problem.** claw-core's adoption review found simulate replaces ~80% of
+the EXP-029 family but two gaps remain: 029d (bet caps) needs a **fixed-
+dollar** stake cap (the existing `cap=` modifier is a *fraction* of
+bankroll), and 029e (first-30-bet risk) needs a **count-based** window
+(the existing `--window first:<n>` was specified but claw-core flagged it
+as needed — confirm it's count-based, not date-based).
+
+**Amendment.** Two small additive flags:
+1. **`--max-stake <amount>`** — an absolute-dollar cap applied AFTER the
+   sizing rule and the fractional `cap=` modifier (stake = min(sized,
+   fractional_cap × bankroll, max_stake)). Reproduces EXP-029d's
+   account-limit stress (e.g. "what if no bet can exceed $500 regardless
+   of bankroll"). Composes with `--monte-carlo` for the cap × bankroll
+   matrix (scripted, per the original cap-matrix deferral).
+2. **`--window first:<n>`** — confirm/ensure it's a **count-based** window
+   (first N placed bets chronologically, after `--filter`), distinct from
+   `range:<a>:<b>` (date-based). EXP-029e (first-30 risk) +
+   `--monte-carlo` reproduces the early-window drawdown distribution.
+
+**Scope:** part of the 10F.1 patch. ~30 lines (flag parse + the min() in
+sizing + window selection). Bundled with Amendment 18.
+
 ---
 
 ## Consolidated acceptance-criteria revisions
@@ -833,7 +927,7 @@ Body's 24 ACs stand, with these amendment-driven changes + additions:
 - **AC #3** (outcome): 4-state required; binary hard-errors unless `--outcome-mode legacy-binary`; `--derive-pushes` repair (Amdt 2)
 - **AC #6** (single-path): same-timestamp = simultaneous batch by default; `sequence` column → sequential (Amdt 1)
 - **AC #10** (sharpe): sample-std, null on n<2 / zero-stddev (Amdt 7)
-- **AC #12** (EXP-049 repro): runs `--replay sequential --outcome-mode legacy-binary` against claw-core's real file → reproduces $2,962.16 within 0.1% final / 0.01% checkpoints + peak/max_drawdown (Amdt 15 + Amdt 17)
+- **AC #12** (EXP-049 repro): runs `--replay sequential --outcome-mode legacy-binary --no-derive-pushes` against claw-core's real file → reproduces the *published* $2,962.16 within 0.1% final / 0.01% checkpoints + peak/max_drawdown. Test comment notes this is the known-wrong published figure (overstates ~38% from push mis-scoring); a paired assertion checks the push-accurate $1,829 as the *correct* number (Amdt 15 + Amdt 17 + Amdt 18)
 - **AC #14** (curve): invariants per Amdt 14
 - **AC #16** (zero mc-core): unchanged; PRNG is hand-rolled in mc-cli (Amdt 5)
 
@@ -848,6 +942,14 @@ New ACs:
 - **AC #32:** JSON exposes warnings/outcome_counts/skip_counts/ruin/recovery_status/schema_mapping/outcome_mode/run-config (Amdt 16)
 - **AC #33:** cartridge validation = column-name provenance only, **warn-only never hard-error** (bet-record columns legitimately exceed cube measures); crypto provenance deferred (Amdt 11, reconciled post-implementation)
 - **AC #34:** `--replay batch|sequential` (default batch); sequential = stable-sort timestamp, compound in `sequence`-col-or-file order; batch is A1 default. EXP-049 repro uses sequential (Amdt 17)
+
+Phase 10F.1 ACs (push-correctness patch — Amdts 18-19):
+- **AC #35:** when score columns are present, pushes are auto-derived by default (`actual == line` → push) regardless of `--outcome-mode`; opt out with `--no-derive-pushes`. A `won`-style binary file WITH score columns produces a push-accurate bankroll without the user asking (Amdt 18)
+- **AC #36:** `win_rate = wins / (wins + losses)` — pushes excluded from numerator AND denominator; legacy-binary-without-derivable-pushes carries a JSON caveat that win_rate may be push-inflated (Amdt 18)
+- **AC #37:** legacy-binary-without-derivable-pushes warning escalates to state the bankroll is inaccurate (not merely approximate) and names the compounding risk for direction-skewed models (Amdt 18)
+- **AC #38:** EXP-049 push-accurate paired assertion — `--derive-pushes` (or default auto-derive) on claw-core's 2025 window yields ~$1,829, asserted as the correct figure alongside the legacy $2,962 (Amdt 18)
+- **AC #39:** `--max-stake <amount>` absolute-dollar cap applied after sizing + fractional cap (stake = min(sized, cap×bankroll, max_stake)); reproduces EXP-029d (Amdt 19)
+- **AC #40:** `--window first:<n>` is count-based (first N placed bets after filter, chronological); distinct from date-based `range:`; + `--monte-carlo` reproduces EXP-029e (Amdt 19)
 
 ---
 
