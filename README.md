@@ -2,7 +2,7 @@
 
 > **Mosaic** — a Large Numbers Model: an n-dimensional planning engine where every cell of your business is computed, traceable, and tied to the inputs that move it.
 
-What an LLM is to language, Mosaic is to the numbers that run a business: every cell predicted, every dependency tracked, every assumption auditable. See [`docs/strategy/POSITIONING.md`](./docs/strategy/POSITIONING.md) for the full positioning.
+What an LLM is to language, Mosaic is to the numbers that run a business: every cell predicted, every dependency tracked, every assumption auditable.
 
 **Status:** Phase 6A.1 complete (review-driven fixes after the Phase 6A agent-ready CLI shipped). The kernel + model layer + Tessera ingestion engine + Claude Code plugin + Python LLM adapters + 14-verb CLI are all live. **731 / 0 / 5 tests passing, 10/10 deterministic.** Phase 6B (web UI) is the natural next phase.
 
@@ -18,7 +18,7 @@ Read these in order on a fresh session:
 2. [`docs/HANDOFF.md`](./docs/HANDOFF.md) — 5-minute orientation
 3. [`docs/CURRENT_STATE.md`](./docs/CURRENT_STATE.md) — what's live right now
 4. [`docs/roadmap/MASTER_PHASE_PLAN.md`](./docs/roadmap/MASTER_PHASE_PLAN.md) — what's been built and what's next
-5. [`docs/strategy/POSITIONING.md`](./docs/strategy/POSITIONING.md) — Mosaic as an LNM platform; TM1 scope comparison
+5. [`docs/decisions/`](./docs/decisions/) — Architecture Decision Records (the *why* behind the engine)
 6. [`docs/process-notes.md`](./docs/process-notes.md) — operational rules (handoff-first vs ADR-first flow, etc.)
 
 For plain-English explanations of what each phase did:
@@ -47,7 +47,7 @@ mosaic-plugin/    # Claude Code plugin (6 skills + 4 agents + 7 commands + .mcp.
 examples/         # Acme demo (workspace canonical) + sports-betting/nba-totals cartridge (14/14 goldens passing)
 ```
 
-Crate names keep the `mc-` prefix per the naming-convention rule (see CLAUDE.md). Six placeholder crate names reserved on crates.io ahead of Phase 6C distribution: `mosaic-cli`, `mosaic-engine`, `mosaic-lnm`, `mosaic-core`, `mosaic-recipe`, `mosaic-tessera`.
+Crate names keep the `mc-` prefix per the naming-convention rule (see CLAUDE.md) — now backronyms for "Mosaic Core."
 
 ---
 
@@ -122,4 +122,4 @@ mc mcp
 
 ## License
 
-MIT or Apache-2.0 (see workspace `Cargo.toml`).
+[MIT](./LICENSE).

@@ -19,8 +19,8 @@ members = [
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.78"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/edwinlovettiii/marketingcubes"
+license = "MIT"
+repository = "https://github.com/edwinlov3tt/mc-v2"
 
 [workspace.dependencies]
 # Strict, minimal dependency set for Phase 1. See docs/phase-1-rust-kernel-build-brief.md §2.5.

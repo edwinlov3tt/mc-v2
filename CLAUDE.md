@@ -16,7 +16,7 @@
 
 ## Project name + naming convention (rename note)
 
-**The project was renamed from "MarketingCubes V2" → "Mosaic" on 2026-05-03.** Mosaic is positioned as an AI-powered Large Numbers Model (LNM) platform — see [`docs/strategy/POSITIONING.md`](docs/strategy/POSITIONING.md) for the strategic framing.
+**The project was renamed from "MarketingCubes V2" → "Mosaic" on 2026-05-03.** Mosaic is an AI-powered Large Numbers Model (LNM) — a multidimensional engine for building, validating, testing, and operating large numerical models.
 
 **Naming convention rule (binding):**
 

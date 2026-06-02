@@ -6,7 +6,7 @@
 
 ## What this project is
 
-**Mosaic** (renamed from "MarketingCubes V2" on 2026-05-03) — a Rust-based, AI-powered Large Numbers Model (LNM) platform with a TM1-inspired multidimensional kernel at the bottom. Today's deliverable executes the **Acme demo** (6 dimensions, 11 measures, 5 rules, 2,520 input cells) end-to-end via the Rust kernel AND via YAML model authoring (Phase 3A → 3D). See [`strategy/POSITIONING.md`](./strategy/POSITIONING.md) for the broader framing.
+**Mosaic** (renamed from "MarketingCubes V2" on 2026-05-03) — a Rust-based, AI-powered Large Numbers Model (LNM) platform with a TM1-inspired multidimensional kernel at the bottom. Today's deliverable executes the **Acme demo** (6 dimensions, 11 measures, 5 rules, 2,520 input cells) end-to-end via the Rust kernel AND via YAML model authoring (Phase 3A → 3D).
 
 The project is **spec-driven**. Two files in [`specs/`](./specs/) are the contract:
 
