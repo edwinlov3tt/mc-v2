@@ -14,9 +14,8 @@ shared_fitted_models: []
 cubes:
   - path: "nba-totals.yaml"
     name: "NBA Totals (V1.6 Lasso)"
-  # MLB cartridge ships with ADR-0002 / Phase 1.0:
-  # - path: "mlb-totals.yaml"
-  #   name: "MLB Totals (V1.0 Lasso)"
+  - path: "mlb-totals.yaml"
+    name: "MLB Totals (V1.0 Lasso + NB)"
 
 # Inter-cube links — none today. Future: cross-sport calibration could link.
 links: []
