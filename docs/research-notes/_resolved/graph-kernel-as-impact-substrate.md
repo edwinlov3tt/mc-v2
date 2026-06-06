@@ -1,6 +1,59 @@
 # Mosaic's Graph Kernel as a Deterministic Impact / Context Substrate
 
-**Status:** ACTIVE — **engine spike returned 🟢 GREEN (2026-06-06)**; idea not yet resolved (edge-authoring-at-scale is the next gate). See [spike report](../../reports/spike-graph-impact-substrate-report.md).
+**Status:** RESOLVING → moving to `_resolved/`. Engine spike 🟢 GREEN, dual external review (Codex + Claude Desktop) + edge-rot experiment all run (2026-06-06). **Conclusion: the engine is commodity (15-line BFS, not a moat); the survivable product is symbol-anchored intent→code edges + resolve-step + loud-fail; and it belongs to Continuity, not Mosaic.** Mosaic's real edge is its deterministic NUMERIC evaluation substrate. See the [edge-rot experiment](../../reports/edge-rot-experiment-report.md) and [spike report](../../reports/spike-graph-impact-substrate-report.md).
+
+---
+
+## RESOLUTION (2026-06-06) — read this first; the body below is the original exploration
+
+Three things ran after this note was drafted: the engine spike (GREEN),
+dual external review (both with codebase access), and an edge-rot
+experiment on real repo data. The verdict:
+
+**1. The engine is real but COMMODITY — not the moat.** Both reviewers
+independently killed "no deterministic blast-radius engine exists" with
+named prior art: `bazel query rdeps`, Neo4j path traversal, SQLite
+recursive CTE, Datalog/Differential Dataflow, petgraph. `closure_of_dependents`
+is ~15 lines of textbook reverse-reachability. **Drop "Mosaic's kernel"
+from any pitch — it implies you need Mosaic when you need a BFS.** The
+part the spike proved transferable is the part that was never in doubt.
+
+**2. The reviewers' kill-shot was edge rot; the experiment MEASURED it and
+overturned the prediction.** 9 real intent→code edges (ADR `file:line`
+claims), un-maintained, aged 5 weeks across 337 commits: **8/9 stayed
+semantically exact; the 1 that drifted did so SILENTLY and was
+line-anchored** (formula.rs:933→934). The decisive finding neither
+reviewer reached: **line-anchored edges rot silently; symbol-anchored
+edges (resolve via LSP/ctags) mostly don't rot and fail LOUD when the
+symbol vanishes.** The kill-shot is "line references" (fixable), not "rot
+is fast" (fatal). Full data: [edge-rot experiment](../../reports/edge-rot-experiment-report.md).
+
+**3. Therefore: the survivable product exists but is NARROW and is
+Continuity's, not Mosaic's.** Symbol-anchored intent→code edges + a
+resolve-on-read step + loud-fail on broken anchors + closure/trace = a
+data+workflow+LSP product. Mosaic's graph kernel contributes the trivial
+15 lines and is not required. Continuity already is "a tiny runner + a
+ledger in a repo," and its `fingerprint`/`staleness_mode` addendum is
+reaching for exactly symbol-anchored edges. **If this idea is pursued, it
+is a Continuity feature.**
+
+**The routing both the reviews AND the experiment converge on:** Mosaic's
+genuine, validated edge is its **deterministic numeric evaluation
+substrate** (the 38% bug catch — deterministic recompute + trace catching
+what stochastic Python got wrong). The agentic-graph reframe was a
+detour; every time an idea here had a real edge, it traced back to
+deterministic-replay-with-trace, which is what the evaluation track
+already ships. **Build the evaluation product; pursue the graph idea, if
+at all, as standalone Continuity.**
+
+Open thread that survives (small): this experiment tested *location* rot
+(does file:line still point right), not *reason* rot (the endpoint still
+exists but the "because of decision X" changed). Reason-rot is a smaller,
+slower target but untested — it's the residual question if Continuity ever
+builds the symbol-anchored version.
+
+---
+
 **Date:** 2026-06-06
 **Author:** Mosaic PM (Claude Opus 4.8, 1M context) + project owner (vibing session)
 **The one-line thesis:** Mosaic isn't a numbers engine — it's a **blast-radius-and-trace engine** that happens to carry numbers. The agentic-dev world has no *deterministic* blast-radius-and-trace engine. That gap is the opportunity.

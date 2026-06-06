@@ -102,6 +102,43 @@ audit (Mosaic)`.
 
 ---
 
+## Dual-review finding (2026-06-06) — the differentiation is gated on TWO things, one unsolved
+
+Codex + Claude Desktop both reviewed this note. Both verdicts: **MIXED,
+leaning wishful** — and both landed the same sharpening:
+
+- **As point-score fusion, this is "a spreadsheet/rule-engine with LLM
+  inputs."** Not a category. The note already concedes this (the
+  weighted-averaging admission below). Confirmed.
+- **The differentiation is staked entirely on distribution-valued cells
+  (Phase 11, unbuilt) — AND on a second thing the note undersold: LLM
+  score CALIBRATION, which is nobody's solved problem.** Propagating an
+  uncalibrated "0.7 bullish, 60% confident" vibes-number through flawless
+  Bayesian math yields a "precisely-computed, beautifully-traced garbage
+  interval" (Claude). The honest-uncertainty-band is the whole pitch, and
+  it's honest about uncertainty it can't actually measure.
+- **The uncertainty-propagation math isn't novel or Mosaic's** — PyMC,
+  Stan, the `uncertainties` package do automatic error propagation through
+  arbitrary expressions. And the note concedes Python still
+  scores/fits, so Mosaic again contributes the *trivial* eval step.
+
+**The strongest version both reviewers reached (sharper than this note):**
+the differentiator is NOT "Mosaic fuses scores." It's that **deterministic
+recompute + trace enables honest calibration/backtesting** — replay
+historical scored decisions, check whether your 60%-confidence calls
+actually hit 60%. The value is the *calibration/audit loop*, not the
+fusion arithmetic. **And that loop is evaluation-track DNA** (deterministic
+replay + trace — the same thing that caught the 38% bug). So even fusion's
+real edge routes back to Mosaic's actual moat: deterministic-replay-with-
+trace, which the evaluation track already ships.
+
+**Status implication:** keep this ACTIVE but reframe the eventual ADR
+around the *calibration/backtest loop*, not "uncertainty-aware fusion."
+And it stays double-gated: needs distribution-valued cells (buildable) AND
+good-enough LLM calibration (open research). Until both, it demos as a
+spreadsheet. Don't build the fusion layer first; build the calibration
+loop (which is closer to the evaluation track you already have).
+
 ## The honest constraints
 
 1. **Garbage in, garbage out — worse, not better.** A confidence interval
