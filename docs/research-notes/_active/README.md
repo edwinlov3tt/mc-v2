@@ -20,5 +20,5 @@ When you move a note to `_resolved/`, prepend a status line:
 
 | Note | The open question | Next move |
 |---|---|---|
-| [`graph-kernel-as-impact-substrate.md`](./graph-kernel-as-impact-substrate.md) | Can Mosaic's dependency-graph kernel (blast-radius + trace) power deterministic impact analysis / agentic context, not just numbers? | **The spike** — model a tiny project's intent→code edges as a Mosaic graph, change one node, show exact blast radius |
+| [`graph-kernel-as-impact-substrate.md`](./graph-kernel-as-impact-substrate.md) | Can Mosaic's dependency-graph kernel (blast-radius + trace) power deterministic impact analysis / agentic context, not just numbers? | **Engine spike 🟢 GREEN (2026-06-06)** — exact blast radius + trace proven (5/5 tests). NEXT: (1) thin `mc impact` API over bare `DependencyGraph`; (2) edge-authoring-at-scale experiment (the real gate) |
 | [`evidence-fusion-decision-substrate.md`](./evidence-fusion-decision-substrate.md) | Can Mosaic fuse scored LLM judgments (news, earnings, reports) + hard numbers into auditable, uncertainty-aware decisions? | Depends on distribution-valued cells (Phase 11); validated conceptually, awaiting that foundation |
