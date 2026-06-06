@@ -20,6 +20,7 @@ When you move a note to `_resolved/`, prepend a status line:
 
 | Note | The open question | Next move |
 |---|---|---|
+| [`number-validation-harness.md`](./number-validation-harness.md) | Can Mosaic catch an agent's plausible-but-wrong analytics numbers (deterministic recompute + trace)? | **POSITIVE — tested 2026-06-06 on real Acme data.** Caught the weighted-avg CPC trap (correct 1.5202381 vs an LLM's clean-but-wrong simple average). The 38% bug catch as a discipline. Next (demand-gated): a thin `mc report-check` skill, not a kernel phase. The one bucket of the AI-eng list where Mosaic has a *demonstrated* edge. |
 | [`evidence-fusion-decision-substrate.md`](./evidence-fusion-decision-substrate.md) | Can Mosaic fuse scored LLM judgments + hard numbers into auditable, uncertainty-aware decisions? | **Double-gated** (dual review 2026-06-06): needs distribution-valued cells (Phase 11, buildable) AND LLM calibration (open research). Reframe the eventual ADR around the *calibration/backtest loop* (evaluation-track DNA), not "fusion." Until both gates clear, it's a spreadsheet — don't build yet. |
 
 ## Recently resolved (moved to `_resolved/`)
