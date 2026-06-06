@@ -1,6 +1,6 @@
 # Mosaic's Graph Kernel as a Deterministic Impact / Context Substrate
 
-**Status:** ACTIVE — spike pending (the highest-leverage unproven idea in the project)
+**Status:** ACTIVE — **engine spike returned 🟢 GREEN (2026-06-06)**; idea not yet resolved (edge-authoring-at-scale is the next gate). See [spike report](../../reports/spike-graph-impact-substrate-report.md).
 **Date:** 2026-06-06
 **Author:** Mosaic PM (Claude Opus 4.8, 1M context) + project owner (vibing session)
 **The one-line thesis:** Mosaic isn't a numbers engine — it's a **blast-radius-and-trace engine** that happens to carry numbers. The agentic-dev world has no *deterministic* blast-radius-and-trace engine. That gap is the opportunity.
@@ -168,7 +168,35 @@ Build toward (1); let it prove (2).
 
 ---
 
-## THE SPIKE (next action — see the experiment plan below)
+## SPIKE RESULT (2026-06-06): 🟢 GREEN on the engine
+
+Ran `crates/mc-core/tests/spike_impact_substrate.rs` — 5/5 pass. Modeled
+an 8-node toy intent graph (2 decisions, 4 code-facts, 2 artifacts, 8
+edges) directly on `DependencyGraph`. Proven:
+- changing the CORS decision → EXACTLY {endpoint, middleware, smoke-test,
+  deploy} including 2-hop transitive; the unrelated decision's subgraph is
+  correctly excluded.
+- the "why is X affected" chain reconstructs back to the changed decision.
+- `closure_of_dependents` is the blast-radius primitive; sub-ms; deterministic.
+
+**Key discovery:** the reusable asset is the **bare `DependencyGraph`**, NOT
+the cube. Intent nodes are not measures-at-coordinates; forcing them into a
+Scenario×Version×Measure cube is awkward and unnecessary. The graph kernel
+is more general than the cube built on it. Edge authoring on the bare graph
+was trivial and natural (`add_edge(reader, edge(dep))` reads as "reader
+depends on dep").
+
+**What's still open (why this note stays ACTIVE):** *who authors the
+intent→code edges for a REAL repo at scale.* The spike hand-authored them
+to isolate the engine. The LLM-proposes / human-confirms authoring loop
+(the Continuity human-anchor pattern) is unproven — that's the next gate.
+
+Full verdict: [`../../reports/spike-graph-impact-substrate-report.md`](../../reports/spike-graph-impact-substrate-report.md).
+Resolution of the two-products question: **Product 1 (impact-analysis
+engine) is real and ~1-2 sessions from a usable v0; Product 2 (context
+substrate) is gated on the edge-authoring experiment.**
+
+## THE SPIKE (original plan — now executed; see result above)
 
 **Goal:** prove the blast-radius-over-intent idea is real, cheaply, before
 committing to anything.
